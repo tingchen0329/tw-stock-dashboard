@@ -1,0 +1,814 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>台股分析儀表板</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root {
+  --bg: #0d1117;
+  --bg2: #161b22;
+  --bg3: #1f2630;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text2: #8b949e;
+  --text3: #6e7681;
+  --primary: #58a6ff;
+  --success: #3fb950;
+  --danger: #f85149;
+  --warning: #d29922;
+  --info: #58a6ff;
+  --r-up: #ff6b6b;
+  --r-down: #4caf50;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.container { max-width: 1200px; margin: 0 auto; padding: 16px; }
+.header {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  margin-bottom: 16px;
+}
+h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; }
+.subtitle { font-size: 12px; color: var(--text2); margin: 0; }
+.health { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text2); }
+.health-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text3); }
+.card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; margin-bottom: 12px; }
+.card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.card-title { font-size: 12px; font-weight: 600; color: var(--text); }
+button {
+  background: var(--bg3); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer;
+  transition: background 0.15s;
+}
+button:hover { background: #2a313c; }
+button.primary { background: var(--primary); color: #0a0e14; border-color: var(--primary); font-weight: 600; }
+button.primary:hover { background: #79b8ff; }
+button.danger { background: transparent; border-color: var(--danger); color: var(--danger); }
+input {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 10px; font-size: 13px; height: 32px; width: 100%;
+}
+input:focus { outline: none; border-color: var(--primary); }
+.macro-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.macro-cell {
+  background: var(--bg3); border-radius: 6px; padding: 8px 10px; border: 1px solid var(--border);
+}
+.macro-cell .ml { font-size: 10px; color: var(--text2); margin: 0 0 2px; }
+.macro-cell .mv { font-size: 16px; font-weight: 600; margin: 0; }
+.macro-cell .ms { font-size: 9px; color: var(--text3); margin: 2px 0 0; }
+.input-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: end; }
+.input-row label { font-size: 11px; color: var(--text2); display: block; margin-bottom: 4px; }
+.quick-buttons { margin-top: 10px; display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+.quick-buttons span { font-size: 10px; color: var(--text3); margin-right: 4px; }
+.quick-buttons button { padding: 3px 8px; font-size: 11px; height: 24px; }
+.status { padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 12px; display: none; }
+.status.err { background: rgba(248, 81, 73, 0.12); color: var(--danger); border: 1px solid rgba(248, 81, 73, 0.4); }
+.status.ok { background: rgba(63, 185, 80, 0.12); color: var(--success); border: 1px solid rgba(63, 185, 80, 0.4); }
+.status.info { background: rgba(88, 166, 255, 0.12); color: var(--info); border: 1px solid rgba(88, 166, 255, 0.4); }
+.status.load { background: var(--bg3); color: var(--text); }
+.token-card.set { background: rgba(63, 185, 80, 0.08); border-color: rgba(63, 185, 80, 0.4); }
+.token-card.unset { background: rgba(210, 153, 34, 0.08); border-color: rgba(210, 153, 34, 0.4); }
+.token-line { display: flex; justify-content: space-between; align-items: center; font-size: 12px; }
+.token-input { display: none; margin-top: 8px; }
+.token-input.show { display: block; }
+.token-input p { font-size: 10px; color: var(--text2); margin: 0 0 5px; }
+.token-input a { color: var(--primary); text-decoration: none; }
+.section-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding-bottom: 8px; border-bottom: 1px solid var(--border); margin-bottom: 12px;
+}
+.stock-title { font-size: 18px; font-weight: 600; margin: 0; }
+.stock-meta { font-size: 11px; color: var(--text2); margin: 2px 0 0; }
+.action-buttons { display: flex; gap: 6px; }
+.completeness {
+  padding: 6px 10px; border-radius: 6px; font-size: 11px; margin-bottom: 10px;
+  display: flex; align-items: center; gap: 6px;
+}
+.completeness.good { background: rgba(63, 185, 80, 0.12); color: var(--success); }
+.completeness.mid { background: rgba(210, 153, 34, 0.12); color: var(--warning); }
+.completeness.bad { background: rgba(248, 81, 73, 0.12); color: var(--danger); }
+.cards-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+.data-card { background: var(--bg3); border-radius: 6px; padding: 10px 12px; border: 1px solid var(--border); }
+.data-card .cl { font-size: 10px; color: var(--text2); margin: 0 0 3px; }
+.data-card .cv { font-size: 18px; font-weight: 600; margin: 0; }
+.data-card .cx { font-size: 11px; margin: 2px 0 0; }
+.tables-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.data-table { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+.data-table p { font-size: 11px; font-weight: 600; margin: 0 0 6px; }
+.data-table table { width: 100%; font-size: 11px; }
+.data-table td { padding: 3px 0; }
+.data-table td:first-child { color: var(--text2); }
+.data-table td:last-child { text-align: right; }
+.data-table tr.total { border-top: 1px solid var(--border); }
+.data-table tr.total td { padding-top: 5px; font-weight: 600; }
+.tag {
+  font-size: 9px; padding: 1px 5px; border-radius: 4px;
+  margin-left: 4px; font-weight: 600; vertical-align: 2px;
+}
+.t-stooq { background: rgba(168, 85, 247, 0.2); color: #c084fc; }
+.t-yahoo { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+.t-twse { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
+.t-tpex { background: rgba(168, 85, 247, 0.2); color: #c084fc; }
+.t-fm { background: rgba(16, 185, 129, 0.2); color: #34d399; }
+.welcome { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 32px 16px; text-align: center; }
+.welcome p { margin: 0; }
+.welcome p.main { font-size: 13px; color: var(--text2); }
+.welcome p.sub { font-size: 11px; color: var(--text3); margin-top: 6px; }
+.up { color: var(--r-up); }
+.down { color: var(--r-down); }
+.btn-row { display: flex; gap: 4px; }
+.section-hidden { display: none; }
+.modal-overlay {
+  display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.6); z-index: 100; align-items: center; justify-content: center;
+}
+.modal-overlay.show { display: flex; }
+.modal {
+  background: var(--bg2); border: 1px solid var(--border); border-radius: 8px;
+  padding: 20px; max-width: 800px; max-height: 80vh; overflow-y: auto; width: 90%;
+}
+.modal h3 { margin: 0 0 12px; font-size: 16px; }
+.modal pre {
+  background: var(--bg); padding: 12px; border-radius: 6px;
+  overflow-x: auto; font-size: 11px; max-height: 400px;
+}
+.modal-actions { margin-top: 12px; display: flex; gap: 8px; justify-content: flex-end; }
+@media (max-width: 720px) {
+  .macro-grid, .cards-grid { grid-template-columns: repeat(2, 1fr); }
+  .tables-grid { grid-template-columns: 1fr; }
+  .input-row { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="header">
+    <div>
+      <h1>台股分析儀表板</h1>
+      <p class="subtitle">Stooq · FinMind · Yahoo · 證交所 · 多源整合 · v5</p>
+    </div>
+    <div class="health">
+      <span class="health-dot" id="hdot"></span>
+      <span id="htext">系統檢查中</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">總經面板</span>
+      <button id="rmacro">重抓</button>
+    </div>
+    <div class="macro-grid">
+      <div class="macro-cell"><p class="ml">加權指數</p><p class="mv" id="mv-tw">—</p><p class="ms" id="ms-tw">—</p></div>
+      <div class="macro-cell"><p class="ml">櫃買指數</p><p class="mv" id="mv-otc">—</p><p class="ms" id="ms-otc">—</p></div>
+      <div class="macro-cell"><p class="ml">USD/TWD</p><p class="mv" id="mv-fx">—</p><p class="ms" id="ms-fx">—</p></div>
+      <div class="macro-cell"><p class="ml">DXY 美元指數</p><p class="mv" id="mv-dxy">—</p><p class="ms" id="ms-dxy">—</p></div>
+    </div>
+  </div>
+
+  <div class="card token-card unset" id="tokenCard">
+    <div class="token-line">
+      <span><strong>FinMind Token:</strong> <span id="tstate">未設定 (60 次/小時)</span></span>
+      <button id="ttoggle">設定</button>
+    </div>
+    <div class="token-input" id="tinput">
+      <p>Token 僅儲存於本機 localStorage,不會上傳任何伺服器。
+        <a href="https://finmindtrade.com/analysis/#/data/login" target="_blank">免費註冊 ↗</a>
+      </p>
+      <div style="display: flex; gap: 6px;">
+        <input type="password" id="tval" placeholder="貼上 token..." />
+        <button id="tsave" class="primary">儲存</button>
+        <button id="tclear" class="danger">清除</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="input-row">
+      <div>
+        <label>股票代號</label>
+        <input type="text" id="code" placeholder="2330" />
+      </div>
+      <div>
+        <label>名稱 (選填)</label>
+        <input type="text" id="name" placeholder="台積電" />
+      </div>
+      <button class="primary" id="fetch" style="height: 32px; padding: 0 20px;">抓取</button>
+    </div>
+    <div class="quick-buttons">
+      <span>範例:</span>
+      <button class="q" data-c="2330" data-n="台積電">2330 台積電</button>
+      <button class="q" data-c="2454" data-n="聯發科">2454 聯發科</button>
+      <button class="q" data-c="2317" data-n="鴻海">2317 鴻海</button>
+      <button class="q" data-c="6689" data-n="伊雲谷">6689 伊雲谷</button>
+      <button class="q" data-c="5289" data-n="宜鼎">5289 宜鼎</button>
+      <button class="q" data-c="8114" data-n="振樺電">8114 振樺電</button>
+      <button class="q" data-c="2451" data-n="創見">2451 創見</button>
+    </div>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <div id="section" class="section-hidden">
+    <div class="section-header">
+      <div>
+        <h2 class="stock-title" id="title"></h2>
+        <p class="stock-meta" id="meta"></p>
+      </div>
+      <div class="action-buttons">
+        <button id="bclaude">產生 Claude 指令</button>
+        <button id="bcsv">CSV</button>
+        <button id="bxlsx" class="primary">Excel</button>
+      </div>
+    </div>
+
+    <div class="completeness" id="cbar" style="display: none;"></div>
+
+    <div class="cards-grid" id="cards"></div>
+    <div class="tables-grid" id="tables"></div>
+  </div>
+
+  <div class="welcome" id="welcome">
+    <p class="main">輸入股票代號開始抓取資料</p>
+    <p class="sub">並行查詢 Stooq + 證交所 + FinMind + Yahoo,自動 fallback</p>
+  </div>
+
+</div>
+
+<div class="modal-overlay" id="modal">
+  <div class="modal">
+    <h3>Claude 分析指令 (已複製到剪貼簿)</h3>
+    <p style="font-size: 11px; color: var(--text2); margin: 0 0 8px;">
+      將下方內容貼到 Claude (claude.ai)、ChatGPT、或 Perplexity,即可進行七段深度分析。
+    </p>
+    <pre id="modalPrompt"></pre>
+    <div class="modal-actions">
+      <button id="modalCopy" class="primary">再次複製</button>
+      <button id="modalClose">關閉</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  // ============ 資料源設定 ============
+  const STOOQ = 'https://stooq.com/q/l/';
+  const FM = 'https://api.finmindtrade.com/api/v4/data';
+  const YH = 'https://query1.finance.yahoo.com/v8/finance/chart/';
+  const TWSE = 'https://openapi.twse.com.tw/v1';
+  const PROXIES = [
+    u => 'https://corsproxy.io/?' + encodeURIComponent(u),
+    u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+    u => 'https://api.codetabs.com/v1/proxy/?quest=' + u
+  ];
+
+  // ============ 狀態 ============
+  let cur = null;
+  let tk = localStorage.getItem('finmind_token') || '';
+  const health = { stooq: false, fm: false, yh: false, twse: false };
+
+  const $ = id => document.getElementById(id);
+
+  // ============ Token 管理 ============
+  function updTok() {
+    const c = $('tokenCard');
+    if (tk) {
+      $('tstate').textContent = '已設定 (600 次/小時)';
+      c.classList.remove('unset'); c.classList.add('set');
+    } else {
+      $('tstate').textContent = '未設定 (60 次/小時)';
+      c.classList.remove('set'); c.classList.add('unset');
+    }
+  }
+  updTok();
+
+  $('ttoggle').onclick = () => {
+    const r = $('tinput');
+    r.classList.toggle('show');
+    if (tk && r.classList.contains('show')) $('tval').value = '••••••••';
+  };
+  $('tsave').onclick = () => {
+    const v = $('tval').value.trim();
+    if (v && v !== '••••••••') {
+      tk = v;
+      localStorage.setItem('finmind_token', v);
+      updTok();
+      $('tinput').classList.remove('show');
+      stat('Token 已儲存', 'ok');
+    }
+  };
+  $('tclear').onclick = () => {
+    tk = ''; localStorage.removeItem('finmind_token');
+    $('tval').value = ''; updTok();
+    stat('Token 已清除', 'info');
+  };
+
+  // ============ 快速按鈕 ============
+  document.querySelectorAll('.q').forEach(b => {
+    b.onclick = () => { $('code').value = b.dataset.c; $('name').value = b.dataset.n; };
+  });
+
+  // ============ 工具函式 ============
+  function stat(msg, type) {
+    const el = $('status');
+    el.style.display = 'block';
+    el.textContent = msg;
+    el.className = 'status ' + type;
+  }
+  function n(v, dp) {
+    if (v === null || v === undefined || v === '' || v === 'N/D' || isNaN(parseFloat(v))) return null;
+    return parseFloat(v).toFixed(dp || 2);
+  }
+  function sn(v, dp) { const r = n(v, dp); return r === null ? 'N/A' : r; }
+  function intN(v) {
+    if (v === null || v === undefined || v === '' || isNaN(parseFloat(v))) return 'N/A';
+    return Math.round(parseFloat(v)).toLocaleString();
+  }
+  function dAgo(d) { const x = new Date(); x.setDate(x.getDate() - d); return x.toISOString().slice(0, 10); }
+  function today() { return new Date().toISOString().slice(0, 10); }
+
+  // ============ Proxy 機制 ============
+  async function viaProxy(url) {
+    for (const p of PROXIES) {
+      try {
+        const r = await fetch(p(url), { signal: AbortSignal.timeout(10000) });
+        if (r.ok) return r;
+      } catch (e) { continue; }
+    }
+    return null;
+  }
+  async function jsonProxy(url) {
+    const r = await viaProxy(url);
+    if (!r) return null;
+    try { return await r.json(); } catch (e) { return null; }
+  }
+  async function textProxy(url) {
+    const r = await viaProxy(url);
+    if (!r) return null;
+    try { return await r.text(); } catch (e) { return null; }
+  }
+
+  // ============ Stooq (直連,免 proxy!) ============
+  async function stooq(symbol) {
+    try {
+      const url = STOOQ + '?s=' + symbol + '&f=sd2t2ohlcv&h&e=csv';
+      const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) return null;
+      const text = await r.text();
+      const lines = text.trim().split('\n');
+      if (lines.length < 2) return null;
+      const headers = lines[0].split(',');
+      const values = lines[1].split(',');
+      const row = {};
+      headers.forEach((h, i) => row[h.trim()] = values[i] ? values[i].trim() : '');
+      if (row.Close && row.Close !== 'N/D') {
+        health.stooq = true;
+        return {
+          symbol,
+          date: row.Date,
+          time: row.Time,
+          open: parseFloat(row.Open),
+          high: parseFloat(row.High),
+          low: parseFloat(row.Low),
+          close: parseFloat(row.Close),
+          volume: parseInt(row.Volume) || 0
+        };
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  // ============ Yahoo (透過 proxy) ============
+  async function yh(sym) {
+    const data = await jsonProxy(YH + sym + '?interval=1d&range=2d');
+    const r = data && data.chart && data.chart.result && data.chart.result[0];
+    if (r && r.meta && r.meta.regularMarketPrice) {
+      health.yh = true;
+      return {
+        price: r.meta.regularMarketPrice,
+        prev: r.meta.chartPreviousClose,
+        high: r.meta.regularMarketDayHigh,
+        low: r.meta.regularMarketDayLow,
+        vol: r.meta.regularMarketVolume,
+        time: r.meta.regularMarketTime ? new Date(r.meta.regularMarketTime * 1000) : null
+      };
+    }
+    return null;
+  }
+
+  // ============ TWSE (透過 proxy) ============
+  async function twseDay(code) {
+    const all = await jsonProxy(TWSE + '/exchangeReport/STOCK_DAY_ALL');
+    if (all) { health.twse = true; return all.find(r => r.Code === code) || null; }
+    return null;
+  }
+  async function twseBwibbu(code) {
+    const all = await jsonProxy(TWSE + '/exchangeReport/BWIBBU_ALL');
+    return all ? (all.find(r => r.Code === code) || null) : null;
+  }
+  async function twseT86(code) {
+    const all = await jsonProxy(TWSE + '/fund/T86');
+    return all ? (all.find(r => r.Code === code) || null) : null;
+  }
+
+  // ============ FinMind (直連,有 CORS) ============
+  async function fm(ds, params) {
+    const qs = new URLSearchParams({ dataset: ds, ...params });
+    if (tk) qs.set('token', tk);
+    try {
+      const r = await fetch(FM + '?' + qs.toString(), { signal: AbortSignal.timeout(12000) });
+      if (!r.ok) return null;
+      const d = await r.json();
+      if (d.status === 200) health.fm = true;
+      return d;
+    } catch (e) { return null; }
+  }
+
+  // ============ 總經面板 ============
+  async function macro() {
+    document.querySelectorAll('.macro-cell .mv').forEach(e => e.textContent = '查詢中');
+    document.querySelectorAll('.macro-cell .ms').forEach(e => e.textContent = '');
+
+    const renderM = (id, data, src, fmt) => {
+      if (data && data.close) {
+        const open = data.open || data.close;
+        // Stooq 的 CSV 沒有「昨收」,用今日 open 對 close 不準,改顯示純價
+        $('mv-' + id).innerHTML = fmt === 'int' ? intN(data.close) : sn(data.close, fmt === 'fx' ? 3 : 2);
+        $('ms-' + id).textContent = src + ' · ' + (data.date || today());
+      } else {
+        $('mv-' + id).textContent = 'N/A'; $('ms-' + id).textContent = '無法取得';
+      }
+    };
+
+    // Stooq 對指數和外匯也有支援
+    const [tw, otc, fx, dxy] = await Promise.all([
+      stooq('^twse'),
+      stooq('^twot'),
+      stooq('usdtwd'),
+      stooq('^dxy')
+    ]);
+    renderM('tw', tw, 'Stooq', 'int');
+    renderM('otc', otc, 'Stooq', 'num');
+    renderM('fx', fx, 'Stooq', 'fx');
+    renderM('dxy', dxy, 'Stooq', 'num');
+
+    // Fallback: 如果 Stooq 失敗,試 Yahoo
+    if (!tw) {
+      const y = await yh('%5ETWII');
+      if (y) {
+        const chg = y.price - y.prev;
+        const pct = (chg / y.prev * 100);
+        const col = chg > 0 ? 'var(--r-up)' : chg < 0 ? 'var(--r-down)' : 'inherit';
+        $('mv-tw').innerHTML = `${intN(y.price)} <span style="font-size:10px;color:${col};">${chg > 0 ? '+' : ''}${pct.toFixed(2)}%</span>`;
+        $('ms-tw').textContent = 'Yahoo';
+      }
+    }
+
+    const okC = [tw, otc, fx, dxy].filter(x => x).length;
+    $('hdot').style.background = okC >= 3 ? 'var(--success)' : okC >= 1 ? 'var(--warning)' : 'var(--danger)';
+    $('htext').textContent = okC >= 3 ? '系統正常' : okC >= 1 ? '部分服務異常 (' + okC + '/4)' : 'Stooq 全失敗,可能網路問題';
+  }
+  $('rmacro').onclick = macro;
+  macro();
+
+  // ============ 多源抓股票 ============
+  async function fetchAll(code) {
+    const d = {
+      code, name: $('name').value || '', fetchDate: today(),
+      exchange: null, srcs: new Set(),
+      stooqTW: null, stooqTWO: null,
+      yhTW: null, yhTWO: null,
+      twseDay: null, twseBw: null, twseT86: null,
+      fmPrice: null, fmPER: null, fmInst: null,
+      revenue: [], margin: []
+    };
+
+    // Stooq 並行嘗試 .tw (上市) 和 .two (上櫃)
+    const [sTW, sTWO] = await Promise.all([stooq(code + '.tw'), stooq(code + '.two')]);
+    if (sTW) { d.stooqTW = sTW; d.exchange = 'TWSE'; d.srcs.add('Stooq'); }
+    else if (sTWO) { d.stooqTWO = sTWO; d.exchange = 'TPEx'; d.srcs.add('Stooq'); }
+
+    // Yahoo (補充)
+    const [yTW, yTWO] = await Promise.all([yh(code + '.TW'), yh(code + '.TWO')]);
+    if (yTW) { d.yhTW = yTW; if (!d.exchange) d.exchange = 'TWSE'; d.srcs.add('Yahoo'); }
+    else if (yTWO) { d.yhTWO = yTWO; if (!d.exchange) d.exchange = 'TPEx'; d.srcs.add('Yahoo'); }
+
+    // TWSE (若是上市才有資料)
+    if (!d.exchange || d.exchange === 'TWSE') {
+      const [q, bw, t86] = await Promise.all([twseDay(code), twseBwibbu(code), twseT86(code)]);
+      d.twseDay = q; d.twseBw = bw; d.twseT86 = t86;
+      if (q || bw || t86) { d.exchange = 'TWSE'; d.srcs.add('證交所'); }
+    }
+
+    // FinMind (直連,涵蓋上市+上櫃)
+    const [fmP, fmPER, fmInst, fmRev, fmMar] = await Promise.all([
+      fm('TaiwanStockPrice', { data_id: code, start_date: dAgo(7) }),
+      fm('TaiwanStockPER', { data_id: code, start_date: dAgo(7) }),
+      fm('TaiwanStockInstitutionalInvestorsBuySell', { data_id: code, start_date: dAgo(7) }),
+      fm('TaiwanStockMonthRevenue', { data_id: code, start_date: dAgo(450) }),
+      fm('TaiwanStockMarginPurchaseShortSale', { data_id: code, start_date: dAgo(15) })
+    ]);
+
+    if (fmP && fmP.data && fmP.data.length) {
+      d.fmPrice = fmP.data[fmP.data.length - 1]; d.srcs.add('FinMind');
+      if (!d.exchange) d.exchange = 'TPEx';
+    }
+    if (fmPER && fmPER.data && fmPER.data.length) d.fmPER = fmPER.data[fmPER.data.length - 1];
+    if (fmInst && fmInst.data && fmInst.data.length) {
+      const latest = fmInst.data[fmInst.data.length - 1].date;
+      d.fmInst = fmInst.data.filter(r => r.date === latest);
+    }
+    if (fmRev && fmRev.data && fmRev.data.length) {
+      const sorted = fmRev.data.slice().sort((a, b) => a.date.localeCompare(b.date));
+      const mapM = {}; sorted.forEach(r => { mapM[r.date.slice(0, 7)] = r; });
+      d.revenue = sorted.slice(-6).map(r => {
+        const dt = new Date(r.date);
+        const lastY = new Date(dt); lastY.setFullYear(lastY.getFullYear() - 1);
+        const pkey = lastY.toISOString().slice(0, 7);
+        return { date: r.date, revenue: r.revenue, prevYear: mapM[pkey] ? mapM[pkey].revenue : null };
+      });
+    }
+    if (fmMar && fmMar.data && fmMar.data.length) d.margin = fmMar.data.slice(-3);
+
+    return d;
+  }
+
+  // ============ 資料挑選 (優先級) ============
+  const tag = (text, cls) => `<span class="tag t-${cls}">${text}</span>`;
+
+  function pickPrice(d) {
+    if (d.yhTW || d.yhTWO) {
+      const y = d.yhTW || d.yhTWO;
+      return {
+        p: y.price, c: y.price - y.prev, s: 'Yahoo', sc: 'yahoo',
+        t: y.time ? y.time.toLocaleString('zh-TW', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '即時'
+      };
+    }
+    if (d.stooqTW || d.stooqTWO) {
+      const s = d.stooqTW || d.stooqTWO;
+      return { p: s.close, c: s.close - s.open, s: 'Stooq', sc: 'stooq', t: s.date + ' ' + (s.time || '') };
+    }
+    if (d.twseDay) {
+      return { p: parseFloat(d.twseDay.ClosingPrice), c: parseFloat(d.twseDay.Change), s: '證交所', sc: 'twse', t: '昨日收盤' };
+    }
+    if (d.fmPrice) {
+      return { p: parseFloat(d.fmPrice.close), c: parseFloat(d.fmPrice.spread || 0), s: 'FinMind', sc: 'fm', t: d.fmPrice.date };
+    }
+    return { p: null, c: null, s: '無', sc: 'twse', t: '' };
+  }
+
+  function pickVal(d) {
+    if (d.twseBw) return { pe: d.twseBw.PEratio, pb: d.twseBw.PBratio, y: d.twseBw.DividendYield, s: '證交所', sc: 'twse' };
+    if (d.fmPER) return { pe: d.fmPER.PER, pb: d.fmPER.PBR, y: d.fmPER.dividend_yield, s: 'FinMind', sc: 'fm' };
+    return { pe: null, pb: null, y: null, s: '無', sc: 'twse' };
+  }
+
+  function pickInst(d) {
+    if (d.twseT86) {
+      const t = d.twseT86;
+      return {
+        f: t.ForeignInvestorsExcludingForeignDealersNetBuySellShares || t.ForeignInvestorNetBuySellShares,
+        tr: t.InvestmentTrustsNetBuySellShares,
+        de: t.DealerNetBuySellShares,
+        tot: t.TotalNetBuySellShares, s: '證交所', sc: 'twse'
+      };
+    }
+    if (d.fmInst) {
+      let f = 0, tr = 0, de = 0;
+      d.fmInst.forEach(r => {
+        const net = (r.buy || 0) - (r.sell || 0);
+        const nm = (r.name || '').toLowerCase();
+        if (nm.includes('foreign')) f += net;
+        else if (nm.includes('investment_trust')) tr += net;
+        else if (nm.includes('dealer')) de += net;
+      });
+      return { f, tr, de, tot: f + tr + de, s: 'FinMind', sc: 'fm' };
+    }
+    return { f: null, tr: null, de: null, tot: null, s: '無', sc: 'twse' };
+  }
+
+  // ============ 渲染 ============
+  function render(d) {
+    $('welcome').style.display = 'none';
+    $('section').classList.remove('section-hidden');
+
+    const nm = d.name || (d.twseDay && d.twseDay.Name) || '';
+    $('title').innerHTML = d.code + ' ' + nm + (d.exchange ? ' <span class="tag t-' + (d.exchange === 'TPEx' ? 'tpex' : 'twse') + '">' + d.exchange + '</span>' : '');
+    $('meta').textContent = '抓取時間:' + new Date().toLocaleString('zh-TW') + ' · 資料源:' + Array.from(d.srcs).join(' + ');
+
+    const p = pickPrice(d), v = pickVal(d), i = pickInst(d);
+
+    let filled = 0; const total = 7;
+    if (p.p !== null) filled++;
+    if (v.pe !== null) filled++;
+    if (v.pb !== null) filled++;
+    if (v.y !== null) filled++;
+    if (i.f !== null) filled++;
+    if (d.revenue.length) filled++;
+    if (d.margin.length) filled++;
+    const pct = Math.round(filled / total * 100);
+
+    const cb = $('cbar');
+    cb.style.display = 'flex';
+    if (pct >= 70) { cb.className = 'completeness good'; cb.textContent = '✓ 資料完整度 ' + pct + '%'; }
+    else if (pct >= 40) { cb.className = 'completeness mid'; cb.textContent = '⚠ 資料完整度 ' + pct + '% — 部分來源失敗,可重抓或啟用 FinMind Token'; }
+    else { cb.className = 'completeness bad'; cb.textContent = '✕ 資料完整度 ' + pct + '% — 多數來源失敗,請啟用 FinMind Token 或稍後重試'; }
+
+    const cc = p.c > 0 ? 'up' : p.c < 0 ? 'down' : '';
+    const ppct = p.c && p.p ? (p.c / (p.p - p.c) * 100).toFixed(2) : null;
+
+    $('cards').innerHTML = `
+      <div class="data-card">
+        <p class="cl">股價 ${tag(p.s, p.sc)}</p>
+        <p class="cv">${p.p !== null ? sn(p.p) : 'N/A'}</p>
+        <p class="cx ${cc}">${p.c !== null ? (p.c > 0 ? '+' : '') + sn(p.c) + (ppct ? ' (' + (ppct > 0 ? '+' : '') + ppct + '%)' : '') : ''}</p>
+        <p style="font-size:9px;color:var(--text3);margin:2px 0 0;">${p.t}</p>
+      </div>
+      <div class="data-card"><p class="cl">本益比 ${tag(v.s, v.sc)}</p><p class="cv">${sn(v.pe)}</p></div>
+      <div class="data-card"><p class="cl">股價淨值比 ${tag(v.s, v.sc)}</p><p class="cv">${sn(v.pb)}</p></div>
+      <div class="data-card"><p class="cl">殖利率% ${tag(v.s, v.sc)}</p><p class="cv">${sn(v.y)}</p></div>
+    `;
+
+    let html = '';
+    html += `<div class="data-table"><p>三大法人 (張) ${i.f !== null ? tag(i.s, i.sc) : ''}</p>`;
+    if (i.f !== null) {
+      const fmt = v => {
+        if (v === null || v === undefined) return 'N/A';
+        const x = Math.round(parseFloat(v) / 1000);
+        const cl = x > 0 ? 'up' : x < 0 ? 'down' : '';
+        return `<span class="${cl}">${x > 0 ? '+' : ''}${x.toLocaleString()}</span>`;
+      };
+      html += `<table>
+        <tr><td>外資</td><td>${fmt(i.f)}</td></tr>
+        <tr><td>投信</td><td>${fmt(i.tr)}</td></tr>
+        <tr><td>自營商</td><td>${fmt(i.de)}</td></tr>
+        <tr class="total"><td>合計</td><td>${fmt(i.tot)}</td></tr>
+      </table>`;
+    } else {
+      html += `<p style="font-size:10px;color:var(--text3);margin:0;">資料尚未取得</p>`;
+    }
+    html += `</div>`;
+
+    html += `<div class="data-table"><p>近月營收年增 ${d.revenue.length ? tag('FinMind', 'fm') : ''}</p>`;
+    if (d.revenue.length) {
+      html += `<table>`;
+      d.revenue.slice(-4).reverse().forEach(r => {
+        let yoy = null;
+        if (r.prevYear && r.prevYear > 0 && r.revenue) {
+          yoy = (r.revenue - r.prevYear) / r.prevYear * 100;
+          if (Math.abs(yoy) > 999) yoy = null;
+        }
+        const cl = yoy > 0 ? 'up' : yoy < 0 ? 'down' : '';
+        html += `<tr>
+          <td>${r.date.slice(0, 7)}</td>
+          <td style="text-align:center;">${intN(r.revenue / 1000)}千</td>
+          <td class="${cl}" style="width:55px;">${yoy !== null ? (yoy > 0 ? '+' : '') + yoy.toFixed(1) + '%' : 'N/A'}</td>
+        </tr>`;
+      });
+      html += `</table>`;
+    } else {
+      html += `<p style="font-size:10px;color:var(--text3);margin:0;">需 FinMind Token 或額度</p>`;
+    }
+    html += `</div>`;
+    $('tables').innerHTML = html;
+
+    cur = { ...d, _nm: nm, _p: p, _v: v, _i: i };
+  }
+
+  // ============ 抓取按鈕 ============
+  $('fetch').onclick = async () => {
+    const code = $('code').value.trim();
+    if (!code) { stat('請輸入股票代號', 'err'); return; }
+    stat('並行抓取 Stooq + FinMind + Yahoo + 證交所... (5–15 秒)', 'load');
+    try {
+      const d = await fetchAll(code);
+      if (!d.stooqTW && !d.stooqTWO && !d.yhTW && !d.yhTWO && !d.twseDay && !d.fmPrice && !d.revenue.length) {
+        stat('所有來源失敗。建議: (1) 確認代號正確 (2) 啟用 FinMind Token (3) 稍後重試', 'err');
+        return;
+      }
+      render(d);
+      stat('完成 · 資料源: ' + Array.from(d.srcs).join(', '), 'ok');
+    } catch (e) {
+      stat('錯誤: ' + e.message, 'err');
+    }
+  };
+
+  // ============ Claude 指令 ============
+  $('bclaude').onclick = () => {
+    if (!cur) return;
+    const d = cur;
+    let block = `股票代號:${d.code}\n名稱:${d._nm}\n交易所:${d.exchange}\n抓取時間:${new Date().toLocaleString('zh-TW')}\n資料來源:${Array.from(d.srcs).join(', ')}\n\n`;
+    block += `【股價】來源:${d._p.s}\n收盤/即時價:${d._p.p}\n漲跌:${d._p.c}\n時點:${d._p.t}\n\n`;
+    block += `【估值】來源:${d._v.s}\nPE:${d._v.pe}\nPB:${d._v.pb}\n殖利率:${d._v.y}%\n\n`;
+    if (d._i.f !== null) {
+      block += `【三大法人 (股)】來源:${d._i.s}\n外資:${d._i.f}\n投信:${d._i.tr}\n自營商:${d._i.de}\n合計:${d._i.tot}\n\n`;
+    }
+    if (d.revenue.length) {
+      block += `【近月營收】\n`;
+      d.revenue.slice().reverse().forEach(r => {
+        let yoy = 'N/A';
+        if (r.prevYear && r.prevYear > 0) {
+          const v = (r.revenue - r.prevYear) / r.prevYear * 100;
+          if (Math.abs(v) < 999) yoy = v.toFixed(1) + '%';
+        }
+        block += `${r.date.slice(0, 7)}: ${r.revenue} (YoY ${yoy})\n`;
+      });
+    }
+    const prompt = `我已透過 Stooq + FinMind + Yahoo + 證交所 多源 API 抓到以下真實資料,請以這份資料為唯一基礎,用「台股深度分析指令 v2.0」的七段分析模板分析 ${d.code} ${d._nm}。
+
+【真實資料】
+${block}
+
+要求:
+1. 開頭執行【資料驗證強制條款】,標明已提供 vs 仍缺的資料
+2. 完整七段分析(總經、股價、基本面、籌碼、技術面、估值、結論),缺失一律標 N/A,絕不編造
+3. 第七段綜合結論用 Markdown 表格
+4. 報告最末加上「分析師自我檢查」四項
+5. 不使用 emoji、不使用情緒性詞彙
+6. 最末按 v2.0 規格輸出 [EXPORT_DATA_START] ~ [EXPORT_DATA_END]`;
+
+    $('modalPrompt').textContent = prompt;
+    $('modal').classList.add('show');
+    navigator.clipboard.writeText(prompt).then(() => stat('Claude 指令已複製到剪貼簿', 'ok'));
+  };
+  $('modalClose').onclick = () => $('modal').classList.remove('show');
+  $('modalCopy').onclick = () => {
+    navigator.clipboard.writeText($('modalPrompt').textContent).then(() => stat('再次複製成功', 'ok'));
+  };
+
+  // ============ 匯出 ============
+  function rows(d) {
+    return [
+      ['項目', '數值', '來源'],
+      ['股票代號', d.code, ''],
+      ['名稱', d._nm, ''],
+      ['交易所', d.exchange || 'N/A', ''],
+      ['抓取時間', new Date().toLocaleString('zh-TW'), ''],
+      ['股價', sn(d._p.p), d._p.s],
+      ['漲跌', d._p.c !== null ? sn(d._p.c) : 'N/A', d._p.s],
+      ['本益比', sn(d._v.pe), d._v.s],
+      ['股價淨值比', sn(d._v.pb), d._v.s],
+      ['殖利率%', sn(d._v.y), d._v.s],
+      ['外資(股)', d._i.f !== null ? d._i.f : 'N/A', d._i.s],
+      ['投信(股)', d._i.tr !== null ? d._i.tr : 'N/A', d._i.s],
+      ['自營商(股)', d._i.de !== null ? d._i.de : 'N/A', d._i.s]
+    ];
+  }
+
+  $('bcsv').onclick = () => {
+    if (!cur) return;
+    const r = rows(cur);
+    if (cur.revenue.length) {
+      r.push(['', '', '']); r.push(['月份', '營收(千)', 'YoY%']);
+      cur.revenue.slice().reverse().forEach(rev => {
+        let yoy = 'N/A';
+        if (rev.prevYear && rev.prevYear > 0) {
+          const v = (rev.revenue - rev.prevYear) / rev.prevYear * 100;
+          if (Math.abs(v) < 999) yoy = v.toFixed(1);
+        }
+        r.push([rev.date.slice(0, 7), Math.round(rev.revenue / 1000), yoy]);
+      });
+    }
+    const csv = '\ufeff' + r.map(x => x.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const u = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = u; a.download = `${cur.code}_${cur._nm}_${cur.fetchDate}.csv`; a.click();
+    URL.revokeObjectURL(u);
+  };
+
+  $('bxlsx').onclick = () => {
+    if (!cur || typeof XLSX === 'undefined') return;
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet(rows(cur));
+    ws['!cols'] = [{ wch: 18 }, { wch: 22 }, { wch: 12 }];
+    XLSX.utils.book_append_sheet(wb, ws, '基本資料');
+    if (cur.revenue.length) {
+      const rev = [['月份', '營收(千)', '去年同期(千)', 'YoY%']];
+      cur.revenue.slice().reverse().forEach(r => {
+        let yoy = 'N/A';
+        if (r.prevYear && r.prevYear > 0) {
+          const v = (r.revenue - r.prevYear) / r.prevYear * 100;
+          if (Math.abs(v) < 999) yoy = v.toFixed(1);
+        }
+        rev.push([r.date.slice(0, 7), Math.round(r.revenue / 1000), r.prevYear ? Math.round(r.prevYear / 1000) : 'N/A', yoy]);
+      });
+      const ws2 = XLSX.utils.aoa_to_sheet(rev);
+      ws2['!cols'] = [{ wch: 10 }, { wch: 14 }, { wch: 14 }, { wch: 10 }];
+      XLSX.utils.book_append_sheet(wb, ws2, '月營收');
+    }
+    XLSX.writeFile(wb, `${cur.code}_${cur._nm}_${cur.fetchDate}.xlsx`);
+  };
+})();
+</script>
+</body>
+</html>
