@@ -138,8 +138,104 @@ A: 部分台灣 ISP (尤其是中華電信) 偶爾會封鎖 stooq.com。可以�
 
 ## 📝 版本記錄
 
-- **v5** (當前):加入 Stooq 做為主力資料源,免 proxy 也能用;改進月營收 YoY 計算邏輯
+- **v5.1** (當前):股票名稱可搜尋、抓取失敗自動清空、總經面板 Yahoo+Stooq 雙 fallback
+- **v5**:加入 Stooq 做為主力資料源,免 proxy 也能用;改進月營收 YoY 計算邏輯
 - **v4**:多 proxy fallback、資料完整度顯示
 - **v3**:加入上櫃股票支援、總經面板
 - **v2**:加入 FinMind 整合
 - **v1**:初版,僅證交所 OpenAPI
+
+---
+
+## 🔄 GitHub 版本控制流程 (新增)
+
+部署到 GitHub Pages 後,當你想更新內容 (例如新增股票到資料庫、改 UI),有兩種做法:
+
+### 方式 A: 網頁直接編輯 (最簡單)
+
+適合小修改 (改文字、調顏色、加股票到名單):
+
+1. 進入你的 repo 頁面
+2. 點選 `index.html`
+3. 右上角點鉛筆圖示「Edit this file」
+4. 修改後拉到底部,寫提交訊息 (例如 `加入 2912 統一超`)
+5. 點 `Commit changes`
+6. 等 1-2 分鐘,網站自動更新
+
+### 方式 B: 完整版本控制 (推薦長期使用)
+
+需要安裝 Git 工具 (一次性):
+
+**Windows**: https://git-scm.com/download/win
+**Mac**: 終端機輸入 `git --version` 會自動安裝
+
+```bash
+# 第一次設定 (只做一次)
+git config --global user.name "你的名字"
+git config --global user.email "你的Email"
+
+# 把線上 repo 抓下來
+git clone https://github.com/你的帳號/tw-stock-dashboard.git
+cd tw-stock-dashboard
+
+# === 平時改檔案的流程 ===
+
+# 1. 編輯 index.html (用你習慣的編輯器)
+
+# 2. 看改了什麼
+git status
+git diff
+
+# 3. 提交變更
+git add index.html
+git commit -m "改善總經面板 fallback 邏輯"
+
+# 4. 推上去 (網站會自動更新)
+git push
+
+# === 看歷史 / 還原版本 ===
+
+# 看所有改動歷史
+git log --oneline
+
+# 還原到上一版 (萬一改壞了)
+git revert HEAD
+git push
+
+# 跳到特定版本
+git checkout <commit_hash>
+```
+
+### 進階:用「分支」測試新功能
+
+```bash
+# 建立測試分支
+git checkout -b new-feature
+
+# 改完測試 OK 之後合併
+git checkout main
+git merge new-feature
+git push
+```
+
+### 用 GitHub Desktop 圖形化介面
+
+如果不想記指令,下載 GitHub Desktop:https://desktop.github.com
+
+優點:點按鈕就能 commit、push、查看歷史、還原版本,**完全不用碰命令列**。
+
+### 為什麼要做版本控制?
+
+- ✅ 改壞了可以一鍵還原
+- ✅ 看得到每次改了什麼、什麼時候改的
+- ✅ 可以同時開發多個版本 (分支)
+- ✅ 換電腦也能繼續開發
+- ✅ 萬一網站被 hack 或誤刪,Git 歷史是完整備份
+
+---
+
+## 💡 推薦的更新節奏
+
+- **小修改 (改文字、加股票)**:用方式 A 直接網頁編輯
+- **改 UI / 加功能**:用方式 B,本機改完測試 OK 再推上去
+- **重大改版**:先開分支測試,確定穩定再合併到 main

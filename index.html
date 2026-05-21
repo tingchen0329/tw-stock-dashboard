@@ -193,16 +193,13 @@ input:focus { outline: none; border-color: var(--primary); }
   </div>
 
   <div class="card">
-    <div class="input-row">
-      <div>
-        <label>股票代號</label>
-        <input type="text" id="code" placeholder="2330" />
+    <div style="position: relative;">
+      <label style="font-size: 11px; color: var(--text2); display: block; margin-bottom: 4px;">股票代號 或 公司名稱</label>
+      <div style="display: flex; gap: 8px; align-items: stretch;">
+        <input type="text" id="search" placeholder="例如:2330 或 台積電" style="flex: 1;" autocomplete="off" />
+        <button class="primary" id="fetch" style="height: 32px; padding: 0 20px;">抓取</button>
       </div>
-      <div>
-        <label>名稱 (選填)</label>
-        <input type="text" id="name" placeholder="台積電" />
-      </div>
-      <button class="primary" id="fetch" style="height: 32px; padding: 0 20px;">抓取</button>
+      <div id="suggest" style="display:none; position: absolute; top: 100%; left: 0; right: 90px; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; margin-top: 2px; max-height: 280px; overflow-y: auto; z-index: 50; box-shadow: 0 4px 12px rgba(0,0,0,0.3);"></div>
     </div>
     <div class="quick-buttons">
       <span>範例:</span>
@@ -312,9 +309,142 @@ input:focus { outline: none; border-color: var(--primary); }
     stat('Token 已清除', 'info');
   };
 
+  // ============ 股票對照表 (代號 ↔ 名稱) ============
+  const STOCK_DB = [
+    // 半導體
+    ['2330','台積電'],['2454','聯發科'],['2303','聯電'],['2308','台達電'],['2344','華邦電'],
+    ['2360','致茂'],['2379','瑞昱'],['2383','台光電'],['2408','南亞科'],['3034','聯詠'],
+    ['3035','智原'],['3037','欣興'],['3189','景碩'],['3443','創意'],['3711','日月光投控'],
+    ['5269','祥碩'],['6239','力成'],['6488','環球晶'],['8046','南電'],['8081','致新'],
+    ['2371','大同'],['3450','聯鈞'],['6510','精測'],['5347','世界'],['2329','華泰'],
+    // AI / 伺服器
+    ['2317','鴻海'],['2356','英業達'],['2382','廣達'],['3231','緯創'],['6669','緯穎'],
+    ['2376','技嘉'],['2353','宏碁'],['2357','華碩'],['3017','奇鋐'],['2049','上銀'],
+    ['6515','穎崴'],['5371','中光電'],['3653','健策'],['8210','勤誠'],['6477','安集'],
+    // 通訊網路
+    ['2412','中華電'],['3045','台灣大'],['4904','遠傳'],['2345','智邦'],['3596','智易'],
+    ['3704','合勤控'],['2486','一詮'],
+    // 記憶體與儲存
+    ['2451','創見'],['3260','威剛'],['8210','勤誠'],['5289','宜鼎'],['8261','富鼎'],
+    // 工業電腦 / 自動化
+    ['8114','振樺電'],['3231','緯創'],['2349','錸德'],['6166','凌華'],['3357','台灣晶技'],
+    ['2474','可成'],['1909','榮成'],['8155','博智'],
+    // 雲端 / 軟體
+    ['6689','伊雲谷'],['6491','晶碩'],['8064','東捷'],['6531','愛普'],
+    // 金融
+    ['2880','華南金'],['2881','富邦金'],['2882','國泰金'],['2883','開發金'],['2884','玉山金'],
+    ['2885','元大金'],['2886','兆豐金'],['2887','台新金'],['2888','新光金'],['2890','永豐金'],
+    ['2891','中信金'],['2892','第一金'],['5871','中租-KY'],['5876','上海商銀'],['5880','合庫金'],
+    ['6005','群益證'],['2823','中壽'],
+    // 傳產 / 鋼鐵 / 化工
+    ['1101','台泥'],['1102','亞泥'],['1216','統一'],['1301','台塑'],['1303','南亞'],
+    ['1326','台化'],['2002','中鋼'],['2105','正新'],['1402','遠東新'],['1907','永豐餘'],
+    ['1605','華新'],['2618','長榮航'],['2603','長榮'],['2609','陽明'],['2615','萬海'],
+    // 電力 / 重電 / 綠能
+    ['1519','華城'],['1503','士電'],['1504','東元'],['1513','中興電'],['1514','亞力'],
+    ['1409','新纖'],['8112','至上'],
+    // 觀光 / 零售
+    ['2912','統一超'],['2207','和泰車'],['9904','寶成'],['9914','美利達'],['9921','巨大'],
+    // 生技醫療
+    ['1789','神隆'],['4174','浩鼎'],['1707','葡萄王'],['1736','喬山'],['4123','晟德'],
+    // 資源回收 / 利基
+    ['7610','聯友金屬'],
+    // 重要 ETF
+    ['0050','元大台灣50'],['0056','元大高股息'],['00878','國泰永續高股息'],
+    ['00919','群益台灣精選高息'],['00713','元大台灣高息低波'],['006208','富邦台50'],
+    ['00929','復華台灣科技優息'],['00940','元大台灣價值高息'],['00939','統一台灣高息動能'],
+    ['00891','中信關鍵半導體'],['00893','國泰智能電動車'],['00692','富邦公司治理'],
+    ['00679B','元大美債20年'],['00687B','國泰20年美債'],['00772B','中信高評級公司債']
+  ];
+
+  function findStocks(query) {
+    if (!query) return [];
+    const q = query.trim().toLowerCase();
+    if (!q) return [];
+    const isCode = /^\d/.test(q);
+    return STOCK_DB.filter(([code, name]) => {
+      if (isCode) return code.startsWith(q);
+      return name.includes(query.trim()) || name.toLowerCase().includes(q);
+    }).slice(0, 8);
+  }
+
+  // ============ 智慧搜尋輸入 ============
+  const searchInput = $('search');
+  const suggestBox = $('suggest');
+  let resolvedCode = null;
+  let resolvedName = null;
+
+  function showSuggest(list) {
+    if (!list.length) { suggestBox.style.display = 'none'; return; }
+    suggestBox.innerHTML = list.map(([c, n]) => 
+      `<div class="suggest-item" data-c="${c}" data-n="${n}" style="padding: 8px 12px; cursor: pointer; font-size: 12px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between;">
+        <span><strong style="color: var(--primary);">${c}</strong> ${n}</span>
+        <span style="color: var(--text3); font-size: 10px;">↵ 選取</span>
+      </div>`
+    ).join('');
+    suggestBox.style.display = 'block';
+    suggestBox.querySelectorAll('.suggest-item').forEach(item => {
+      item.onmouseover = () => item.style.background = 'var(--bg2)';
+      item.onmouseout = () => item.style.background = '';
+      item.onclick = () => {
+        selectStock(item.dataset.c, item.dataset.n);
+      };
+    });
+  }
+
+  function selectStock(code, name) {
+    resolvedCode = code;
+    resolvedName = name;
+    searchInput.value = code + ' ' + name;
+    suggestBox.style.display = 'none';
+  }
+
+  function parseSearch() {
+    const v = searchInput.value.trim();
+    if (!v) return null;
+    // 如果是 "2330 台積電" 格式
+    const m = v.match(/^(\d{4,6})\s*(.*)$/);
+    if (m) return { code: m[1], name: m[2] || (STOCK_DB.find(s => s[0] === m[1])?.[1] || '') };
+    // 否則用名稱反查
+    const found = STOCK_DB.find(([c, n]) => n === v);
+    if (found) return { code: found[0], name: found[1] };
+    // 模糊比對第一個
+    const fuzzy = findStocks(v);
+    if (fuzzy.length === 1) return { code: fuzzy[0][0], name: fuzzy[0][1] };
+    if (fuzzy.length > 1) return null;
+    // 純數字當代號
+    if (/^\d{4,6}$/.test(v)) return { code: v, name: '' };
+    return null;
+  }
+
+  searchInput.oninput = () => {
+    const v = searchInput.value.trim();
+    if (v.length < 1) { suggestBox.style.display = 'none'; return; }
+    showSuggest(findStocks(v));
+  };
+  searchInput.onfocus = () => {
+    if (searchInput.value.trim()) showSuggest(findStocks(searchInput.value.trim()));
+  };
+  searchInput.onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      const items = suggestBox.querySelectorAll('.suggest-item');
+      if (items.length === 1 && suggestBox.style.display !== 'none') {
+        selectStock(items[0].dataset.c, items[0].dataset.n);
+        return;
+      }
+      $('fetch').click();
+    }
+    if (e.key === 'Escape') suggestBox.style.display = 'none';
+  };
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#search') && !e.target.closest('#suggest')) {
+      suggestBox.style.display = 'none';
+    }
+  });
+
   // ============ 快速按鈕 ============
   document.querySelectorAll('.q').forEach(b => {
-    b.onclick = () => { $('code').value = b.dataset.c; $('name').value = b.dataset.n; };
+    b.onclick = () => { selectStock(b.dataset.c, b.dataset.n); };
   });
 
   // ============ 工具函式 ============
@@ -438,52 +568,60 @@ input:focus { outline: none; border-color: var(--primary); }
     document.querySelectorAll('.macro-cell .mv').forEach(e => e.textContent = '查詢中');
     document.querySelectorAll('.macro-cell .ms').forEach(e => e.textContent = '');
 
-    const renderM = (id, data, src, fmt) => {
-      if (data && data.close) {
-        const open = data.open || data.close;
-        // Stooq 的 CSV 沒有「昨收」,用今日 open 對 close 不準,改顯示純價
-        $('mv-' + id).innerHTML = fmt === 'int' ? intN(data.close) : sn(data.close, fmt === 'fx' ? 3 : 2);
-        $('ms-' + id).textContent = src + ' · ' + (data.date || today());
-      } else {
-        $('mv-' + id).textContent = 'N/A'; $('ms-' + id).textContent = '無法取得';
+    const renderYahoo = (id, data, prefix) => {
+      if (data && data.price) {
+        const chg = data.price - data.prev;
+        const pct = (chg / data.prev * 100);
+        const col = chg > 0 ? 'var(--r-up)' : chg < 0 ? 'var(--r-down)' : 'inherit';
+        const priceStr = prefix === 'int' ? intN(data.price) : sn(data.price, prefix === 'fx' ? 3 : 2);
+        $('mv-' + id).innerHTML = `${priceStr} <span style="font-size:10px;color:${col};">${chg > 0 ? '+' : ''}${pct.toFixed(2)}%</span>`;
+        $('ms-' + id).textContent = 'Yahoo';
+        return true;
       }
+      return false;
+    };
+    const renderStooq = (id, data, prefix) => {
+      if (data && data.close) {
+        const priceStr = prefix === 'int' ? intN(data.close) : sn(data.close, prefix === 'fx' ? 3 : 2);
+        $('mv-' + id).innerHTML = priceStr;
+        $('ms-' + id).textContent = 'Stooq · ' + (data.date || today());
+        return true;
+      }
+      return false;
     };
 
-    // Stooq 對指數和外匯也有支援
-    const [tw, otc, fx, dxy] = await Promise.all([
+    // 並行同時抓 Yahoo + Stooq,擇優顯示
+    const [yTW, yOTC, yFX, yDXY, sTW, sOTC, sFX, sDXY] = await Promise.all([
+      yh('%5ETWII'),  // 加權指數
+      yh('%5ETWOII'), // 櫃買指數
+      yh('USDTWD%3DX'), // 匯率
+      yh('DX-Y.NYB'),   // DXY
       stooq('^twse'),
       stooq('^twot'),
       stooq('usdtwd'),
       stooq('^dxy')
     ]);
-    renderM('tw', tw, 'Stooq', 'int');
-    renderM('otc', otc, 'Stooq', 'num');
-    renderM('fx', fx, 'Stooq', 'fx');
-    renderM('dxy', dxy, 'Stooq', 'num');
 
-    // Fallback: 如果 Stooq 失敗,試 Yahoo
-    if (!tw) {
-      const y = await yh('%5ETWII');
-      if (y) {
-        const chg = y.price - y.prev;
-        const pct = (chg / y.prev * 100);
-        const col = chg > 0 ? 'var(--r-up)' : chg < 0 ? 'var(--r-down)' : 'inherit';
-        $('mv-tw').innerHTML = `${intN(y.price)} <span style="font-size:10px;color:${col};">${chg > 0 ? '+' : ''}${pct.toFixed(2)}%</span>`;
-        $('ms-tw').textContent = 'Yahoo';
-      }
-    }
+    let okCount = 0;
+    if (renderYahoo('tw', yTW, 'int') || renderStooq('tw', sTW, 'int')) okCount++;
+    else { $('mv-tw').textContent = 'N/A'; $('ms-tw').textContent = '無法取得'; }
+    if (renderYahoo('otc', yOTC, 'num') || renderStooq('otc', sOTC, 'num')) okCount++;
+    else { $('mv-otc').textContent = 'N/A'; $('ms-otc').textContent = '無法取得'; }
+    if (renderYahoo('fx', yFX, 'fx') || renderStooq('fx', sFX, 'fx')) okCount++;
+    else { $('mv-fx').textContent = 'N/A'; $('ms-fx').textContent = '無法取得'; }
+    if (renderYahoo('dxy', yDXY, 'num') || renderStooq('dxy', sDXY, 'num')) okCount++;
+    else { $('mv-dxy').textContent = 'N/A'; $('ms-dxy').textContent = '無法取得'; }
 
-    const okC = [tw, otc, fx, dxy].filter(x => x).length;
-    $('hdot').style.background = okC >= 3 ? 'var(--success)' : okC >= 1 ? 'var(--warning)' : 'var(--danger)';
-    $('htext').textContent = okC >= 3 ? '系統正常' : okC >= 1 ? '部分服務異常 (' + okC + '/4)' : 'Stooq 全失敗,可能網路問題';
+    $('hdot').style.background = okCount >= 3 ? 'var(--success)' : okCount >= 1 ? 'var(--warning)' : 'var(--danger)';
+    $('htext').textContent = okCount >= 3 ? '系統正常 (' + okCount + '/4)' : okCount >= 1 ? '部分服務異常 (' + okCount + '/4)' : '所有總經來源失敗';
   }
   $('rmacro').onclick = macro;
   macro();
 
   // ============ 多源抓股票 ============
-  async function fetchAll(code) {
+  async function fetchAll(code, name) {
     const d = {
-      code, name: $('name').value || '', fetchDate: today(),
+      code, name: name || '', fetchDate: today(),
       exchange: null, srcs: new Set(),
       stooqTW: null, stooqTWO: null,
       yhTW: null, yhTWO: null,
@@ -685,19 +823,38 @@ input:focus { outline: none; border-color: var(--primary); }
   }
 
   // ============ 抓取按鈕 ============
+  function clearResults() {
+    cur = null;
+    $('section').classList.add('section-hidden');
+    $('welcome').style.display = 'block';
+  }
+
   $('fetch').onclick = async () => {
-    const code = $('code').value.trim();
-    if (!code) { stat('請輸入股票代號', 'err'); return; }
+    const parsed = parseSearch();
+    if (!parsed) {
+      const items = findStocks(searchInput.value.trim());
+      if (items.length > 1) {
+        stat('找到多筆相符,請點選下方建議清單', 'info');
+        showSuggest(items);
+      } else {
+        stat('請輸入股票代號或公司名稱', 'err');
+      }
+      return;
+    }
+    const { code, name } = parsed;
     stat('並行抓取 Stooq + FinMind + Yahoo + 證交所... (5–15 秒)', 'load');
+    suggestBox.style.display = 'none';
     try {
-      const d = await fetchAll(code);
+      const d = await fetchAll(code, name);
       if (!d.stooqTW && !d.stooqTWO && !d.yhTW && !d.yhTWO && !d.twseDay && !d.fmPrice && !d.revenue.length) {
-        stat('所有來源失敗。建議: (1) 確認代號正確 (2) 啟用 FinMind Token (3) 稍後重試', 'err');
+        clearResults();
+        stat('代號 ' + code + ' 所有來源都查無資料。建議: (1) 確認代號正確 (2) 啟用 FinMind Token (3) 稍後重試', 'err');
         return;
       }
       render(d);
-      stat('完成 · 資料源: ' + Array.from(d.srcs).join(', '), 'ok');
+      stat('完成 · ' + code + ' ' + (d.name || name) + ' · 資料源: ' + Array.from(d.srcs).join(', '), 'ok');
     } catch (e) {
+      clearResults();
       stat('錯誤: ' + e.message, 'err');
     }
   };
