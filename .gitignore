@@ -1,0 +1,16 @@
+# 建置輸出（由 GitHub Actions 或 scripts/preview.sh 產生，不進版控）
+_site/
+data/
+
+# Python / Node
+__pycache__/
+*.pyc
+node_modules/
+
+# 本機環境：token 只能放在環境變數或 .env，永遠不 commit
+.env
+.env.*
+
+# 系統
+.DS_Store
+Thumbs.db

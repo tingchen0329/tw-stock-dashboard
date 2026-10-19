@@ -1,0 +1,9 @@
+# 每月自動檢查 GitHub Actions 版本（例如 actions/checkout 出新版時開 PR）。免費。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: "ci"

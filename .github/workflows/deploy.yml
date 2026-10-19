@@ -1,0 +1,98 @@
+# ─────────────────────────────────────────────────────────────────────
+# 更新資料並部署到 GitHub Pages
+#
+# FinMind token 的安全流向：
+#   GitHub Secrets (FINMIND_TOKEN)
+#     → 只在「Fetch data」這一步以環境變數提供給 Python
+#     → Python 把 token 放在 HTTP header 呼叫 FinMind
+#     → 輸出不含 token 的 JSON（腳本最後會掃描確認，發現 token 就中止）
+#     → 部署靜態網站
+#   網頁瀏覽器永遠拿不到 token。
+#
+# 一次性設定（見 docs/SETUP.md）：
+#   1. Settings → Secrets and variables → Actions → New repository secret
+#      Name: FINMIND_TOKEN   Value: 你的 FinMind token
+#   2. Settings → Pages → Build and deployment → Source: GitHub Actions
+# ─────────────────────────────────────────────────────────────────────
+name: Update data & deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:          # Actions 頁面可手動按「Run workflow」
+  schedule:
+    # cron 用 UTC；台北 = UTC+8。分鐘刻意避開整點（GitHub 整點排程最擁擠，常延遲）
+    - cron: "12 1-5 * * 1-5"  # 台北 09:12–13:12 盤中每小時（Yahoo 盤中價，約延遲 20 分）
+    - cron: "47 5 * * 1-5"    # 台北 13:47 收盤後
+    - cron: "23 8 * * 1-5"    # 台北 16:23 三大法人公布後
+    - cron: "37 11 * * 1-5"   # 台北 19:37 晚間補抓（融資券、月營收等較晚公布的資料）
+
+permissions:
+  contents: read              # 只讀程式碼；資料不 commit 回 repo，歷史紀錄保持乾淨
+  pages: write
+  id-token: write
+
+concurrency:                  # 同時只跑一個部署，避免舊資料覆蓋新資料
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Unit tests
+        run: |
+          python -m unittest discover -s tests/py
+          node --test "tests/js/*.test.mjs"
+
+      - name: Assemble static site
+        run: |
+          mkdir -p _site
+          cp -r index.html assets _site/
+          touch _site/.nojekyll
+
+      - name: Fetch data (FinMind token from Secrets)
+        env:
+          FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+        run: python scripts/fetch_data.py --out _site/data
+
+      - name: Summary
+        if: always()
+        run: |
+          python - <<'EOF' >> "$GITHUB_STEP_SUMMARY"
+          import json, pathlib
+          p = pathlib.Path("_site/data/meta.json")
+          if not p.exists():
+              print("## 資料抓取失敗：沒有產生 meta.json"); raise SystemExit
+          m = json.loads(p.read_text())
+          print(f"## 資料更新 {m['generatedAt']}")
+          print(f"FinMind token：{'已使用' if m['tokenUsed'] else '未設定（匿名額度）'}，請求數 {m['finmindRequests']}\n")
+          print("| 來源 | 狀態 | 筆數 | 耗時 | 備註 |\n|---|---|---|---|---|")
+          for k, s in m["sources"].items():
+              print(f"| {k} | {'✅' if s['ok'] else '❌'} | {s['rows']} | {s['ms']} ms | {s.get('note','')} |")
+          EOF
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
