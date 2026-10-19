@@ -1,241 +1,138 @@
-# 台股分析儀表板 v5
+# 台股研究台 (tw-stock-dashboard) v6
 
-> 一個可長期使用的台股即時資料查詢與分析工具。
-> 整合 Stooq、FinMind、Yahoo、證交所多源資料,搭配 Claude AI 進行深度分析。
+個人台股研究儀表板：全市場搜尋、追蹤清單、技術指標、本益比河流圖、月營收、籌碼與財報，
+一鍵產生給 Claude 的深度分析指令，可匯出 CSV / Excel。
 
----
+**網站**：https://tingchen0329.github.io/tw-stock-dashboard/
 
-## ✨ 功能特色
+![淺色模式（示範資料）](docs/screenshot-light.webp)
 
-- 📊 **即時行情**:股價、本益比、股價淨值比、殖利率
-- 👥 **三大法人**:外資、投信、自營商買賣超
-- 📈 **基本面**:近 6 個月月營收、年增率
-- 💱 **總經面板**:加權指數、櫃買指數、USD/TWD、DXY 美元指數
-- 🤖 **Claude AI 整合**:一鍵產生七段深度分析指令
-- 📥 **匯出**:CSV / Excel 下載
-- 🔄 **多源 Fallback**:任一資料源失敗自動切換
-- 🔒 **隱私**:Token 只存本機 localStorage,不上傳
+## 架構
 
----
+```mermaid
+flowchart LR
+  S[(GitHub Secrets<br/>FINMIND_TOKEN)] -. 環境變數 .-> A
+  subgraph GitHub Actions（排程 / push）
+    A[scripts/fetch_data.py] --> J[_site/data/*.json<br/>不含 token]
+  end
+  T[證交所 / 櫃買 OpenAPI] --> A
+  F[FinMind API] --> A
+  Y[Yahoo Finance] --> A
+  J --> P[GitHub Pages]
+  P --> B[瀏覽器]
+  B -. 清單外股票<br/>免 token 即時查詢 .-> F
+```
 
-## 🚀 快速開始 (本機使用)
+- **token 永遠不進瀏覽器**：只存在 GitHub Secrets，由 Actions 在伺服器端使用（[原因與設定](docs/SETUP.md)）
+- **全市場資料**（證交所 + 櫃買）伺服器端抓好，不再依賴不穩定的公共 CORS proxy
+- **追蹤清單**（`config/watchlist.json`）用 FinMind token 預抓 3 年完整資料
+- **清單外股票**仍可搜尋，網頁用 FinMind 免 token 額度即時查詢
 
-最簡單的方式:**雙擊 `index.html`** 用瀏覽器開啟,立刻就能用。
+## 開始使用
 
-但建議搭配 FinMind Token 取得最完整資料:
+1. **Settings → Secrets and variables → Actions** 新增 `FINMIND_TOKEN`
+2. **Settings → Pages → Source** 選 **GitHub Actions**
+3. **Actions → Update data & deploy → Run workflow**
 
-1. 前往 https://finmindtrade.com/analysis/#/data/login 免費註冊
-2. 在會員中心取得 token
-3. 開啟儀表板 → 點 Token 區塊「設定」→ 貼上 token
-4. Token 會儲存在你的瀏覽器,**不會經過任何第三方伺服器**
+詳細步驟與疑難排解：[docs/SETUP.md](docs/SETUP.md)
 
----
+## 功能
 
-## 🌐 部署到免費網站 (三選一)
+| 區塊 | 內容 | 資料來源 |
+|---|---|---|
+| 搜尋 | 代號、名稱、部分名稱、全形數字、臺/台、產業別；`/` 快速聚焦、↑↓ Enter | FinMind TaiwanStockInfo |
+| 報價與估值 | 收盤 / 盤中價、本益比、股價淨值比、殖利率、三大法人 | 證交所、櫃買、Yahoo |
+| 技術面 | MA5/20/60/240、均線排列、KD、RSI、MACD、量比、區間報酬、價格位階、前高前低 | FinMind（3 年日線） |
+| 估值 | 本益比河流圖（近 3 年 10/25/50/75/90 百分位） | FinMind PER |
+| 基本面 | 月營收年增 / 月增 / 累計、近四季 EPS、三率、ROE、ROA、負債比、流動比 | FinMind |
+| 籌碼 | 法人 5 / 20 日、外資連續買賣、外資持股比例、融資券、券資比 | FinMind |
+| 總經 | 加權、櫃買、美元/台幣、美元指數、美債 10 年、黃金、費半、Fed 利率 | Yahoo、FinMind |
+| 輸出 | 分析指令（深度分析 v2.0）、CSV、Excel（5 個工作表） | — |
 
-### 方案 A: GitHub Pages (最推薦)
+## FinMind Skill 與 AI 分析
 
-**優點:** 永久免費、有自己的網址、可隨時更新
-
-**步驟:**
-
-1. 註冊 GitHub 帳號:https://github.com/signup
-2. 點右上 `+` → New Repository
-3. Repository name 填:`tw-stock-dashboard` (或任何你想要的名字)
-4. 勾選 `Public`,點 Create repository
-5. 在新建的 repo 頁面,點 `uploading an existing file`
-6. 把 `index.html` 拖進去 → 點 `Commit changes`
-7. 點上方 `Settings` → 左側 `Pages`
-8. Source 選 `Deploy from a branch`,Branch 選 `main` / `/(root)` → Save
-9. 等 1-2 分鐘,頁面會出現網址:`https://你的帳號.github.io/tw-stock-dashboard/`
-10. 完成!以後直接用這個網址開啟,手機也能用
-
-### 方案 B: Netlify (拖拉部署最快)
-
-**優點:** 部署最簡單,3 分鐘搞定
-
-**步驟:**
-
-1. 註冊 Netlify:https://app.netlify.com/signup (可用 GitHub 帳號登入)
-2. 登入後,在主畫面找到「Drag and drop your site folder here」區塊
-3. 把整個包含 `index.html` 的資料夾拖進去
-4. 自動部署完成,給你一個網址例如:`https://random-name-12345.netlify.app`
-5. 可以在 Site settings → Change site name 改成你想要的名字
-
-### 方案 C: Vercel
-
-**優點:** 速度快,介面好看
-
-**步驟:**
-
-1. 註冊 Vercel:https://vercel.com/signup
-2. 用 GitHub 帳號登入
-3. 先把 `index.html` 上傳到一個 GitHub repo (參考方案 A 的 1-6 步)
-4. 在 Vercel 主畫面點 `Add New...` → `Project`
-5. 選擇剛剛建立的 repo → Import → Deploy
-6. 完成,自動給網址
-
----
-
-## 📚 資料來源與限制
-
-| 資料源 | 涵蓋內容 | CORS | 免費額度 |
+| 用法 | 環境 | 怎麼用 | 費用 |
 |---|---|---|---|
-| **Stooq** (主力) | 股價、成交量、指數、外匯 | ✅ 直連 | 無限制 |
-| **FinMind** | 月營收、財報、籌碼、技術指標 | ✅ 直連 | 60-600 次/小時 |
-| **Yahoo Finance** | 即時報價 | ❌ 需 proxy | 不穩定 |
-| **證交所 OpenAPI** | PE、PB、殖利率、三大法人 | ❌ 需 proxy | 無限制 |
+| 網頁「產生分析指令」 | 任何 AI（claude.ai、ChatGPT） | 按鈕 → 自動複製 → 貼到對話 | 免費 |
+| `/finmind` 官方 Agent Skill | Claude Code（在此 repo 內） | `export FINMIND_TOKEN=...` 後輸入 `/finmind 2330 三大法人近一週買賣` | 免費（用 FinMind 額度） |
+| `tw-stock-report` skill | Claude Code（在此 repo 內） | 「幫我分析 2330」→ 自動跑 `scripts/summarize.mjs` 並寫七段報告 | 免費 |
+| `scripts/summarize.mjs` | 終端機 | `node scripts/summarize.mjs 台積電 --prompt` | 免費 |
+| FinMind MCP Server | Claude Desktop / Claude Code | `/plugin marketplace add FinMind/FinMind-MCP` → `/plugin install finmind-mcp@finmind-official` | 免費 |
+| FinMind llms.txt | claude.ai 網頁版 | 對話中貼上 https://finmind.github.io/llms.txt（或 llms-full.txt），請 AI 先讀；只會產生程式碼與說明，不會實際抓資料 | 免費 |
 
-### 已知限制
+`/finmind` 與網頁使用**同一套** `assets/js/analytics.js` 計算，終端機與網頁的 KD、河流圖數字會一致。
+Skill 檔案取自 FinMind 官方 repo（Apache-2.0，見 `.claude/commands/finmind-references/NOTICE.md`）。
 
-- **盤後幾分鐘**:資料可能延遲 5-15 分鐘
-- **櫃買股 (上櫃)**:三大法人資料僅 FinMind 有
-- **千張大戶、借券、技術指標**:FinMind 免費版不含,需付費版
-- **總經 DXY**:Stooq 偶爾抓不到,會嘗試 fallback
+## 費用
 
----
+預設配置 **每月 NT$0**。
 
-## 🔧 修改與客製化
+| 項目 | 方案 | 費用 | 本專案用量 / 說明 |
+|---|---|---|---|
+| GitHub repo + Actions | Free（公開 repo） | NT$0 | 公開 repo 的標準 runner 不計分鐘數。每交易日約 8 次 × 1–2 分鐘。若改私有 repo，每月有 2,000 分鐘免費額度，本專案約用 350 分鐘 |
+| GitHub Pages | Free | NT$0 | 網站約 2 MB；軟上限 1 GB 容量、每月 100 GB 流量 |
+| 證交所 / 櫃買 OpenAPI | 政府開放資料 | NT$0 | 全市場行情、本益比、三大法人 |
+| Yahoo Finance chart API | 非官方、免費 | NT$0 | 指數、匯率、盤中價。無服務保證，偶爾限流 |
+| FinMind 註冊會員 | Free | NT$0 | 每小時 600 次；本專案每次執行約 160 次，每小時最多 1 次 |
+| Claude | 你現有的方案 | 不增加 | 貼上「分析指令」或在 Claude Code 使用 skill |
+| *選用* FinMind Backer | 付費 | NT$699/月 | 單日全市場批次下載（可做全市場篩選）、股權分散表（千張大戶）、還原股價 |
+| *選用* FinMind Sponsor | 付費 | NT$999/月 | 盤中即時快照、分點進出、八大行庫 |
+| *選用* 自訂網域 | 網域商 | 約 NT$400–1,000/年 | 例如 stock.你的網域.tw |
 
-整個工具是**單一 HTML 檔案**,沒有任何外部依賴 (除了 SheetJS 從 CDN 載入)。
+FinMind 價格取自 https://finmind.github.io/Pricing/ （2026-10）。分析框架中「千張大戶、借券、景氣燈號」
+在免費方案沒有資料，網頁與分析指令都會明確標示 N/A。
 
-你可以用任何文字編輯器 (VS Code、記事本、Sublime) 開啟修改:
-
-- 改 UI 樣式:找 `<style>` 區塊
-- 改資料源邏輯:找 `// ============ 多源抓股票 ============`
-- 加新欄位:找 `// ============ 渲染 ============`
-- 改 Claude 指令模板:找 `$('bclaude').onclick`
-
----
-
-## ❓ 常見問題
-
-**Q: 為什麼總經面板有時 N/A?**
-A: Stooq 偶爾會限流,點「重抓」通常就好。如果持續失敗,可能是你的網路 ISP 對該域名有限制。
-
-**Q: 為什麼三大法人沒資料?**
-A: 證交所 API 需要透過 proxy,如果 proxy 全部失敗就會抓不到。可以等幾分鐘再試,或啟用 FinMind Token (FinMind 也有法人資料,不需 proxy)。
-
-**Q: Token 安全嗎?**
-A: Token 只存在你的瀏覽器 localStorage,不會經過任何伺服器。但**不要把儀表板網址公開**,因為別人開了之後也能用你儲存的 token (除非他們在另一台瀏覽器,因為 localStorage 是綁瀏覽器的)。
-
-**Q: 上櫃股票 (6689、5289、6669 等) 抓得到嗎?**
-A: 抓得到。Stooq 用 `.two` 後綴、FinMind 不分上市上櫃。但證交所 API 只有上市股,所以上櫃股的 PE、PB、三大法人會優先用 FinMind 的資料。
-
-**Q: 我的網路抓不到 Stooq?**
-A: 部分台灣 ISP (尤其是中華電信) 偶爾會封鎖 stooq.com。可以試試手機 4G/5G 切換網路測試。
-
----
-
-## ⚖️ 免責聲明
-
-本工具僅供個人投資研究參考,所有數據來自公開 API,不保證即時性與正確性。
-投資決策請以官方來源(證交所、櫃買中心、公開資訊觀測站)為準。
-
-工具本身不收集任何使用者資料,所有運算都在你的瀏覽器本機進行。
-
----
-
-## 📝 版本記錄
-
-- **v5.1** (當前):股票名稱可搜尋、抓取失敗自動清空、總經面板 Yahoo+Stooq 雙 fallback
-- **v5**:加入 Stooq 做為主力資料源,免 proxy 也能用;改進月營收 YoY 計算邏輯
-- **v4**:多 proxy fallback、資料完整度顯示
-- **v3**:加入上櫃股票支援、總經面板
-- **v2**:加入 FinMind 整合
-- **v1**:初版,僅證交所 OpenAPI
-
----
-
-## 🔄 GitHub 版本控制流程 (新增)
-
-部署到 GitHub Pages 後,當你想更新內容 (例如新增股票到資料庫、改 UI),有兩種做法:
-
-### 方式 A: 網頁直接編輯 (最簡單)
-
-適合小修改 (改文字、調顏色、加股票到名單):
-
-1. 進入你的 repo 頁面
-2. 點選 `index.html`
-3. 右上角點鉛筆圖示「Edit this file」
-4. 修改後拉到底部,寫提交訊息 (例如 `加入 2912 統一超`)
-5. 點 `Commit changes`
-6. 等 1-2 分鐘,網站自動更新
-
-### 方式 B: 完整版本控制 (推薦長期使用)
-
-需要安裝 Git 工具 (一次性):
-
-**Windows**: https://git-scm.com/download/win
-**Mac**: 終端機輸入 `git --version` 會自動安裝
+## 本機開發
 
 ```bash
-# 第一次設定 (只做一次)
-git config --global user.name "你的名字"
-git config --global user.email "你的Email"
-
-# 把線上 repo 抓下來
-git clone https://github.com/你的帳號/tw-stock-dashboard.git
-cd tw-stock-dashboard
-
-# === 平時改檔案的流程 ===
-
-# 1. 編輯 index.html (用你習慣的編輯器)
-
-# 2. 看改了什麼
-git status
-git diff
-
-# 3. 提交變更
-git add index.html
-git commit -m "改善總經面板 fallback 邏輯"
-
-# 4. 推上去 (網站會自動更新)
-git push
-
-# === 看歷史 / 還原版本 ===
-
-# 看所有改動歷史
-git log --oneline
-
-# 還原到上一版 (萬一改壞了)
-git revert HEAD
-git push
-
-# 跳到特定版本
-git checkout <commit_hash>
+./scripts/preview.sh                 # 合成資料預覽（不需網路與 token）→ http://localhost:8000
+./scripts/preview.sh --live          # 真實資料（需 export FINMIND_TOKEN）
+python -m unittest discover -s tests/py
+node --test "tests/js/*.test.mjs"
+python tests/e2e/test_dashboard.py   # 需 pip install playwright && playwright install chromium
+python tests/bench/run_bench.py      # 新舊版效能比較
 ```
 
-### 進階:用「分支」測試新功能
+## 版本控制
 
-```bash
-# 建立測試分支
-git checkout -b new-feature
+- 每個版本一個 tag：`v5.1.0`（舊版單檔）、`v6.0.0`（本版）。變更記錄見 [CHANGELOG.md](CHANGELOG.md)
+- **回到舊版**：`git checkout v5.1.0 -- index.html` 或在 GitHub 的 Releases / Tags 下載
+- **建議流程**：開分支 → push 後 CI 自動跑測試（`.github/workflows/ci.yml`）→ 開 PR → 合併到 main → 自動部署
+- **改壞了**：`git revert <commit>` 後 push，網站會自動回復
+- Dependabot 每月檢查 GitHub Actions 版本並開 PR
 
-# 改完測試 OK 之後合併
-git checkout main
-git merge new-feature
-git push
+## 檔案結構
+
+```
+index.html                    網頁骨架（含 CSP）
+assets/
+  css/app.css                 樣式（淺色 / 深色，色票經色盲模擬驗證）
+  datasets.json               FinMind 資料集規格（Python 與網頁共用）
+  js/main.js                  進入點：狀態、事件、路由
+  js/data.js                  載入靜態 JSON / FinMind 即時查詢
+  js/net.js                   請求：快取、共用、逾時、取消
+  js/search.js                全市場搜尋
+  js/analytics.js             指標計算（純函式）
+  js/charts.js                SVG 圖表
+  js/render.js                畫面
+  js/prompt.js                分析指令
+  js/export.js                CSV / XLSX
+  js/format.js                數字與日期格式
+config/watchlist.json         追蹤清單
+scripts/fetch_data.py         資料管線（GitHub Actions 執行）
+scripts/summarize.mjs         終端機版個股摘要
+scripts/preview.sh            本機預覽
+tests/                        py / js / e2e / bench / fixtures（合成資料產生器）
+.github/workflows/            deploy.yml（排程 + 部署）、ci.yml（PR 測試）
+.claude/                      FinMind skill、tw-stock-report skill
+docs/                         SETUP、PERFORMANCE、截圖
 ```
 
-### 用 GitHub Desktop 圖形化介面
+## 已知限制
 
-如果不想記指令,下載 GitHub Desktop:https://desktop.github.com
+- 盤中價來自 Yahoo，約延遲 20 分鐘；即時報價需要 FinMind Sponsor
+- 櫃買三大法人的公開欄位沒有穩定文件，採關鍵字比對；每次執行的 Summary 會顯示是否成功
+- 財報 EPS 以 FinMind 單季數值加總；「隱含 EPS」（河流圖）= 收盤 ÷ 本益比
+- 公開 repo 60 天沒有 commit，GitHub 會停用排程（見 SETUP 疑難排解）
 
-優點:點按鈕就能 commit、push、查看歷史、還原版本,**完全不用碰命令列**。
-
-### 為什麼要做版本控制?
-
-- ✅ 改壞了可以一鍵還原
-- ✅ 看得到每次改了什麼、什麼時候改的
-- ✅ 可以同時開發多個版本 (分支)
-- ✅ 換電腦也能繼續開發
-- ✅ 萬一網站被 hack 或誤刪,Git 歷史是完整備份
-
----
-
-## 💡 推薦的更新節奏
-
-- **小修改 (改文字、加股票)**:用方式 A 直接網頁編輯
-- **改 UI / 加功能**:用方式 B,本機改完測試 OK 再推上去
-- **重大改版**:先開分支測試,確定穩定再合併到 main
+僅供個人研究參考，非投資建議。資料來源：臺灣證券交易所、證券櫃檯買賣中心、FinMind、Yahoo Finance。
