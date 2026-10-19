@@ -1,0 +1,136 @@
+// 指標計算正確性 + 舊版 bug 的回歸測試
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as A from '../../assets/js/analytics.js';
+
+const close = (n, f) => Array.from({ length: n }, (_, i) => f(i));
+const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
+const table = (cols, rowsArr) => ({ cols, rows: rowsArr });
+
+test('SMA', () => {
+  assert.deepEqual(A.sma([1, 2, 3, 4, 5], 3), [null, null, 2, 3, 4]);
+});
+
+test('EMA 以前 n 筆平均為起點', () => {
+  const e = A.ema([1, 2, 3, 4], 3);
+  assert.deepEqual(e.slice(0, 2), [null, null]);
+  near(e[2], 2);
+  near(e[3], 4 * 0.5 + 2 * 0.5);
+});
+
+test('RSI：一路上漲 = 100、一路下跌 = 0', () => {
+  assert.equal(A.rsi(close(30, (i) => 100 + i)).at(-1), 100);
+  near(A.rsi(close(30, (i) => 100 - i)).at(-1), 0);
+});
+
+test('KD：收在 9 日最高點時 K 往 100 靠近、平盤時維持 50', () => {
+  const up = close(40, (i) => 10 + i);
+  const { K } = A.kd(up, up, up);
+  assert.ok(K.at(-1) > 95);
+  const flat = close(20, () => 10);
+  assert.equal(A.kd(flat, flat, flat).K.at(-1), 50);
+});
+
+test('MACD：常數序列 DIF = 0', () => {
+  const m = A.macd(close(60, () => 50));
+  near(m.dif.at(-1), 0);
+  near(m.osc.at(-1), 0);
+});
+
+test('月營收：月份用 revenue_year/revenue_month，不是 date（舊版 bug：月份晚一個月）', () => {
+  const t = table(['revenue_year', 'revenue_month', 'revenue'], [
+    [2025, 9, 100], [2025, 10, 110], [2026, 8, 150], [2026, 9, 120],
+  ]);
+  const r = A.revenueStats(t);
+  assert.equal(r.latest.period, '2026-09');        // FinMind date 會是 2026-10-01
+  near(r.latest.yoy, 20);                          // 120 / 100 − 1
+  near(r.latest.mom, -20);                         // 120 / 150 − 1
+});
+
+test('月營收：年增率是正常的百分比（舊版把年份 2026 當去年營收，算出 +20272710561%）', () => {
+  const t = table(['revenue_year', 'revenue_month', 'revenue'], [[2025, 4, 1033275118], [2026, 4, 1023839000]]);
+  const r = A.revenueStats(t);
+  assert.ok(Math.abs(r.latest.yoy) < 100);
+});
+
+test('三大法人：外資自營商算外資；連續買超天數', () => {
+  const rowsArr = [];
+  ['2026-10-15', '2026-10-16', '2026-10-17'].forEach((d, k) => {
+    rowsArr.push([d, 'Foreign_Investor', 2000, 1000], [d, 'Foreign_Dealer_Self', 500, 0],
+      [d, 'Investment_Trust', 0, 300], [d, 'Dealer_self', 100, 0], [d, 'Dealer_Hedging', 0, 50 * (k + 1)]);
+  });
+  const s = A.instStats(table(['date', 'name', 'buy', 'sell'], rowsArr));
+  assert.equal(s.latest.foreign, 1500);
+  assert.equal(s.latest.trust, -300);
+  assert.equal(s.latest.dealer, 100 - 150);
+  assert.equal(s.foreignStreak, 3);
+  assert.equal(s.sum5.foreign, 4500);
+});
+
+test('融資融券：券資比', () => {
+  const s = A.marginStats(table(['date', 'MarginPurchaseTodayBalance', 'ShortSaleTodayBalance'], [['2026-10-17', 10000, 500]]));
+  near(s.shortRatio, 5);
+});
+
+test('河流圖：資料太少回傳 null；區間判斷正確', () => {
+  const dates = close(300, (i) => `2025-${String(1 + Math.floor(i / 28)).padStart(2, '0')}-${String(1 + (i % 28)).padStart(2, '0')}`);
+  const px = close(300, (i) => 100 + i * 0.1);
+  const ps = { dates, close: px, open: px, high: px, low: px, volume: px };
+  assert.equal(A.peRiver({ ...ps, dates: dates.slice(0, 30), close: px.slice(0, 30) }, table(['date', 'PER'], dates.slice(0, 30).map((d) => [d, 15]))), null);
+  const per = dates.map((d, i) => [d, 10 + (i / 299) * 10]);      // 本益比 10 → 20，最後一天最高
+  const r = A.peRiver(ps, table(['date', 'PER'], per));
+  assert.equal(r.zone, '極高');
+  near(r.currentEPS, px.at(-1) / 20);
+  assert.equal(r.bands.length, 5);
+});
+
+test('財報：近四季 EPS、ROE、負債比', () => {
+  const inc = []; const bal = [];
+  const qs = ['2024-12-31', '2025-03-31', '2025-06-30', '2025-09-30', '2025-12-31', '2026-03-31', '2026-06-30', '2026-09-30'];
+  qs.forEach((d, i) => {
+    inc.push([d, 'EPS', i < 4 ? 1 : 2, '基本每股盈餘'], [d, 'Revenue', 100, '營業收入合計'], [d, 'GrossProfit', 40, '營業毛利'],
+      [d, 'OperatingIncome', 20, '營業利益'], [d, 'IncomeAfterTaxes', 10, '本期淨利'], [d, 'Revenue_per', 100, '營業收入合計']);
+    bal.push([d, 'TotalAssets', 1000, '資產總計'], [d, 'Liabilities', 400, '負債總計'], [d, 'Equity', 500, '權益總計'],
+      [d, 'CurrentAssets', 300, '流動資產合計'], [d, 'CurrentLiabilities', 150, '流動負債合計']);
+  });
+  const cols = ['date', 'type', 'value', 'origin_name'];
+  const f = A.fundamentals(table(cols, inc), table(cols, bal));
+  assert.equal(f.eps4, 8);
+  assert.equal(f.epsPrev4, 4);
+  near(f.eps4YoY, 100);
+  near(f.margins.gross, 40);
+  near(f.roe, 40 / 500 * 100);
+  near(f.debtRatio, 40);
+  near(f.currentRatio, 200);
+});
+
+test('財報：type 改名時用中文科目名稱備援', () => {
+  const cols = ['date', 'type', 'value', 'origin_name'];
+  const f = A.fundamentals(table(cols, [['2026-06-30', 'BasicEPS_new', 3.2, '基本每股盈餘（元）']]), null);
+  assert.equal(f.quarters[0].eps, 3.2);
+});
+
+test('價格優先序：盤中價較新時用盤中價，否則用官方收盤', () => {
+  const info = { code: '2330', name: '台積電', market: 'twse' };
+  const mkt = { close: 1000, change: 10 };
+  const asOf = { twse: '2026-10-19' };
+  const a = A.summarize({ info, mkt, quote: { value: 1010, change: 10, changePct: 1, time: '2026-10-20T10:12+08:00' }, asOf });
+  assert.equal(a.price.price, 1010);
+  assert.equal(a.price.kind, '盤中');
+  const b = A.summarize({ info, mkt, quote: { value: 1000, time: '2026-10-19T13:30+08:00' }, asOf });
+  assert.equal(b.price.kind, '收盤');
+  near(b.price.changePct, (10 / 990) * 100);
+});
+
+test('漲跌為 0 不是缺資料（舊版把 0 當 falsy 不顯示）', () => {
+  const s = A.summarize({ info: { code: '1', name: 'x', market: 'twse' }, mkt: { close: 50, change: 0 }, asOf: {} });
+  assert.equal(s.price.change, 0);
+  assert.equal(s.price.changePct, 0);
+});
+
+test('完整度：沒有任何資料時為 0%，並列出缺項', () => {
+  const s = A.summarize({ info: { code: '1', name: 'x', market: 'twse' }, mkt: null, asOf: {} });
+  const c = A.completeness(s);
+  assert.equal(c.pct, 0);
+  assert.ok(c.missing.includes('近四季 EPS'));
+});
