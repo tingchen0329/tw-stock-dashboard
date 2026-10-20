@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import http.client
 import json
 import os
 import re
@@ -168,7 +169,9 @@ class HttpTransport:
                 last_err = e
                 if e.code not in (429, 500, 502, 503, 504):
                     break
-            except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            # http.client.HTTPException 涵蓋 IncompleteRead：伺服器回應到一半斷線
+            # （實例 2026-10-20：櫃買法人資料 840 KB 只收到 589 KB）→ 一樣重試
+            except (urllib.error.URLError, http.client.HTTPException, TimeoutError, ConnectionError) as e:
                 last_err = e
             time.sleep(1.5 * (2 ** attempt))
         # 錯誤訊息只含 URL 路徑，不含 header（header 裡才有 token）

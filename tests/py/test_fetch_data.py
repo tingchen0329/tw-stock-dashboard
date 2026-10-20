@@ -141,6 +141,24 @@ class Security(unittest.TestCase):
         with mock.patch("urllib.request.urlopen", boom), self.assertRaises(fd.QuotaExceeded):
             fd.finmind(tx, "TaiwanStockPrice", "2330")
 
+    def test_truncated_response_is_retried(self):
+        import http.client
+        calls = {"n": 0}
+
+        class Resp(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def flaky(req, timeout):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise http.client.IncompleteRead(b"partial", 100)
+            return Resp(b'[{"Code":"2330"}]')
+        tx = fd.HttpTransport(None)
+        with mock.patch("urllib.request.urlopen", flaky), mock.patch("time.sleep"):
+            self.assertEqual(tx.get_json("https://example.test/x"), [{"Code": "2330"}])
+        self.assertEqual(calls["n"], 2)
+
     def test_error_message_does_not_leak_token(self):
         def fail(req, timeout):
             raise urllib.error.URLError("down")
