@@ -13,6 +13,7 @@ const ROWS = [
   ['6669', '緯穎', 'twse', '電腦及週邊設備業'],
   ['7610', '聯友金屬-創', 'twse', '綠能環保'],
   ['6999', '台積測試', 'emerging', '測試'],
+  ['00679B', '元大美債20年', 'twse', 'ETF'],
 ];
 const idx = buildIndex(ROWS, ['6669']);
 const codes = (q, n = 8) => search(idx, q, n).map((r) => r.item.code);
@@ -76,4 +77,10 @@ test('效能：3,000 檔單次搜尋 < 5 ms', () => {
   const t0 = performance.now();
   for (let i = 0; i < 100; i++) search(big, '測試公司29');
   assert.ok((performance.now() - t0) / 100 < 5);
+});
+
+test('代號帶英文字母的 ETF：大小寫都找得到', () => {
+  assert.equal(codes('00679b')[0], '00679B');
+  assert.equal(codes('00679B')[0], '00679B');
+  assert.equal(resolveExact(idx, '00679b').code, '00679B');
 });

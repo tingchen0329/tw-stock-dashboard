@@ -74,6 +74,13 @@ class Parsing(unittest.TestCase):
         self.assertEqual(fd.parse_tpex_inst(rows)["5289"],
                          {"foreign": 1000.0, "trust": -20.0, "dealer": 5.0, "inst": 985.0})
 
+    def test_stock_list_market_follows_official_quotes_and_skips_indexes(self):
+        info = [{"stock_id": "7610", "stock_name": "聯友金屬", "type": "emerging", "industry_category": "綠能環保"},
+                {"stock_id": "Electronic", "stock_name": "電子類指數", "type": "twse", "industry_category": "Index"},
+                {"stock_id": "00679B", "stock_name": "元大美債20年", "type": "twse", "industry_category": "ETF"}]
+        rows = fd.build_stock_list(info, {"7610": {"name": "聯友金屬-創"}}, {})
+        self.assertEqual(rows, [["00679B", "元大美債20年", "twse", "ETF"], ["7610", "聯友金屬", "twse", "綠能環保"]])
+
     def test_stock_list_dedup_and_fallback_names(self):
         info = [{"stock_id": "2330", "stock_name": "台積電", "type": "twse", "industry_category": "半導體業"},
                 {"stock_id": "2330", "stock_name": "台積電", "type": "twse", "industry_category": "電子工業"},
@@ -173,6 +180,13 @@ class EndToEnd(unittest.TestCase):
         watch = json.loads((ROOT / "config/watchlist.json").read_text())["stocks"]
         for code in watch:
             self.assertTrue((self.out / "stock" / f"{code}.json").exists(), code)
+
+    def test_macro_otc_index_from_finmind(self):
+        items = {m["key"]: m for m in json.loads((self.out / "macro.json").read_text())["items"]}
+        self.assertEqual(items["otc"]["source"], "FinMind（日收盤）")
+        self.assertEqual(items["taiex"]["source"], "Yahoo")          # Yahoo 正常時仍用 Yahoo（有盤中價）
+        self.assertEqual([m["key"] for m in json.loads((self.out / "macro.json").read_text())["items"]][:2],
+                         ["taiex", "otc"])
 
     def test_meta_reports_sources_and_demo_flag(self):
         meta = json.loads((self.out / "meta.json").read_text())

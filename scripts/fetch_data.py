@@ -439,6 +439,9 @@ def finmind(tx, dataset: str, data_id: str | None = None, start: str | None = No
 
 
 MARKET_CODE = {"twse": "twse", "tpex": "tpex", "emerging": "emerging"}
+# 個股 / ETF 代號：4–6 碼數字，可帶一個英文字母（00679B 債券 ETF、00981A 主動式 ETF）。
+# FinMind TaiwanStockInfo 另含 "Electronic"（電子類指數）等類股指數，搜尋時不需要
+STOCK_CODE = re.compile(r"\d{4,6}[A-Z]?")
 
 
 def build_stock_list(info_rows: list[dict], twse_q: dict, tpex_q: dict) -> list[list[str]]:
@@ -446,14 +449,21 @@ def build_stock_list(info_rows: list[dict], twse_q: dict, tpex_q: dict) -> list[
     搜尋用全市場清單：[[代號, 名稱, 市場, 產業], ...]
     主要來源 FinMind TaiwanStockInfo（含產業別）；同一檔可能有多筆產業 → 只留第一筆。
     FinMind 失敗時，用證交所 / 櫃買行情的名稱補（沒有產業別）。
+
+    市場別以「今天出現在哪個交易所的行情」為準：FinMind 的 type 可能停留在舊分類
+    （實例：7610 聯友金屬已在上市創新板交易，FinMind 仍標「興櫃」）。
     """
     seen: dict[str, list[str]] = {}
     for r in info_rows:
         code = str(r.get("stock_id", "")).strip()
         name = str(r.get("stock_name", "")).strip()
         market = MARKET_CODE.get(str(r.get("type", "")).lower())
-        if not code or not name or not market or code in seen:
+        if not STOCK_CODE.fullmatch(code) or not name or not market or code in seen:
             continue
+        if code in twse_q:
+            market = "twse"
+        elif code in tpex_q:
+            market = "tpex"
         seen[code] = [code, name, market, str(r.get("industry_category", "")).strip()]
     for quotes, market in ((twse_q, "twse"), (tpex_q, "tpex")):
         for code, q in quotes.items():
@@ -544,13 +554,29 @@ def yahoo(tx, symbol: str, rng: str = "3mo") -> dict | None:
 
 MACRO_YAHOO = [
     ("taiex", "加權指數", "^TWII"),
-    ("otc", "櫃買指數", "^TWOII"),
+    # 櫃買指數：Yahoo 的 ^TWOII 已回 404（2026-10），改由 FinMind TaiwanStockPrice data_id=TPEx 提供
     ("usdtwd", "美元/台幣", "TWD=X"),
     ("dxy", "美元指數", "DX-Y.NYB"),
     ("us10y", "美債10年", "^TNX"),
     ("gold", "黃金", "GC=F"),
     ("sox", "費城半導體", "^SOX"),
 ]
+
+
+# FinMind 的台股指數（TaiwanStockPrice 的 data_id）：只有日收盤，沒有盤中
+FINMIND_INDEX = {"taiex": ("加權指數", "TAIEX"), "otc": ("櫃買指數", "TPEx")}
+MACRO_ORDER = ["taiex", "otc", "usdtwd", "dxy", "us10y", "gold", "sox", "fed"]
+
+
+def finmind_index(tx, data_id: str, today: dt.date) -> dict | None:
+    """FinMind 日線 → 與 parse_yahoo_chart 相同的格式（value/prev/change/changePct/time/spark）"""
+    rows = finmind(tx, "TaiwanStockPrice", data_id, (today - dt.timedelta(days=120)).isoformat())
+    pts = [(r["date"], to_num(r.get("close"))) for r in rows if to_num(r.get("close"))]
+    if len(pts) < 2:
+        return None
+    v, p = pts[-1][1], pts[-2][1]
+    return {"value": v, "prev": p, "change": round(v - p, 4), "changePct": round((v - p) / p * 100, 2),
+            "time": pts[-1][0], "spark": [c for _, c in pts[-60:]]}
 
 
 def fetch_macro(tx, report: SourceReport, today: dt.date, use_finmind: bool) -> list[dict]:
@@ -560,6 +586,14 @@ def fetch_macro(tx, report: SourceReport, today: dt.date, use_finmind: bool) -> 
         if res:
             items.append({"key": key, "label": label, "source": "Yahoo", **res})
     if use_finmind:
+        # 台股指數：櫃買一律用 FinMind；加權在 Yahoo 失敗時才用 FinMind 補
+        for key, (label, data_id) in FINMIND_INDEX.items():
+            if any(i["key"] == key for i in items):
+                continue
+            res = report.run(f"finmind_{key}", lambda d=data_id: finmind_index(tx, d, today),
+                             count=lambda r: 1 if r else 0)
+            if res:
+                items.append({"key": key, "label": label, "source": "FinMind（日收盤）", **res})
         # Fed 利率：FinMind InterestRate（Yahoo 沒有）
         rows = report.run("finmind_fed", lambda: finmind(
             tx, "InterestRate", "FED", (today - dt.timedelta(days=900)).isoformat()))
@@ -580,8 +614,7 @@ def fetch_macro(tx, report: SourceReport, today: dt.date, use_finmind: bool) -> 
                 items.append({"key": "usdtwd", "label": "美元/台幣", "source": "FinMind(台銀)",
                               "value": v, "prev": p, "change": round(v - p, 4),
                               "changePct": round((v - p) / p * 100, 2), "time": pts[-1]["date"]})
-    order = {k: i for i, (k, _, _) in enumerate(MACRO_YAHOO)} | {"fed": 99}
-    return sorted(items, key=lambda x: order.get(x["key"], 50))
+    return sorted(items, key=lambda x: MACRO_ORDER.index(x["key"]) if x["key"] in MACRO_ORDER else 50)
 
 
 # ──────────────────────────────────────────────────────────────────────

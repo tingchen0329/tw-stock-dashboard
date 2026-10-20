@@ -82,6 +82,11 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
             for c, (n, m, ind) in universe.items()]
     info.append({"industry_category": "電子工業", "stock_id": "2330", "stock_name": "台積電",
                  "type": "twse", "date": str(today)})
+    info.append({"industry_category": "Index", "stock_id": "Electronic", "stock_name": "電子類指數",
+                 "type": "twse", "date": str(today)})
+    for row in info:                       # 7610：FinMind 仍標興櫃，但行情在證交所（應顯示上市）
+        if row["stock_id"] == "7610":
+            row["type"] = "emerging"
     w("finmind_TaiwanStockInfo.json", {"msg": "success", "status": 200, "data": info})
 
     closes: dict[str, list[float]] = {}
@@ -226,7 +231,13 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
             "meta": {"regularMarketPrice": ser[-1], "regularMarketTime": ts[-1], "chartPreviousClose": ser[0]},
             "timestamp": ts, "indicators": {"quote": [{"close": ser}]}}], "error": None}})
 
-    for sym, base in [("IDX_TWII", 27000), ("IDX_TWOII", 260), ("TWD_X", 30.6), ("DX-Y.NYB", 98.2),
+    # 櫃買指數不提供 Yahoo fixture：正式環境 ^TWOII 已 404，改由 FinMind TPEx 提供
+    for idx_id, base in [("TAIEX", 27000), ("TPEx", 260)]:
+        ser = walk(random.Random(idx_id), base, 80, 0.0003, 0.01)
+        fm(f"finmind_TaiwanStockPrice_{idx_id}.json",
+           [{"date": str(d), "stock_id": idx_id, "close": v, "open": v, "max": v, "min": v, "spread": 0,
+             "Trading_Volume": 0, "Trading_money": 0, "Trading_turnover": 0} for d, v in zip(days[-80:], ser)])
+    for sym, base in [("IDX_TWII", 27000), ("TWD_X", 30.6), ("DX-Y.NYB", 98.2),
                       ("IDX_TNX", 4.1), ("GC_F", 3900), ("IDX_SOX", 6200)]:
         yahoo(sym, base)
     for c, (n, m, _, base) in WATCH.items():

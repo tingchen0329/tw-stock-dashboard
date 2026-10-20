@@ -121,7 +121,8 @@ export function lineChart(host) {
     o.series.forEach((s) => scan(s.values));
     (o.bands || []).forEach((b) => { scan(b.lower); scan(b.upper); });
     const pad = (hi - lo) * 0.05 || 1;
-    const ticks = niceTicks(lo - pad, hi + pad, 5);
+    // 股價不會是負的：資料全為正時，留白不可把座標推到 0 以下（舊版河流圖出現 -2,000 的刻度）
+    const ticks = niceTicks(lo >= 0 ? Math.max(0, lo - pad) : lo - pad, hi + pad, 5);
     const y0 = ticks[0];
     const y1 = ticks[ticks.length - 1];
     const x = (i) => m.l + (i / (n - 1)) * (W - m.l - m.r);

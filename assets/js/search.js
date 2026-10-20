@@ -48,6 +48,7 @@ export function buildIndex(rows, boost = []) {
   const boosted = new Set(boost);
   return rows.map(([code, name, market, industry]) => ({
     code, name, market, industry,
+    c: code.toLowerCase(),            // 比對用小寫：00679B、00981A 這類 ETF 打小寫也找得到
     n: normalize(name),
     ni: normalize(industry),
     bonus: (boosted.has(code) ? 30 : 0) + (market === 'emerging' ? 0 : 10),
@@ -58,9 +59,9 @@ export function buildIndex(rows, boost = []) {
 function score(item, q, qCode, qName) {
   let s = 0;
   if (qCode) {
-    if (item.code === qCode) s = 1000;
-    else if (item.code.startsWith(qCode)) s = 800 - (item.code.length - qCode.length);
-    else if (!qName && item.code.includes(qCode)) s = 300;
+    if (item.c === qCode) s = 1000;
+    else if (item.c.startsWith(qCode)) s = 800 - (item.c.length - qCode.length);
+    else if (!qName && item.c.includes(qCode)) s = 300;
     if (qName && s) {
       // "2330 台積電"：代號與名稱都要對得上
       if (!item.n.includes(qName)) s = 0;
@@ -106,9 +107,9 @@ export function resolveExact(index, query) {
   if (!res.length) return null;
   const q = normalize(query);
   const top = res[0].item;
-  if (top.code === q || top.n === q || res.length === 1) return top;
-  const m = q.match(/^(\d{4,6})/);
-  if (m && top.code === m[1]) return top;
+  if (top.c === q || top.n === q || res.length === 1) return top;
+  const m = q.match(/^(\d{4,6}[a-z]?)/);
+  if (m && top.c === m[1]) return top;
   return null;
 }
 
