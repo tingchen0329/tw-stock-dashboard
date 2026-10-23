@@ -17,6 +17,7 @@ import { summarize, marketRow } from './analytics.js';
 import { renderFreshness, renderWatchlist, renderMacro, renderStock, renderSetup, h } from './render.js';
 import { buildPrompt } from './prompt.js';
 import { marketStatus, marketNotice } from './market.js';
+import { overviewRow, renderOverview } from './overview.js';
 import { toCSV, toXLSX, download } from './export.js';
 import * as F from './format.js';
 
@@ -86,7 +87,7 @@ function pick(code) {
   closeResults();
   $('search').value = '';
   $('search').blur();
-  if (location.hash === `#${code}`) showStock(code);
+  if (location.hash === `#${code}`) route();
   else location.hash = code;      // 觸發 hashchange → showStock
 }
 
@@ -193,6 +194,41 @@ async function showStock(code) {
   }
 }
 
+/* ───────── 追蹤清單總覽（模擬版）───────── */
+
+async function showOverview() {
+  const { boot } = state;
+  if (!boot?.meta) return;
+  state.current?.ctrl.abort();
+  state.current?.cleanup?.();
+  const cur = { code: 'overview', ctrl: new AbortController(), cleanup: null, summary: null };
+  state.current = cur;
+  markCurrentChip('overview');
+  document.title = '追蹤清單總覽｜台股研究台';
+  const codes = boot.meta.watchlist || [];
+  const rows = new Map();
+  const draw = () => state.current === cur && renderOverview($('stock'), codes.filter((c) => rows.has(c)).map((c) => rows.get(c)),
+    { onPick: pick, loading: codes.length - rows.size, dataDay: boot.meta.market?.lastTradingDay });
+  draw();
+  await Promise.all(codes.map((code) => loadStock(code, {
+    meta: boot.meta, spec: boot.spec, signal: cur.ctrl.signal,
+    onUpdate: (tables, m) => {
+      if (!m.done) return;
+      rows.set(code, overviewRow(summarize({
+        info: stockInfo(code), mkt: marketRow(boot.market, code), quote: boot.quotes?.rows?.[code] ?? null,
+        tables, asOf: boot.market?.asOf ?? {},
+      })));
+    },
+  }).catch((e) => { if (e.name !== 'AbortError') console.warn(code, e); })));
+  draw();
+}
+
+const route = () => {
+  const c = decodeURIComponent(location.hash.slice(1));
+  if (c === 'overview') showOverview();
+  else if (c) showStock(c);
+};
+
 /* ───────── 分析指令 / 匯出 ───────── */
 
 function openPrompt() {
@@ -295,11 +331,14 @@ async function boot() {
     return { code, name: state.byCode.get(code)?.name ?? '', price: q?.value ?? m?.close, changePct: q?.changePct ?? pctFromMkt };
   });
   renderWatchlist($('watchlist'), wl, pick);
+  $('watchlist').firstChild.after(h('button', {
+    class: 'chip ov-chip', type: 'button', dataset: { code: 'overview' }, on: { click: () => pick('overview') },
+  }, h('span', { class: 't' }, '總覽'), h('span', { class: 'v' }, `${wl.length} 檔`)));
   renderMacro($('macro'), b.macro?.items);
 
-  window.addEventListener('hashchange', () => { const c = location.hash.slice(1); if (c) showStock(decodeURIComponent(c)); });
-  const initial = decodeURIComponent(location.hash.slice(1)) || b.meta.watchlist?.[0];
-  if (initial) showStock(initial);
+  window.addEventListener('hashchange', route);
+  if (location.hash.length > 1) route();
+  else if (b.meta.watchlist?.[0]) showStock(b.meta.watchlist[0]);
 }
 
 boot();
