@@ -11,7 +11,7 @@
  *
  * 用法：
  *   node scripts/summarize.mjs 2330            # 輸出 JSON 摘要
- *   node scripts/summarize.mjs 台積電 --prompt  # 輸出「台股深度分析指令 v2.0」全文
+ *   node scripts/summarize.mjs 台積電 --prompt  # 輸出分析指令全文（與網頁「產生分析指令」相同）
  *   node scripts/summarize.mjs 2330 --data path/to/data
  */
 import { readFileSync, existsSync } from 'node:fs';

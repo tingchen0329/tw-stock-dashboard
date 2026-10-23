@@ -16,6 +16,7 @@ import { buildIndex, search, resolveExact, highlightParts, marketLabel } from '.
 import { summarize, marketRow } from './analytics.js';
 import { renderFreshness, renderWatchlist, renderMacro, renderStock, renderSetup, h } from './render.js';
 import { buildPrompt } from './prompt.js';
+import { marketStatus, marketNotice } from './market.js';
 import { toCSV, toXLSX, download } from './export.js';
 import * as F from './format.js';
 
@@ -277,6 +278,8 @@ async function boot() {
     return;
   }
   renderFreshness($('freshness'), $('sources'), b.meta);
+  const notice = marketNotice(marketStatus(new Date(), b.meta.market));   // 休市 / 盤前 / 盤中 / 資料日期
+  if (notice) banner(notice.text, notice.level === 'warn' ? 'warn' : 'info');
   if (b.meta.demo) banner('目前顯示的是示範資料（合成數字，非真實行情）。部署到 GitHub 並設定 FINMIND_TOKEN 後會換成真實資料。', 'warn');
   if (!b.meta.tokenUsed && !b.meta.demo) banner('FinMind token 尚未設定：追蹤清單以匿名額度抓取，可能缺資料。請在 GitHub Secrets 新增 FINMIND_TOKEN。');
 

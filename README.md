@@ -1,7 +1,7 @@
 # 台股研究台 (tw-stock-dashboard) v6
 
 個人台股研究儀表板：全市場搜尋、追蹤清單、技術指標、本益比河流圖、月營收、籌碼與財報，
-一鍵產生給 Claude 的深度分析指令，可匯出 CSV / Excel。
+一鍵產生可貼到任何 AI 的分析指令，可匯出 CSV / Excel。
 
 **網站**：https://tingchen0329.github.io/tw-stock-dashboard/
 
@@ -47,13 +47,14 @@ flowchart LR
 | 基本面 | 月營收年增 / 月增 / 累計、近四季 EPS、三率、ROE、ROA、負債比、流動比 | FinMind |
 | 籌碼 | 法人 5 / 20 日、外資連續買賣、外資持股比例、融資券、券資比 | FinMind |
 | 總經 | 加權、櫃買、台指期夜盤、道瓊、那斯達克、費半、美元/台幣、美元指數、美債 10 年、黃金、Fed 利率 | Yahoo、FinMind、期交所 |
-| 輸出 | 分析指令（深度分析 v2.0）、CSV、Excel（5 個工作表） | — |
+| 開休市 | 休市、盤前、盤中提示與資料日期；颱風等臨時休市由資料自動判斷 | 證交所休市日 OpenAPI |
+| 輸出 | 分析指令（精簡版，可貼到 Claude / ChatGPT / Gemini）、CSV、Excel（5 個工作表） | — |
 
 ## FinMind Skill 與 AI 分析
 
 | 用法 | 環境 | 怎麼用 | 費用 |
 |---|---|---|---|
-| 網頁「產生分析指令」 | 任何 AI（claude.ai、ChatGPT） | 按鈕 → 自動複製 → 貼到對話 | 免費 |
+| 網頁「產生分析指令」 | 任何 AI（claude.ai、ChatGPT、Gemini、Copilot） | 按鈕 → 自動複製 → 貼到對話 | 免費 |
 | `/finmind` 官方 Agent Skill | Claude Code（在此 repo 內） | `export FINMIND_TOKEN=...` 後輸入 `/finmind 2330 三大法人近一週買賣` | 免費（用 FinMind 額度） |
 | `tw-stock-report` skill | Claude Code（在此 repo 內） | 「幫我分析 2330」→ 自動跑 `scripts/summarize.mjs` 並寫七段報告 | 免費 |
 | `scripts/summarize.mjs` | 終端機 | `node scripts/summarize.mjs 台積電 --prompt` | 免費 |
@@ -69,11 +70,11 @@ Skill 檔案取自 FinMind 官方 repo（Apache-2.0，見 `.claude/commands/finm
 
 | 項目 | 方案 | 費用 | 本專案用量 / 說明 |
 |---|---|---|---|
-| GitHub repo + Actions | Free（公開 repo） | NT$0 | 公開 repo 的標準 runner 不計分鐘數。每交易日約 8 次 × 1–2 分鐘。若改私有 repo，每月有 2,000 分鐘免費額度，本專案約用 350 分鐘 |
+| GitHub repo + Actions | Free（公開 repo） | NT$0 | 公開 repo 的標準 runner 不計分鐘數。每交易日 9 次完整更新 + 4 次夜間總經更新，各約 1–2 分鐘。若改私有 repo，每月有 2,000 分鐘免費額度，本專案約用 500 分鐘 |
 | GitHub Pages | Free | NT$0 | 網站約 2 MB；軟上限 1 GB 容量、每月 100 GB 流量 |
 | 證交所 / 櫃買 OpenAPI | 政府開放資料 | NT$0 | 全市場行情、本益比、三大法人 |
 | Yahoo Finance chart API | 非官方、免費 | NT$0 | 指數、匯率、盤中價。無服務保證，偶爾限流 |
-| FinMind 註冊會員 | Free | NT$0 | 每小時 600 次；本專案每次執行約 160 次，每小時最多 1 次 |
+| FinMind 註冊會員 | Free | NT$0 | 每小時 600 次；完整更新約 160 次，夜間只更新總經約 2–4 次 |
 | Claude | 你現有的方案 | 不增加 | 貼上「分析指令」或在 Claude Code 使用 skill |
 | *選用* FinMind Backer | 付費 | NT$699/月 | 單日全市場批次下載（可做全市場篩選）、股權分散表（千張大戶）、還原股價 |
 | *選用* FinMind Sponsor | 付費 | NT$999/月 | 盤中即時快照、分點進出、八大行庫 |
@@ -116,6 +117,7 @@ assets/
   js/charts.js                SVG 圖表
   js/render.js                畫面
   js/prompt.js                分析指令
+  js/market.js                開休市狀態（純函式）
   js/export.js                CSV / XLSX
   js/format.js                數字與日期格式
 config/watchlist.json         追蹤清單

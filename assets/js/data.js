@@ -21,7 +21,8 @@ const FINMIND = 'https://api.finmindtrade.com/api/v4/data';
 const DAY = 24 * 3600 * 1000;
 
 let version = '';          // 以 meta.generatedAt 當版本號：資料更新時網址改變 → 瀏覽器自動抓新的
-const v = (path) => `${DATA}${path}${version ? `?v=${encodeURIComponent(version)}` : ''}`;
+const v = (path, ver = version) => `${DATA}${path}${ver ? `?v=${encodeURIComponent(ver)}` : ''}`;
+let macroVersion = '';     // 夜間只更新總經：macro.json 用 meta.macroAt，其餘檔案沿用 generatedAt
 
 /**
  * 首次載入：meta 先抓（不走瀏覽器快取），其餘 5 個檔案平行抓。
@@ -32,6 +33,7 @@ export async function loadBootstrap() {
   try {
     meta = await fetchJSON(DATA + 'meta.json', { cache: 'no-cache', timeout: 8000 });
     version = meta.generatedAt || '';
+    macroVersion = meta.macroAt || version;
   } catch {
     return { meta: null };          // 還沒部署過資料（或本機直接開檔案）→ 顯示設定說明
   }
@@ -40,7 +42,7 @@ export async function loadBootstrap() {
   const [stocks, market, macro, quotes, spec] = await Promise.all([
     settle(fetchJSON(v('stocks.json'), opt)),
     settle(fetchJSON(v('market.json'), opt)),
-    settle(fetchJSON(v('macro.json'), opt)),
+    settle(fetchJSON(v('macro.json', macroVersion), opt)),
     settle(fetchJSON(v('quotes.json'), opt)),
     settle(fetchJSON(v('datasets.json'), { ...opt, ttl: DAY })),
   ]);

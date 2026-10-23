@@ -27,6 +27,7 @@ on:
     - cron: "23 8 * * 1-5"    # 台北 16:23 三大法人公布後
     - cron: "37 11 * * 1-5"   # 台北 19:37 晚間補抓（融資券、月營收等較晚公布的資料）
     # 夜間：台指期夜盤（15:00–05:00）與美股（台北 21:30–04:00，11 月起冬令 22:30–05:00）
+    # 這兩組只更新總經（見下方 MACRO_ONLY）；修改時兩處要一致
     - cron: "47 13,15 * * 1-5"  # 台北 21:47、23:47（週一至週五晚上）
     - cron: "17 18,21 * * 1-5"  # 台北 02:17、05:17（週二至週六凌晨；05:17 為夜盤與美股收盤後）
 
@@ -68,7 +69,16 @@ jobs:
       - name: Fetch data (FinMind token from Secrets)
         env:
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
-        run: python scripts/fetch_data.py --out _site/data
+          # 夜間排程只更新總經：個股與全市場資料夜間不會變，沿用網站上目前的檔案（約 4 次 FinMind 請求，原本約 160 次）
+          # 取不到線上資料時，腳本會自動改跑完整模式
+          MACRO_ONLY: ${{ github.event.schedule == '47 13,15 * * 1-5' || github.event.schedule == '17 18,21 * * 1-5' }}
+        run: |
+          if [ "$MACRO_ONLY" = "true" ]; then
+            python scripts/fetch_data.py --out _site/data --macro-only \
+              --base-url "https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/"
+          else
+            python scripts/fetch_data.py --out _site/data
+          fi
 
       - name: Annotate failed sources
         if: always()
@@ -81,7 +91,10 @@ jobs:
               m = json.loads(p.read_text())
               bad = [f"{k}: {s.get('note', '')}" for k, s in m["sources"].items() if not s["ok"]]
               ok = len(m["sources"]) - len(bad)
-              print(f"::notice title=資料更新 {m['generatedAt']}::{ok}/{len(m['sources'])} 個來源正常，FinMind 請求 {m['finmindRequests']} 次")
+              if m.get("mode") == "macro":
+                  print(f"::notice title=只更新總經 {m['macroAt']}::個股資料沿用 {m['generatedAt']}，{ok}/{len(m['sources'])} 個來源正常，FinMind 請求 {m['macroFinmindRequests']} 次")
+              else:
+                  print(f"::notice title=資料更新 {m['generatedAt']}::{ok}/{len(m['sources'])} 個來源正常，FinMind 請求 {m['finmindRequests']} 次")
               for b in bad:
                   print(f"::warning title=資料來源失敗::{b}")
           EOF
@@ -95,6 +108,8 @@ jobs:
           if not p.exists():
               print("## 資料抓取失敗：沒有產生 meta.json"); raise SystemExit
           m = json.loads(p.read_text())
+          if m.get("mode") == "macro":
+              print(f"## 只更新總經 {m['macroAt']}（個股資料沿用 {m['generatedAt']}，本次 FinMind 請求 {m['macroFinmindRequests']} 次）")
           print(f"## 資料更新 {m['generatedAt']}")
           print(f"FinMind token：{'已使用' if m['tokenUsed'] else '未設定（匿名額度）'}，請求數 {m['finmindRequests']}\n")
           print("| 來源 | 狀態 | 筆數 | 耗時 | 備註 |\n|---|---|---|---|---|")

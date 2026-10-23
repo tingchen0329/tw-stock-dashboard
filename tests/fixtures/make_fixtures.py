@@ -246,6 +246,16 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
          "CDiff": "-70.00", "CTotalVolume": "512", "CTime": "215801"},
         {"SymbolID": "TXFK6/L6-M", "DispCName": "臺指期116/126", "CLastPrice": "40.00", "CRefPrice": "40.00",
          "CTotalVolume": "99999", "CTime": "215700"}]}})
+    # 證交所休市日（含兩筆「有開盤」的說明列，應被排除）
+    w("v1_holidaySchedule_holidaySchedule.json", [
+        {"Name": n, "Date": roc(dt.date.fromisoformat(d)), "Weekday": wd, "Description": desc}
+        for n, d, wd, desc in [
+            ("國慶日", "2026-10-09", "五", "依規定放假1日"),
+            ("臺灣光復暨金門古寧頭大捷紀念日", "2026-10-26", "一", "補假1日"),
+            ("中華民國開國紀念日", "2027-01-01", "五", "依規定放假1日"),
+            ("國曆新年開始交易日", "2027-01-04", "一", "國曆新年開始交易"),
+            ("農曆春節前最後交易日", "2027-02-03", "三", "農曆春節前最後交易日"),
+            ("農曆除夕", "2027-02-05", "五", "")]])
     # FinMind 備援：TaiwanFuturesDaily（position = 日盤、after_market = 夜盤）
     fm("finmind_TaiwanFuturesDaily_TX.json", [
         {"date": str(last_day), "futures_id": "TX", "contract_date": cd, "open": 0, "max": 0, "min": 0,

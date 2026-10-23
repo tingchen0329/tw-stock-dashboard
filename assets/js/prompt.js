@@ -1,104 +1,111 @@
 /**
- * 產生「台股深度分析指令 v2.0」— 把網頁上的真實資料整理成給 Claude / ChatGPT 的提示詞
+ * 產生「分析指令 v3（精簡版）」— 把網頁上的真實數據整理成可直接貼到任何 AI（Claude、ChatGPT、Gemini、Copilot）的提示詞
  *
- * 原則（對應 v2.0 指令的「資料驗證強制條款」）：
- *  - 每個數字都附來源與日期
- *  - 缺的欄位明確列在「缺少資料」，要求 AI 標 N/A，不准用記憶補
- *  - 參考價位是客觀計算值（前高前低、均線、河流圖價格帶），不是買賣建議
+ * 設計：
+ *  - 數據一行一個主題、以「｜」分隔，日期只在與資料日不同時才標（v2 每行都重複來源與日期，約長一倍）
+ *  - 指令只留會改變輸出的要求：結論先行、價位表附依據、引用數字、N/A 不推測
+ *  - 參考價位是客觀計算值（前高前低、均線、河流圖價格帶），買賣區間由 AI 依這些數字判斷並說明依據
  */
 
 import * as F from './format.js';
 import { completeness } from './analytics.js';
 import { marketLabel } from './search.js';
 
-const line = (label, value) => `- ${label}：${value}`;
+const pct = (v, dp = 1) => F.pct(v, dp, true);
+const join = (parts) => parts.filter(Boolean).join('｜');
+/** '2026-09-30' → '26Q3' */
+const quarter = (d) => (d ? `${d.slice(2, 4)}Q${Math.ceil(Number(d.slice(5, 7)) / 3)}` : 'N/A');
+/** 與資料日相同就不重複標日期 */
+const dateIf = (d, dataDay) => (d && String(d).slice(0, 10) !== dataDay ? `（${F.when(d)}）` : '');
+
+function macroLine(macro) {
+  if (!macro.length) return 'N/A';
+  return join(macro.map((m) => {
+    if (m.key === 'fed') return `Fed ${F.pct(m.value, 2)}`;
+    const val = m.key === 'us10y' ? F.pct(m.value, 2) : F.num(m.value, m.key === 'usdtwd' ? 3 : m.value > 1000 ? 0 : 2);
+    const when = m.key === 'txf_night' ? `，${F.when(m.time)}` : '';
+    return `${m.label} ${val}（${pct(m.changePct, 2)}${when}）`;
+  }));
+}
 
 export function buildPrompt(s, meta, macro = []) {
   const { info, price: px, valuation: v, tech: t, river: rv, revenue: rev, inst, instToday, margin, holding, fundamentals: f } = s;
   const c = completeness(s);
+  const dataDay = meta?.market?.lastTradingDay || t?.date || null;
   const L = [];
 
-  L.push(`請以資深台灣股票分析師的身份，理性客觀分析 ${info.code} ${info.name}（${marketLabel(info.market)}，${info.industry || '產業 N/A'}）。`);
-  L.push('');
-  L.push('以下資料由我的儀表板從證交所 / 櫃買中心 OpenAPI、FinMind、Yahoo Finance 自動抓取，請以此為唯一數據來源，不要用記憶推測或補數字。');
-  L.push(`資料產生時間：${meta?.generatedAt ?? 'N/A'}（台北時間）`);
-  L.push(`資料完整度：${c.pct}%（${c.ok}/${c.total} 項）${c.missing.length ? `；缺少：${c.missing.join('、')}` : ''}`);
+  L.push(`你是台股分析師，依下列數據分析 ${info.code} ${info.name}（${marketLabel(info.market)}｜${info.industry || '產業 N/A'}）。`);
+  L.push(`資料日：${dataDay ? `${F.dayLabel(dataDay)}收盤` : 'N/A'}｜完整度 ${c.pct}%${c.missing.length ? `｜缺：${c.missing.join('、')}` : ''}`);
+  L.push('來源：證交所、櫃買中心、FinMind、Yahoo、期交所；景氣燈號、PMI、借券、千張大戶、董監持股無資料');
   L.push('');
 
-  L.push('【總經（儀表板抓取）】');
-  if (macro.length) {
-    for (const m of macro) {
-      const val = m.key === 'fed' || m.key === 'us10y' ? F.pct(m.value, 2) : F.num(m.value, m.key === 'usdtwd' ? 3 : 2);
-      L.push(line(`${m.label}（${m.source}，${F.when(m.time)}）`, m.key === 'fed' ? val : `${val}，${F.change(m.change, m.changePct)}`));
-    }
-  } else L.push('- N/A');
-  L.push('- 台灣景氣對策信號、製造業 PMI：N/A（免費資料源未提供）');
-  L.push('');
+  L.push(`【總經】${macroLine(macro)}`);
 
-  L.push('【股價與估值】');
-  L.push(line(`股價（${px?.kind ?? ''}，${px?.source ?? 'N/A'}，${F.when(px?.asOf)}）`, `${F.price(px?.price)}，${F.change(px?.change, px?.changePct)}`));
-  L.push(line(`本益比 / 股價淨值比 / 殖利率（${v.source ?? 'N/A'}，${F.when(v.asOf)}）`, `${F.num(v.pe)} 倍 / ${F.num(v.pb)} 倍 / ${F.pct(v.yield)}`));
+  const r = t?.returns;
+  L.push(`【股價】${join([
+    px ? `${F.price(px.price)}（${pct(px.changePct, 2)}${px.kind === '盤中' ? `，盤中 ${F.when(px.asOf)}` : dateIf(px.asOf, dataDay)}）` : 'N/A',
+    r && `5日 ${pct(r.d5)}、20日 ${pct(r.d20)}、60日 ${pct(r.d60)}、YTD ${pct(r.ytd)}、1年 ${pct(r.y1)}`,
+    t && `位階 1年 ${F.num(t.pct1y, 0)}%、3年 ${F.num(t.pct3y, 0)}%`,
+  ])}`);
+  L.push(`【估值】${join([`本益比 ${F.num(v.pe)}`, `股價淨值比 ${F.num(v.pb)}`, `殖利率 ${F.pct(v.yield)}`])}${dateIf(v.asOf, dataDay)}`);
+
+  L.push(rev
+    ? `【營收】${join([
+      `${rev.latest.period} ${F.twd(rev.latest.revenue)}，年增 ${pct(rev.latest.yoy)}、月增 ${pct(rev.latest.mom)}`,
+      `近3月平均年增 ${pct(rev.avgYoY3)}`, `今年累計 ${pct(rev.ytdYoY)}`, `近12月累計 ${pct(rev.ttmYoY)}`,
+    ])}\n　近12月年增（${rev.items.slice(-12)[0]?.period ?? ''} 起）：${rev.items.slice(-12).map((x) => pct(x.yoy)).join(', ')}`
+    : '【營收】N/A');
+
+  L.push(f
+    ? `【獲利】${join([
+      `近四季 EPS ${F.num(f.eps4)}（年增 ${pct(f.eps4YoY)}，至 ${quarter(f.latestQuarter)}）`,
+      `單季 EPS ${quarter(f.quarters.slice(-8)[0]?.date)} 起：${f.quarters.slice(-8).map((q) => F.num(q.eps)).join(', ') || 'N/A'}`,
+    ])}\n　${join([
+      `毛利/營益/淨利率 ${F.pct(f.margins?.gross, 1)} / ${F.pct(f.margins?.op, 1)} / ${F.pct(f.margins?.net, 1)}（去年同期 ${F.pct(f.marginsLastYear?.gross, 1)} / ${F.pct(f.marginsLastYear?.op, 1)} / ${F.pct(f.marginsLastYear?.net, 1)}）`,
+      `ROE ${F.pct(f.roe, 1)}`, `ROA ${F.pct(f.roa, 1)}`, `負債比 ${F.pct(f.debtRatio, 1)}`, `流動比 ${F.pct(f.currentRatio, 0)}`,
+    ])}`
+    : '【獲利】N/A');
+
+  const lots = (o) => `外資 ${F.lots(o.foreign)}、投信 ${F.lots(o.trust)}、自營 ${F.lots(o.dealer)}`;
+  L.push(`【籌碼，張】${join([
+    instToday && `當日${dateIf(instToday.date, dataDay)} ${lots(instToday)}`,
+    inst && `5日 ${lots(inst.sum5)}`,
+    inst && `20日 ${lots(inst.sum20)}`,
+    inst?.foreignStreak && `外資連${inst.foreignStreak > 0 ? '買' : '賣'} ${Math.abs(inst.foreignStreak)} 日`,
+  ]) || 'N/A'}\n　${join([
+    holding ? `外資持股 ${F.pct(holding.ratio)}（20日 ${F.signed(holding.chg20)}、60日 ${F.signed(holding.chg60)} 百分點）` : '外資持股 N/A',
+    margin ? `融資 ${F.num(margin.margin, 0)}（20日 ${F.signed(margin.marginChg20, 0)}）、融券 ${F.num(margin.short, 0)}（20日 ${F.signed(margin.shortChg20, 0)}）、券資比 ${F.pct(margin.shortRatio)}` : '融資券 N/A',
+  ])}`);
+
   if (t) {
-    const r = t.returns;
-    L.push(line('區間漲跌幅', `5日 ${F.pct(r.d5, 1, true)}、20日 ${F.pct(r.d20, 1, true)}、60日 ${F.pct(r.d60, 1, true)}、年初至今 ${F.pct(r.ytd, 1, true)}、近一年 ${F.pct(r.y1, 1, true)}`));
-    L.push(line('價格位階（收盤價百分位）', `近一年 ${F.num(t.pct1y, 0)}%、近三年 ${F.num(t.pct3y, 0)}%`));
-  }
-  L.push('');
-
-  L.push('【基本面】');
-  if (rev) {
-    L.push(line(`最新月營收（${rev.latest.period}）`, `${F.twd(rev.latest.revenue)}，年增 ${F.pct(rev.latest.yoy, 1, true)}，月增 ${F.pct(rev.latest.mom, 1, true)}`));
-    L.push(line('近 3 個月平均年增 / 今年累計年增 / 近 12 月累計年增', `${F.pct(rev.avgYoY3, 1, true)} / ${F.pct(rev.ytdYoY, 1, true)} / ${F.pct(rev.ttmYoY, 1, true)}`));
-    L.push(line('近 12 個月營收年增率', rev.items.slice(-12).map((x) => `${x.period} ${F.pct(x.yoy, 1, true)}`).join('、')));
-  } else L.push('- 月營收：N/A');
-  if (f) {
-    L.push(line(`近四季 EPS（至 ${f.latestQuarter ?? 'N/A'}，單季加總）`, `${F.num(f.eps4)} 元，年增 ${F.pct(f.eps4YoY, 1, true)}`));
-    L.push(line('單季 EPS', f.quarters.slice(-8).map((q) => `${q.date.slice(0, 7)} ${F.num(q.eps)}`).join('、') || 'N/A'));
-    L.push(line('最新一季 毛利率 / 營益率 / 淨利率', `${F.pct(f.margins?.gross, 1)} / ${F.pct(f.margins?.op, 1)} / ${F.pct(f.margins?.net, 1)}（去年同期 ${F.pct(f.marginsLastYear?.gross, 1)} / ${F.pct(f.marginsLastYear?.op, 1)} / ${F.pct(f.marginsLastYear?.net, 1)}）`));
-    L.push(line(`ROE / ROA（近四季）/ 負債比 / 流動比（${f.balanceDate ?? 'N/A'}）`, `${F.pct(f.roe, 1)} / ${F.pct(f.roa, 1)} / ${F.pct(f.debtRatio, 1)} / ${F.pct(f.currentRatio, 0)}`));
-  } else L.push('- 財報：N/A');
-  L.push('');
-
-  L.push('【籌碼面】（單位：張）');
-  if (instToday) L.push(line(`三大法人當日（${instToday.source}，${F.when(instToday.date)}）`, `外資 ${F.lots(instToday.foreign)}、投信 ${F.lots(instToday.trust)}、自營商 ${F.lots(instToday.dealer)}、合計 ${F.lots(instToday.total)}`));
-  if (inst) {
-    L.push(line('近 5 日合計', `外資 ${F.lots(inst.sum5.foreign)}、投信 ${F.lots(inst.sum5.trust)}、自營商 ${F.lots(inst.sum5.dealer)}`));
-    L.push(line('近 20 日合計', `外資 ${F.lots(inst.sum20.foreign)}、投信 ${F.lots(inst.sum20.trust)}、自營商 ${F.lots(inst.sum20.dealer)}`));
-    L.push(line('外資連續', inst.foreignStreak > 0 ? `連 ${inst.foreignStreak} 日買超` : inst.foreignStreak < 0 ? `連 ${-inst.foreignStreak} 日賣超` : '無'));
-  }
-  L.push(holding ? line(`外資持股比例（${holding.date}）`, `${F.pct(holding.ratio)}，近 20 日 ${F.signed(holding.chg20)} 個百分點、近 60 日 ${F.signed(holding.chg60)} 個百分點`) : '- 外資持股比例：N/A');
-  L.push(margin ? line(`融資 / 融券餘額（${margin.date}）`, `${F.num(margin.margin, 0)} / ${F.num(margin.short, 0)}，券資比 ${F.pct(margin.shortRatio)}，近 20 日融資 ${F.signed(margin.marginChg20, 0)}、融券 ${F.signed(margin.shortChg20, 0)}`) : '- 融資融券：N/A');
-  L.push('- 借券、千張大戶、董監持股：N/A（免費資料源未提供）');
-  L.push('');
-
-  L.push('【技術面】');
-  if (t) {
-    L.push(line(`均線（${t.date}）`, `MA5 ${F.price(t.ma[5])}、MA20 ${F.price(t.ma[20])}、MA60 ${F.price(t.ma[60])}、MA240 ${F.price(t.ma[240])}；${t.alignment}`));
-    L.push(line('KD(9)', `K ${F.num(t.k, 1)}、D ${F.num(t.d, 1)}${t.kdCross ? `（近 3 日${t.kdCross === 'golden' ? '黃金交叉' : '死亡交叉'}）` : ''}`));
-    L.push(line('RSI(14)', F.num(t.rsi, 1)));
-    L.push(line('MACD(12,26,9)', `DIF ${F.num(t.dif)}、DEA ${F.num(t.dea)}、柱狀 ${F.signed(t.osc)}${t.macdCross ? `（近 3 日${t.macdCross === 'golden' ? '黃金交叉' : '死亡交叉'}）` : ''}`));
-    L.push(line('成交量 / 前 20 日均量', F.num(t.volRatio, 2) + ' 倍'));
+    const cross = (x) => (x ? (x === 'golden' ? ' 黃金交叉' : ' 死亡交叉') : '');
     const lv = t.levels;
-    L.push(line('參考價位（客觀計算）', `20日高低 ${F.price(lv.high20)} / ${F.price(lv.low20)}；60日高低 ${F.price(lv.high60)} / ${F.price(lv.low60)}；52週高低 ${F.price(lv.high250)} / ${F.price(lv.low250)}`));
-  } else L.push('- 技術指標：N/A（股價資料不足）');
-  L.push('');
+    L.push(`【技術】${join([
+      `MA5 ${F.price(t.ma[5])}、MA20 ${F.price(t.ma[20])}、MA60 ${F.price(t.ma[60])}、MA240 ${F.price(t.ma[240])}，${t.alignment}`,
+      `K ${F.num(t.k, 1)} D ${F.num(t.d, 1)}${cross(t.kdCross)}`,
+      `RSI14 ${F.num(t.rsi, 1)}`,
+      `MACD 柱 ${F.signed(t.osc)}${cross(t.macdCross)}`,
+      `量比 ${F.num(t.volRatio, 2)}`,
+    ])}`);
+    L.push(`【高/低點】20日 ${F.price(lv.high20)} / ${F.price(lv.low20)}｜60日 ${F.price(lv.high60)} / ${F.price(lv.low60)}｜52週 ${F.price(lv.high250)} / ${F.price(lv.low250)}`);
+  } else L.push('【技術】N/A（股價資料不足）');
 
-  L.push('【本益比河流圖】');
   L.push(rv
-    ? [line('目前本益比', `${F.num(rv.currentPE)} 倍（近三年 ${F.num(rv.percentile, 0)} 百分位，位於「${rv.zone}」區）`),
-      line('隱含近四季 EPS', `${F.num(rv.currentEPS)} 元`),
-      line('近三年本益比 10/25/50/75/90 百分位', rv.mults.map((m) => F.num(m, 1) + 'x').join(' / ')),
-      line('對應價格帶（25/50/75 百分位）', `${F.price(rv.fair.low)} / ${F.price(rv.fair.mid)} / ${F.price(rv.fair.high)}`)].join('\n')
-    : '- N/A（虧損或本益比資料不足 60 筆，河流圖不適用；可改用股價淨值比評估）');
+    ? `【本益比河流圖】${join([
+      `目前 ${F.num(rv.currentPE)} 倍，3年 ${F.num(rv.percentile, 0)} 百分位（${rv.zone}）`,
+      `隱含 EPS ${F.num(rv.currentEPS)}`,
+      `10/25/50/75/90 分位 ${rv.mults.map((m) => F.num(m, 1)).join(' / ')} 倍`,
+      `對應價 25/50/75 分位 ${F.price(rv.fair.low)} / ${F.price(rv.fair.mid)} / ${F.price(rv.fair.high)}`,
+    ])}`
+    : '【本益比河流圖】N/A（虧損或資料不足，改用股價淨值比）');
   L.push('');
 
-  L.push(`請依下列結構輸出：
-1. 開頭先聲明資料截止日，列出上方「缺少」的項目並標註 N/A
-2. 七段分析：總體經濟背景 / 股價表現與相對強弱 / 基本面 / 籌碼面 / 技術面 / 估值河流圖 / 綜合結論
-   - 總經部分若無我提供的數據，請明確寫「資料不足」，不要自行假設利率或指數點位
-3. 第七段用 Markdown 表格：投資評級（偏多/中性偏多/中性/中性偏空/偏空）、操作週期、第一買點 / 第二加碼點 / 停損點、合理估值區間（本益比 × EPS）、三大優勢、三大風險、壓力測試（大盤回檔 10% 時可能下探價位）、需追蹤的變數
-4. 每個結論都要引用上方數字；不使用 emoji 與情緒性詞彙
-5. 最後加上「分析師自我檢查」：哪些來自上方資料、哪些是推估、哪些是主觀判斷、操作前最該再驗證的 3 個數字
-6. 結尾一句提醒：此為資料整理與研究參考，非投資建議`);
+  L.push(`請用繁體中文輸出，先結論後理由，每個判斷都引用上方數字：
+1. 結論：評級（偏多／中性偏多／中性／中性偏空／偏空）、操作週期、一句理由
+2. 價位表（Markdown 表格，欄位：項目｜價位｜依據）：買進區間、加碼點、賣出區間、支撐 1、支撐 2、壓力 1、壓力 2、破線停損價、合理價（本益比 × EPS）
+3. 總經、股價、基本面、籌碼、技術、估值，各 2–3 句
+4. 三大優勢、三大風險；壓力測試：加權指數回檔 10% 時可能價位
+5. 操作前要再確認的 3 個數字
+規則：只用上方數據，N/A 照寫不推測；推估值標「推估」；不用 emoji；結尾註明「非投資建議」。`);
   return L.join('\n');
 }

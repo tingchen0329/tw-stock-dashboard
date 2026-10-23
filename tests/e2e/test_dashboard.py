@@ -184,8 +184,17 @@ class Dashboard(unittest.TestCase):
         self.page.get_by_role("button", name="產生分析指令").click()
         text = self.page.locator("#prompt-text").input_value()
         self.assertIn("2330 台積電", text)
-        self.assertIn("本益比河流圖", text)
-        self.assertIn("分析師自我檢查", text)
+        self.assertIn("【本益比河流圖】", text)
+        self.assertIn("破線停損價", text)
+        self.assertNotIn("undefined", text)
+        self.assertLess(len(text), 3200)                # 精簡版：v2 約 4,800 字
+
+    def test_market_closed_banner_uses_holiday_schedule(self):
+        # 週六上午：下次開盤要跳過 10/26（fixture 的證交所休市表）→ 10/27
+        self.page.clock.set_fixed_time("2026-10-24T10:00:00+08:00")
+        self.open("#2330")
+        self.assertIn("今天 10/24（六）台股休市（週末）。下列為 10/19（一）收盤資料，下次開盤 10/27（二）。",
+                      self.page.locator("#banners").inner_text())
 
     def test_no_unexpected_third_party_requests(self):
         self.open("#2330")

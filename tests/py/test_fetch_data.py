@@ -5,12 +5,16 @@ fetch_data.py 單元測試（只用標準函式庫 unittest，不需安裝套件
 from __future__ import annotations
 
 import datetime as dt
+import functools
+import http.server
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.error
 from pathlib import Path
@@ -209,6 +213,38 @@ class Security(unittest.TestCase):
             self.assertFalse(out.exists(), "整個輸出應被刪除，部署不會發生")
 
 
+class MarketCalendar(unittest.TestCase):
+    """休市日與臨時休市判斷（以 2026-10 薔琵颱風為例：10/23 五 停市、10/26 一 補假、10/27 二 開盤）"""
+    HOL = [{"date": "2026-10-26", "name": "臺灣光復暨金門古寧頭大捷紀念日"}]
+
+    @staticmethod
+    def at(day: str, hm: str) -> tuple[dt.date, dt.datetime]:
+        d = dt.date.fromisoformat(day)
+        return d, dt.datetime.combine(d, dt.time.fromisoformat(hm), tzinfo=fd.TPE)
+
+    def test_parse_holidays_excludes_first_and_last_trading_day_rows(self):
+        rows = [{"Name": "國慶日", "Date": "1151009", "Weekday": "五", "Description": "放假"},
+                {"Name": "國曆新年開始交易日", "Date": "1160104", "Weekday": "一", "Description": ""},
+                {"Name": "農曆春節前最後交易日", "Date": "1160203", "Weekday": "三", "Description": ""},
+                {"Name": "", "Date": "1160205", "Weekday": "五", "Description": ""}]
+        self.assertEqual(fd.parse_holidays(rows), [{"date": "2026-10-09", "name": "國慶日"}])
+
+    def test_typhoon_day_detected_only_after_1500(self):
+        self.assertEqual(fd.detect_closures(*self.at("2026-10-23", "14:00"), "2026-10-22", "2026-10-22", self.HOL), [])
+        self.assertEqual(fd.detect_closures(*self.at("2026-10-23", "21:47"), "2026-10-22", "2026-10-22", self.HOL),
+                         ["2026-10-23"])
+
+    def test_closure_kept_over_weekend_and_scheduled_holiday_excluded(self):
+        self.assertEqual(fd.detect_closures(*self.at("2026-10-24", "02:17"), "2026-10-22", "2026-10-22", self.HOL),
+                         ["2026-10-23"])
+        self.assertEqual(fd.detect_closures(*self.at("2026-10-27", "10:12"), "2026-10-22", "2026-10-22", self.HOL),
+                         ["2026-10-23"])                     # 10/26 是排定休市，10/27 還沒收盤
+
+    def test_no_closure_when_only_one_source_is_stale_or_missing(self):
+        self.assertEqual(fd.detect_closures(*self.at("2026-10-23", "21:47"), "2026-10-22", "2026-10-23", []), [])
+        self.assertEqual(fd.detect_closures(*self.at("2026-10-23", "21:47"), None, "2026-10-22", []), [])
+
+
 class EndToEnd(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -286,12 +322,100 @@ class EndToEnd(unittest.TestCase):
             self.assertFalse(meta["sources"]["tpex_quotes"]["ok"])
             self.assertTrue(meta["sources"]["twse_quotes"]["ok"])
 
+    def test_meta_market_calendar(self):
+        meta = json.loads((self.out / "meta.json").read_text())
+        mk = meta["market"]
+        self.assertEqual(mk["lastTradingDay"], "2026-10-19")
+        self.assertEqual([h["date"] for h in mk["holidays"]], ["2026-10-09", "2026-10-26", "2027-01-01", "2027-02-05"])
+        self.assertEqual(mk["closures"], [])
+        self.assertTrue(mk["holidaysOk"])
+        self.assertEqual(meta["macroAt"], meta["generatedAt"])
+
     def test_t86_falls_back_to_previous_trading_day(self):
         tx = fd.FixtureTransport(self.fx)
         # 週二沒有 T86 fixture（尚未公布）→ 應往回找到週一 2026-10-19
         data, day = fd.fetch_t86(tx, dt.date(2026, 10, 20))
         self.assertEqual(day, "2026-10-19")
         self.assertTrue(data)
+
+
+class QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *args):  # noqa: D401 — 測試時不印存取紀錄
+        pass
+
+
+def serve(directory: Path) -> http.server.ThreadingHTTPServer:
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(QuietHandler, directory=str(directory)))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def stop(srv: http.server.ThreadingHTTPServer) -> None:
+    srv.shutdown()
+    srv.server_close()
+
+
+class MacroOnly(unittest.TestCase):
+    """夜間輕量模式：從已部署的網站取回上一份資料，只重抓總經"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        cls.fx = make_fixtures(root)
+        cls.site = root / "site"
+        fd.main(["--fixtures", str(cls.fx), "--out", str(cls.site / "data"), "--today", "2026-10-19"])
+        cls.srv = serve(cls.site)
+        cls.url = f"http://127.0.0.1:{cls.srv.server_address[1]}/"
+
+    @classmethod
+    def tearDownClass(cls):
+        stop(cls.srv)
+        cls.tmp.cleanup()
+
+    def run_macro(self, url: str, out: Path) -> int:
+        return fd.main(["--fixtures", str(self.fx), "--out", str(out), "--today", "2026-10-19",
+                        "--macro-only", "--base-url", url])
+
+    def test_keeps_previous_data_and_refreshes_macro(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "data"
+            self.assertEqual(self.run_macro(self.url, out), 0)
+            prev = json.loads((self.site / "data/meta.json").read_text())
+            meta = json.loads((out / "meta.json").read_text())
+            # 個股、全市場資料與上一份完全相同
+            for rel in ("market.json", "stocks.json", "quotes.json", "datasets.json", "stock/2330.json"):
+                self.assertEqual((out / rel).read_bytes(), (self.site / "data" / rel).read_bytes(), rel)
+            self.assertEqual(meta["generatedAt"], prev["generatedAt"])
+            self.assertEqual(meta["mode"], "macro")
+            self.assertGreaterEqual(meta["macroAt"], prev["macroAt"])
+            self.assertLessEqual(meta["macroFinmindRequests"], 4)
+            self.assertEqual(meta["market"]["lastTradingDay"], "2026-10-19")
+            self.assertTrue(meta["sources"]["twse_quotes"]["ok"])           # 上一份的來源狀態仍保留
+            self.assertEqual(set(meta["bytes"]), set(prev["bytes"]))
+
+    def test_falls_back_to_full_run_when_site_unreachable(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "data"
+            self.assertEqual(self.run_macro("http://127.0.0.1:9/", out), 0)
+            meta = json.loads((out / "meta.json").read_text())
+            self.assertNotIn("mode", meta)
+            self.assertTrue((out / "stock" / "2330.json").exists())
+
+    def test_falls_back_when_a_file_is_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            broken = Path(d) / "site"
+            shutil.copytree(self.site, broken)
+            (broken / "data" / "stock" / "2330.json").unlink()
+            srv = serve(broken)
+            try:
+                out = Path(d) / "data"
+                self.run_macro(f"http://127.0.0.1:{srv.server_address[1]}/", out)
+            finally:
+                stop(srv)
+            meta = json.loads((out / "meta.json").read_text())
+            self.assertNotIn("mode", meta)                                # 完整模式重抓
+            self.assertTrue((out / "stock" / "2330.json").exists())
 
 
 if __name__ == "__main__":

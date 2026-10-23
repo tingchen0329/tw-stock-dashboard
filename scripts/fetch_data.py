@@ -663,7 +663,7 @@ def fetch_macro(tx, report: SourceReport, today: dt.date, use_finmind: bool) -> 
         if res:
             items.append({"key": key, "label": label, "source": "Yahoo", **res})
     # 台指期夜盤：期交所即時行情優先（夜盤進行中有盤中價）；失敗時用 FinMind 已收盤的夜盤
-    now = now_tpe() if today == now_tpe().date() else dt.datetime.combine(today, dt.time(22, 0), tzinfo=TPE)
+    now = clock(today)
     night = report.run("taifex_night", lambda: parse_taifex_quotes(tx.post_json(TAIFEX_QUOTES, TAIFEX_NIGHT_BODY), now),
                        count=lambda r: 1 if r else 0)
     if night:
@@ -707,6 +707,95 @@ def fetch_macro(tx, report: SourceReport, today: dt.date, use_finmind: bool) -> 
 
 
 # ──────────────────────────────────────────────────────────────────────
+# 開休市狀態：給網頁顯示「今日休市，顯示 X 日收盤；下次開盤 Y 日」
+#   排定休市：證交所 OpenAPI holidaySchedule（國定假日、補假、春節結算日）
+#   臨時休市：颱風等當天才宣布 → 收盤後證交所與加權指數都還停在前一天 → 判定今天沒開盤
+# 實際「現在是否休市」由網頁依瀏覽當下的時間計算（見 assets/js/market.js），這裡只提供日期資料
+# ──────────────────────────────────────────────────────────────────────
+def parse_holidays(rows: list[dict]) -> list[dict]:
+    """
+    證交所休市日 → [{date, name}]。
+    清單中也有「國曆新年開始交易日」「農曆春節前最後交易日」這類「有開盤」的日子，必須排除。
+    """
+    out = []
+    for r in rows or []:
+        d = roc_to_iso(pick(r, "Date", "日期"))
+        name = str(pick(r, "Name", "名稱") or "").strip()
+        text = name + str(pick(r, "Description", "說明") or "")
+        if not d or not name or "開始交易" in text or "最後交易" in text:
+            continue
+        out.append({"date": d, "name": name})
+    return sorted(out, key=lambda x: x["date"])
+
+
+def detect_closures(today: dt.date, now: dt.datetime, last_trading_day: str | None,
+                    taiex_day: str | None, holidays: list[dict]) -> list[str]:
+    """
+    臨時休市（颱風等）不在排定休市表裡，只能從資料推斷：
+    證交所收盤資料與加權指數「都」停在 X 日 → X 日之後到今天的平日、非排定休市日就是沒開盤。
+    今天要等 15:00 後才判斷（證交所 OpenAPI 收盤資料偶爾 14 點多才更新，避免誤判）。
+    """
+    if not last_trading_day or not taiex_day:
+        return []
+    off = {h["date"] for h in holidays}
+    d = dt.date.fromisoformat(max(last_trading_day, taiex_day)) + dt.timedelta(days=1)
+    out = []
+    while d <= today and len(out) < 10:
+        if d.weekday() < 5 and d.isoformat() not in off and (d < today or now.time() >= dt.time(15, 0)):
+            out.append(d.isoformat())
+        d += dt.timedelta(days=1)
+    return out
+
+
+def market_block(tx, report: SourceReport, today: dt.date, now: dt.datetime,
+                 last_trading_day: str | None, macro: list[dict], prev: dict | None = None) -> dict:
+    """prev：上一份 meta 的 market 區塊；休市表這次抓失敗時沿用（夜間模式用）"""
+    hol = report.run("twse_holidays", lambda: parse_holidays(
+        tx.get_json(f"{TWSE_OPENAPI}/holidaySchedule/holidaySchedule")))
+    if hol is None and prev and prev.get("holidaysOk"):
+        hol = prev.get("holidays", [])
+    lo, hi = (today - dt.timedelta(days=14)).isoformat(), (today + dt.timedelta(days=120)).isoformat()
+    taiex = next((m for m in macro if m["key"] == "taiex"), None)
+    return {"lastTradingDay": last_trading_day,
+            "holidays": [h for h in hol or [] if lo <= h["date"] <= hi],
+            "holidaysOk": hol is not None,               # 休市表抓失敗時，網頁不把推斷出的休市標成「臨時」
+            "closures": detect_closures(today, now, last_trading_day,
+                                        ((taiex or {}).get("time") or "")[:10] or None, hol or [])}
+
+
+def clock(today: dt.date) -> dt.datetime:
+    """現在時間；測試指定 --today 時固定為該日 22:00（讓結果可重現）"""
+    return now_tpe() if today == now_tpe().date() else dt.datetime.combine(today, dt.time(22, 0), tzinfo=TPE)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 夜間輕量模式：個股與全市場資料夜間不會變 → 從已部署的網站取回上一份，只重抓總經
+# ──────────────────────────────────────────────────────────────────────
+def restore_previous(base_url: str, out: Path) -> dict | None:
+    """下載目前線上的完整資料到 out。任何一個檔案失敗就回傳 None（呼叫端改跑完整模式）"""
+    stamp = int(time.time())
+    def get(rel: str) -> bytes:
+        # ?cb= 讓 GitHub Pages 的 CDN 快取（約 10 分鐘）失效，確保拿到同一版的檔案
+        req = urllib.request.Request(f"{base_url.rstrip('/')}/data/{rel}?cb={stamp}",
+                                     headers={"User-Agent": USER_AGENT, "Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+            return resp.read()
+    try:
+        meta = json.loads(get("meta.json"))
+        if meta.get("schema") != 1 or not isinstance(meta.get("bytes"), dict):
+            return None
+        for rel in set(meta["bytes"]) | {"datasets.json"}:
+            raw = get(rel)
+            json.loads(raw)                                  # 確認是完整的 JSON，不是被截斷的檔案
+            (out / rel).parent.mkdir(parents=True, exist_ok=True)
+            (out / rel).write_bytes(raw)
+        return meta
+    except Exception as e:  # noqa: BLE001
+        log(f"macro-only: 無法取回上一份資料（{str(e)[:120]}）→ 改跑完整模式")
+        return None
+
+
+# ──────────────────────────────────────────────────────────────────────
 # 輸出
 # ──────────────────────────────────────────────────────────────────────
 def write_json(path: Path, obj: Any) -> int:
@@ -735,6 +824,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--watchlist", default=str(REPO_ROOT / "config" / "watchlist.json"))
     ap.add_argument("--fixtures", help="離線模式：從此資料夾讀 fixture，不連網")
     ap.add_argument("--today", help="覆寫今天日期 YYYY-MM-DD（測試用）")
+    ap.add_argument("--macro-only", action="store_true",
+                    help="夜間輕量模式：只重抓總經，其餘資料從 --base-url（已部署的網站）取回")
+    ap.add_argument("--base-url", help="已部署網站的網址，例如 https://<帳號>.github.io/<repo>/")
     args = ap.parse_args(argv)
 
     token = os.environ.get("FINMIND_TOKEN", "").strip() or None
@@ -744,6 +836,13 @@ def main(argv: list[str] | None = None) -> int:
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
+
+    if args.macro_only:
+        prev = restore_previous(args.base_url, out) if args.base_url else None
+        if prev:
+            return run_macro_only(tx, out, prev, today, token)
+        shutil.rmtree(out)                                   # 清掉可能下載到一半的檔案
+        out.mkdir(parents=True)
 
     watchlist = json.loads(Path(args.watchlist).read_text("utf-8"))["stocks"]
     spec = load_spec()
@@ -835,6 +934,8 @@ def main(argv: list[str] | None = None) -> int:
         "sources": report.items,
         "bytes": sizes,
     }
+    meta["market"] = market_block(tx, report, today, clock(today), twse_date or tpex_date, macro)
+    meta["macroAt"] = meta["generatedAt"]
     write_json(out / "meta.json", meta)
     assert_no_secret(out, token)
 
@@ -843,6 +944,32 @@ def main(argv: list[str] | None = None) -> int:
         f"output={sum(sizes.values()) / 1024:.0f} KB")
     # 只要有「全市場行情」或「追蹤清單」任一可用，就視為成功並部署；兩者全失敗才回傳錯誤碼
     return 0 if (market_rows or detail_ok) else 1
+
+
+def run_macro_only(tx, out: Path, prev: dict, today: dt.date, token: str | None) -> int:
+    """夜間輕量模式：沿用上一份完整資料，只更新 macro.json 與開休市狀態（約 3–4 次 FinMind 請求）"""
+    report = SourceReport()
+    try:
+        macro = fetch_macro(tx, report, today, use_finmind=True)
+    except QuotaExceeded:
+        macro = json.loads((out / "macro.json").read_text("utf-8"))["items"]    # 額度用完：保留舊總經
+    sizes = dict(prev["bytes"])
+    sizes["macro.json"] = write_json(out / "macro.json", {"items": macro})
+    asof = json.loads((out / "market.json").read_text("utf-8")).get("asOf", {})
+    market = market_block(tx, report, today, clock(today), asof.get("twse") or asof.get("tpex"), macro,
+                          prev.get("market"))
+    meta = {**prev,
+            "macroAt": now_tpe().isoformat(timespec="seconds"),   # generatedAt 不變：個股資料仍是上一份
+            "mode": "macro",
+            "sources": {**prev.get("sources", {}), **report.items},
+            "macroFinmindRequests": tx.finmind_requests,
+            "bytes": sizes,
+            "market": market}
+    write_json(out / "meta.json", meta)
+    assert_no_secret(out, token)
+    ok = sum(1 for s in report.items.values() if s["ok"])
+    log(f"macro-only done: {ok}/{len(report.items)} macro sources ok, FinMind requests={tx.finmind_requests}")
+    return 0
 
 
 def _safe(fn: Callable[[], Any]) -> Any:

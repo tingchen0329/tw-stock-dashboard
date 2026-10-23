@@ -38,7 +38,10 @@ export function renderFreshness(btn, panel, meta) {
   const level = ok === src.length ? 'ok' : ok >= src.length * 0.6 ? 'warn' : 'bad';
   btn.replaceChildren(
     h('span', { class: `dot ${level}`, 'aria-hidden': 'true' }),
-    `資料更新 ${F.when(meta.generatedAt)}，${ok}/${src.length} 個來源正常`,
+    `資料更新 ${F.when(meta.generatedAt)}`,
+    // 夜間只更新總經時，另外標示總經的時間
+    meta.macroAt && meta.macroAt !== meta.generatedAt ? `；總經 ${F.when(meta.macroAt)}` : '',
+    `，${ok}/${src.length} 個來源正常`,
   );
   btn.setAttribute('aria-label', `資料更新於 ${meta.generatedAt}，${ok} 個來源正常，共 ${src.length} 個。按此查看各來源狀態`);
   panel.replaceChildren(h('table', {},

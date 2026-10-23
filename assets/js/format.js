@@ -108,5 +108,11 @@ export function when(iso) {
   }).format(d);
 }
 
+/** 'YYYY-MM-DD' → '10/23（五）' */
+export function dayLabel(iso) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso || '')) return NA;
+  return `${iso.slice(5).replace('-', '/')}（${'日一二三四五六'[new Date(iso + 'T00:00:00Z').getUTCDay()]}）`;
+}
+
 /** 營收期間標籤：(2026, 9) → '2026-09' */
 export const period = (y, m) => `${y}-${String(m).padStart(2, '0')}`;

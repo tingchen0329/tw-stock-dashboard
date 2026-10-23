@@ -16,7 +16,8 @@ python tests/bench/run_bench.py                # 新舊版效能比較
 ## 架構
 - `scripts/fetch_data.py`：伺服器端抓資料（只用標準函式庫）。FinMind token 只從環境變數讀、只放 HTTP header。
 - `assets/datasets.json`：FinMind 資料集規格，Python 與網頁共用 —— 改欄位要兩邊一起生效，只改這一個檔。
-- `assets/js/`：`analytics.js`（純計算）、`search.js`、`charts.js`（SVG）、`render.js`（DOM）、`main.js`（狀態與事件）。
+- `assets/js/`：`analytics.js`（純計算）、`market.js`（開休市，純計算）、`search.js`、`charts.js`（SVG）、`render.js`（DOM）、`prompt.js`（分析指令）、`main.js`（狀態與事件）。
+- 夜間排程（台北 21:47、23:47、02:17、05:17）只更新總經：`fetch_data.py --macro-only --base-url` 從已部署的網站取回其餘檔案；取不到就自動跑完整模式。
 - `config/watchlist.json`：預先抓取的追蹤清單。
 
 ## 必守規則
@@ -28,4 +29,4 @@ python tests/bench/run_bench.py                # 新舊版效能比較
 
 ## Skills
 - `/finmind`：FinMind 官方 Agent Skill（`.claude/commands/finmind.md`），自然語言查 75+ 資料集。需 `FINMIND_TOKEN`。
-- `tw-stock-report`：用與網頁相同的計算產生「深度分析 v2.0」七段報告（`.claude/skills/tw-stock-report/`）。
+- `tw-stock-report`：用與網頁相同的計算產生分析報告（結論、價位表、六面向）（`.claude/skills/tw-stock-report/`）。
