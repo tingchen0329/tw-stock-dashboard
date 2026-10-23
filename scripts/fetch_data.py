@@ -1034,9 +1034,16 @@ def run_macro_only(tx, out: Path, prev: dict, today: dt.date, token: str | None,
     except QuotaExceeded:
         macro = json.loads((out / "macro.json").read_text("utf-8"))["items"]    # 額度用完：保留舊總經
     missing = [c for c in watchlist if not (out / "stock" / f"{c}.json").exists()]
-    fetched = fetch_details(tx, missing, spec, today, out)[0] if missing else 0
+    fetched, quota = fetch_details(tx, missing, spec, today, out) if missing else (0, False)
     sizes = {k: v for k, v in prev["bytes"].items() if not k.startswith("stock/")}
-    sizes.update(stock_files(out, watchlist))
+    files = stock_files(out, watchlist)
+    sizes.update(files)
+    report.items["finmind_watchlist"] = {   # 取代上一份的狀態（否則會一直顯示上次的「缺 N 檔」）
+        "ok": len(files) == len(watchlist), "rows": len(files), "ms": 0,
+        "note": "；".join(x for x in (
+            f"補抓 {fetched} 檔" if fetched else "",
+            f"缺 {len(watchlist) - len(files)} 檔" if len(files) < len(watchlist) else "",
+            "FinMind 額度用完 (HTTP 402)，下次執行會補抓" if quota else "") if x)}
     sizes["macro.json"] = write_json(out / "macro.json", {"items": macro})
     asof = json.loads((out / "market.json").read_text("utf-8")).get("asOf", {})
     market = market_block(tx, report, today, clock(today), asof.get("twse") or asof.get("tpex"), macro,

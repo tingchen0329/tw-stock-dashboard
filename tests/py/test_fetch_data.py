@@ -502,6 +502,9 @@ class MacroOnly(unittest.TestCase):
             self.assertTrue((out / "stock/6669.json").exists())
             self.assertIn("stock/6669.json", meta["bytes"])
             self.assertEqual(meta["macroFinmindRequests"], 2 + 8)
+            wl = meta["sources"]["finmind_watchlist"]
+            self.assertTrue(wl["ok"])
+            self.assertEqual(wl["note"], "補抓 1 檔")
 
     def test_falls_back_to_full_run_when_site_unreachable(self):
         with tempfile.TemporaryDirectory() as d:
