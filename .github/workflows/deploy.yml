@@ -20,6 +20,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:          # Actions 頁面可手動按「Run workflow」
+    inputs:
+      macro_only:
+        description: "只更新總經（個股與全市場資料沿用網站上目前的版本）"
+        type: boolean
+        default: false
   schedule:
     # cron 用 UTC；台北 = UTC+8。分鐘刻意避開整點（GitHub 整點排程最擁擠，常延遲）
     - cron: "12 1-5 * * 1-5"  # 台北 09:12–13:12 盤中每小時（Yahoo 盤中價，約延遲 20 分）
@@ -71,7 +76,7 @@ jobs:
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
           # 夜間排程只更新總經：個股與全市場資料夜間不會變，沿用網站上目前的檔案（約 4 次 FinMind 請求，原本約 160 次）
           # 取不到線上資料時，腳本會自動改跑完整模式
-          MACRO_ONLY: ${{ github.event.schedule == '47 13,15 * * 1-5' || github.event.schedule == '17 18,21 * * 1-5' }}
+          MACRO_ONLY: ${{ inputs.macro_only || github.event.schedule == '47 13,15 * * 1-5' || github.event.schedule == '17 18,21 * * 1-5' }}
         run: |
           if [ "$MACRO_ONLY" = "true" ]; then
             python scripts/fetch_data.py --out _site/data --macro-only \
