@@ -129,6 +129,11 @@ def roc_to_iso(s: Any) -> str | None:
     return None
 
 
+def positive(v: float | None) -> float | None:
+    """本益比 / 股價淨值比：虧損公司官方填 0，0 倍沒有意義 → 當作缺資料（網頁顯示 N/A）"""
+    return v if v is not None and v > 0 else None
+
+
 def pick(row: dict, *keys: str) -> Any:
     """
     依序嘗試多個欄位名稱，回傳第一個存在的值。
@@ -310,8 +315,8 @@ def parse_twse_valuation(rows: list[dict]) -> dict[str, dict]:
         code = str(pick(r, "Code", "證券代號") or "").strip()
         if code:
             out[code] = {
-                "pe": to_num(pick(r, "PEratio", "本益比")),
-                "pb": to_num(pick(r, "PBratio", "股價淨值比")),
+                "pe": positive(to_num(pick(r, "PEratio", "本益比"))),
+                "pb": positive(to_num(pick(r, "PBratio", "股價淨值比"))),
                 "yield": to_num(pick(r, "DividendYield", "殖利率(%)")),
             }
     return out
@@ -399,8 +404,8 @@ def parse_tpex_valuation(rows: list[dict]) -> dict[str, dict]:
         code = str(pick(r, "SecuritiesCompanyCode", "Code", "股票代號") or "").strip()
         if code:
             out[code] = {
-                "pe": to_num(pick(r, "PriceEarningRatio", "PEratio", "本益比")),
-                "pb": to_num(pick(r, "PriceBookRatio", "PBratio", "股價淨值比")),
+                "pe": positive(to_num(pick(r, "PriceEarningRatio", "PEratio", "本益比"))),
+                "pb": positive(to_num(pick(r, "PriceBookRatio", "PBratio", "股價淨值比"))),
                 "yield": to_num(pick(r, "YieldRatio", "DividendYield", "殖利率")),
             }
     return out

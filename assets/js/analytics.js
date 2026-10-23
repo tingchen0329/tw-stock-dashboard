@@ -470,9 +470,10 @@ export function summarize({ info, mkt, quote, tables = {}, asOf = {} }) {
     px = { price: quote.value, change: quote.change, changePct: quote.changePct, asOf: quote.time, source: 'Yahoo（約延遲 20 分）', kind: '盤中' };
   }
 
+  const pos = (v) => (isNum(v) && v > 0 ? v : null);   // 虧損公司本益比為 0 → 缺資料，不顯示 0 倍
   const valuation = {
-    pe: mkt?.pe ?? toNum(perLast?.PER),
-    pb: mkt?.pb ?? toNum(perLast?.PBR),
+    pe: pos(mkt?.pe) ?? pos(toNum(perLast?.PER)),
+    pb: pos(mkt?.pb) ?? pos(toNum(perLast?.PBR)),
     yield: mkt?.yield ?? toNum(perLast?.dividend_yield),
     source: isNum(mkt?.pe) || isNum(mkt?.pb) ? (info.market === 'tpex' ? '櫃買中心' : '證交所') : perLast ? 'FinMind' : null,
     asOf: isNum(mkt?.pe) || isNum(mkt?.pb) ? officialDate : perLast?.date ?? null,

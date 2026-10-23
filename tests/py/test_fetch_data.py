@@ -215,6 +215,17 @@ class Security(unittest.TestCase):
             self.assertFalse(out.exists(), "整個輸出應被刪除，部署不會發生")
 
 
+class Valuation(unittest.TestCase):
+    def test_zero_pe_from_loss_making_company_is_missing(self):
+        rows = [{"Date": "1151022", "Code": "1101", "Name": "台泥", "PEratio": "0.00", "DividendYield": "3.58", "PBratio": "0.85"},
+                {"Date": "1151022", "Code": "2330", "Name": "台積電", "PEratio": "27.65", "DividendYield": "1.2", "PBratio": "0"}]
+        v = fd.parse_twse_valuation(rows)
+        self.assertIsNone(v["1101"]["pe"])
+        self.assertEqual(v["1101"]["yield"], 3.58)          # 殖利率 0 有意義（沒配息），只處理 PE / PB
+        self.assertEqual(v["2330"]["pe"], 27.65)
+        self.assertIsNone(v["2330"]["pb"])
+
+
 class Watchlist(unittest.TestCase):
     def load(self, text: str, suffix: str = ".csv") -> list[str]:
         with tempfile.TemporaryDirectory() as d:
