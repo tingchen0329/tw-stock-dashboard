@@ -149,6 +149,38 @@ button, input { font: inherit; color: inherit; }
 .macro .chips { display: flex; flex-wrap: wrap; gap: 6px; }   /* 桌機：總經 11 項換行顯示，第二排與第一排對齊 */
 .chip .when { color: var(--muted); margin-left: 6px; }
 
+/* ── 追蹤清單總覽（模擬版）──────────────────────────────────── */
+.ov-chip .t { font-weight: 600; color: var(--accent); }
+.overview { margin-top: 18px; border-top: 2px solid var(--ink); padding-top: 14px; }
+.overview-head { display: flex; justify-content: space-between; align-items: baseline; gap: 4px 16px; flex-wrap: wrap; }
+.overview-head h2 { margin: 0; font-size: 22px; }
+.overview .note { margin: 4px 0; color: var(--muted); font-size: 13px; }
+.ov-wrap { overflow-x: auto; margin: 10px 0 6px; border: 1px solid var(--hair); border-radius: var(--radius); background: var(--surface); }
+.ov { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; font-variant-numeric: tabular-nums; }
+.ov th, .ov td { padding: 7px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid var(--hair); vertical-align: middle; }
+.ov tbody tr:last-child td { border-bottom: 0; }
+.ov th { background: var(--surface-2); color: var(--ink-2); font-weight: 600; font-size: 12px; cursor: pointer; user-select: none; }
+.ov th.nosort { cursor: default; }
+.ov th[aria-sort="ascending"]::after { content: " ▲"; color: var(--accent); }
+.ov th[aria-sort="descending"]::after { content: " ▼"; color: var(--accent); }
+.ov th:first-child, .ov td:first-child { position: sticky; left: 0; z-index: 1; text-align: left; background: var(--surface); box-shadow: 1px 0 0 var(--hair); }
+.ov th:first-child { background: var(--surface-2); }
+.ov tbody tr { cursor: pointer; }
+.ov tbody tr:hover td { background: var(--accent-wash); }
+.ov td:first-child b { font-weight: 600; margin-right: 6px; }
+.ov .name { color: var(--ink-2); }
+.ov .px { font-weight: 600; display: block; }
+.ov .sub { font-size: 12px; }
+.ov .spark { display: block; margin-left: auto; }
+.ov .meter { display: inline-flex; align-items: center; gap: 6px; }
+.ov .meter .track { fill: var(--axis); }
+.ov .meter .tick { fill: var(--muted); }
+.ov .meter .dot { fill: var(--ink-2); }
+.ov .meter .dot.z-極低, .ov .meter .dot.z-偏低 { fill: var(--accent); }
+.ov .meter .dot.z-偏高, .ov .meter .dot.z-極高 { fill: var(--warn); }
+.ov .hot { color: var(--warn); font-weight: 600; }
+.ov .cold { color: var(--accent); font-weight: 600; }
+
 /* ── 個股區 ─────────────────────────────────────────────────── */
 .stock { margin-top: 18px; }
 .stock-head {
