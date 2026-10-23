@@ -114,6 +114,9 @@ class Dashboard(unittest.TestCase):
         self.assertIn("2330", self.title())
         self.assertIn("100%", self.page.locator(".completeness summary").inner_text())
         self.assertEqual(self.page.locator(".chart svg").count(), 3)
+        macro = self.page.locator("#macro").inner_text()
+        for label in ("台指期夜盤", "道瓊工業", "那斯達克", "櫃買指數"):
+            self.assertIn(label, macro)
         self.assertEqual(self.errors, [])
 
     def test_search_by_name_full_width_and_partial(self):

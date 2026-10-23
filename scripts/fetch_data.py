@@ -69,6 +69,11 @@ TWSE_OPENAPI = "https://openapi.twse.com.tw/v1"
 TWSE_T86 = "https://www.twse.com.tw/rwd/zh/fund/T86"     # 三大法人（OpenAPI 沒有個股版本）
 TPEX_OPENAPI = "https://www.tpex.org.tw/openapi/v1"
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/"
+# 期交所行情網站（mis.taifex.com.tw）的報價 API：網站本身用的 JSON 介面，夜盤進行中也有盤中價。
+# 非正式公開 API，格式可能改變 → 解析失敗時改用 FinMind 已收盤的夜盤資料
+TAIFEX_QUOTES = "https://mis.taifex.com.tw/futures/api/getQuoteList"
+TAIFEX_NIGHT_BODY = {"MarketType": "1", "SymbolType": "F", "KindID": "1", "CID": "TXF", "ExpireMonth": "",
+                     "RowSize": "全部", "PageNo": "", "SortColumn": "", "AscDesc": "A"}   # MarketType 1 = 盤後（夜盤）
 
 HTTP_TIMEOUT = 25           # 秒；GitHub runner 連台灣站台偶爾較慢
 FINMIND_WORKERS = 4         # FinMind 同時連線數。太高會被限流，4 是保守值
@@ -153,14 +158,14 @@ class HttpTransport:
         self._twse_last = 0.0
         self.finmind_requests = 0
 
-    def _get(self, url: str, headers: dict | None = None, retries: int = 2) -> bytes:
-        """GET 並在 429 / 5xx / 網路錯誤時指數退避重試。402 直接拋出 QuotaExceeded。"""
+    def _get(self, url: str, headers: dict | None = None, retries: int = 2, data: bytes | None = None) -> bytes:
+        """GET（或帶 data 時 POST），在 429 / 5xx / 網路錯誤時指數退避重試。402 直接拋出 QuotaExceeded。"""
         hdrs = {"User-Agent": USER_AGENT, "Accept": "application/json,text/csv,*/*"}
         hdrs.update(headers or {})
         last_err: Exception | None = None
         for attempt in range(retries + 1):
             try:
-                req = urllib.request.Request(url, headers=hdrs)
+                req = urllib.request.Request(url, headers=hdrs, data=data)
                 with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
                     return resp.read()
             except urllib.error.HTTPError as e:
@@ -175,7 +180,7 @@ class HttpTransport:
                 last_err = e
             time.sleep(1.5 * (2 ** attempt))
         # 錯誤訊息只含 URL 路徑，不含 header（header 裡才有 token）
-        raise RuntimeError(f"GET failed: {urllib.parse.urlsplit(url).path} ({last_err})")
+        raise RuntimeError(f"{'POST' if data else 'GET'} failed: {urllib.parse.urlsplit(url).path} ({last_err})")
 
     def get_json(self, url: str, params: dict | None = None, kind: str = "public") -> Any:
         if params:
@@ -193,6 +198,13 @@ class HttpTransport:
                     time.sleep(wait)
                 self._twse_last = time.monotonic()
         return json.loads(self._get(url, headers).decode("utf-8-sig"))
+
+    def post_json(self, url: str, body: dict) -> Any:
+        """POST JSON（期交所行情 API 用）。Origin / Referer 比照期交所網站本身送出的請求"""
+        origin = "{0.scheme}://{0.netloc}".format(urllib.parse.urlsplit(url))
+        headers = {"Content-Type": "application/json;charset=UTF-8", "Origin": origin, "Referer": origin + "/futures/"}
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        return json.loads(self._get(url, headers, data=data).decode("utf-8-sig"))
 
 
 class FixtureTransport:
@@ -223,6 +235,12 @@ class FixtureTransport:
         if kind == "finmind":
             self.finmind_requests += 1
         f = self.dir / self.fixture_name(url, params)
+        if not f.exists():
+            raise RuntimeError(f"no fixture: {f.name}")
+        return json.loads(f.read_text("utf-8"))
+
+    def post_json(self, url: str, body: dict) -> Any:
+        f = self.dir / f"taifex_quotes_{body.get('MarketType', '')}.json"
         if not f.exists():
             raise RuntimeError(f"no fixture: {f.name}")
         return json.loads(f.read_text("utf-8"))
@@ -563,12 +581,15 @@ MACRO_YAHOO = [
     ("us10y", "美債10年", "^TNX"),
     ("gold", "黃金", "GC=F"),
     ("sox", "費城半導體", "^SOX"),
+    ("dji", "道瓊工業", "^DJI"),
+    ("ixic", "那斯達克", "^IXIC"),
 ]
 
 
 # FinMind 的台股指數（TaiwanStockPrice 的 data_id）：只有日收盤，沒有盤中
 FINMIND_INDEX = {"taiex": ("加權指數", "TAIEX"), "otc": ("櫃買指數", "TPEx")}
-MACRO_ORDER = ["taiex", "otc", "usdtwd", "dxy", "us10y", "gold", "sox", "fed"]
+# 顯示順序：台股 → 美股 → 匯率 / 利率 / 商品
+MACRO_ORDER = ["taiex", "otc", "txf_night", "dji", "ixic", "sox", "usdtwd", "dxy", "us10y", "gold", "fed"]
 
 
 def finmind_index(tx, data_id: str, today: dt.date) -> dict | None:
@@ -582,12 +603,77 @@ def finmind_index(tx, data_id: str, today: dt.date) -> dict | None:
             "time": pts[-1][0], "spark": [c for _, c in pts[-60:]]}
 
 
+def parse_taifex_quotes(payload: dict, now: dt.datetime) -> dict | None:
+    """
+    期交所行情 → 台指期近月。
+    QuoteList 會有多個到期月份與價差組合（SymbolID / 名稱含 "/"），
+    取「成交量最大的單一月份」當近月（台指期的流動性幾乎都集中在近月）。
+    CRefPrice = 參考價（夜盤為當天日盤的結算價），漲跌以它為基準。
+    """
+    try:
+        quotes = payload["RtData"]["QuoteList"]
+    except (KeyError, TypeError):
+        return None
+    best = None
+    for q in quotes or []:
+        sym, name = str(q.get("SymbolID") or ""), str(q.get("DispCName") or "")
+        if "/" in sym or "/" in name or (sym and not sym.upper().startswith("TXF")):
+            continue
+        last, ref = to_num(q.get("CLastPrice")), to_num(q.get("CRefPrice"))
+        if not last or not ref:
+            continue
+        vol = to_num(q.get("CTotalVolume")) or 0
+        if best is None or vol > best[0]:
+            best = (vol, q, last, ref, name or sym)
+    if not best:
+        return None
+    vol, q, last, ref, contract = best
+    # CTime 是 HHMMSS（台北時間）。日期用抓取當天；若算出來比現在還晚（跨午夜），往前一天
+    when = now
+    t = re.sub(r"\D", "", str(q.get("CTime") or ""))
+    if len(t) >= 4:
+        when = now.replace(hour=int(t[:2]) % 24, minute=int(t[2:4]), second=0, microsecond=0)
+        if when > now + dt.timedelta(minutes=10):
+            when -= dt.timedelta(days=1)
+    return {"value": last, "prev": ref, "change": round(last - ref, 4),
+            "changePct": round((last - ref) / ref * 100, 2), "time": when.isoformat(timespec="minutes"),
+            "contract": contract, "volume": vol}
+
+
+def finmind_txf_night(tx, today: dt.date) -> dict | None:
+    """備援：FinMind TaiwanFuturesDaily 的 after_market（夜盤）收盤。每天 16:30 才更新 → 只有「已收盤」的夜盤"""
+    rows = finmind(tx, "TaiwanFuturesDaily", "TX", (today - dt.timedelta(days=14)).isoformat())
+    night = [r for r in rows if r.get("trading_session") == "after_market"
+             and "/" not in str(r.get("contract_date", "")) and to_num(r.get("close"))]
+    if not night:
+        return None
+    latest = max(r["date"] for r in night)
+    best = max((r for r in night if r["date"] == latest), key=lambda r: to_num(r.get("volume")) or 0)
+    close, spread = to_num(best["close"]), to_num(best.get("spread"))
+    prev = close - spread if spread is not None else None
+    return {"value": close, "prev": prev, "change": spread,
+            "changePct": round(spread / prev * 100, 2) if spread is not None and prev else None,
+            "time": latest, "contract": str(best.get("contract_date", ""))}
+
+
 def fetch_macro(tx, report: SourceReport, today: dt.date, use_finmind: bool) -> list[dict]:
     items: list[dict] = []
     for key, label, sym in MACRO_YAHOO:
         res = report.run(f"yahoo_{key}", lambda s=sym: yahoo(tx, s), count=lambda r: 1 if r else 0)
         if res:
             items.append({"key": key, "label": label, "source": "Yahoo", **res})
+    # 台指期夜盤：期交所即時行情優先（夜盤進行中有盤中價）；失敗時用 FinMind 已收盤的夜盤
+    now = now_tpe() if today == now_tpe().date() else dt.datetime.combine(today, dt.time(22, 0), tzinfo=TPE)
+    night = report.run("taifex_night", lambda: parse_taifex_quotes(tx.post_json(TAIFEX_QUOTES, TAIFEX_NIGHT_BODY), now),
+                       count=lambda r: 1 if r else 0)
+    if night:
+        items.append({"key": "txf_night", "label": "台指期夜盤", "source": f"期交所（{night['contract']}）", **night})
+    elif use_finmind:
+        fb = report.run("finmind_txf_night", lambda: finmind_txf_night(tx, today), count=lambda r: 1 if r else 0)
+        if fb:
+            items.append({"key": "txf_night", "label": "台指期夜盤", "source": "FinMind（夜盤收盤）", **fb})
+            report.items["taifex_night"]["note"] = (report.items["taifex_night"].get("note", "") +
+                                                    "；已改用 FinMind 的夜盤收盤").lstrip("；")
     if use_finmind:
         # 台股指數：櫃買一律用 FinMind；加權在 Yahoo 失敗時才用 FinMind 補
         for key, (label, data_id) in FINMIND_INDEX.items():

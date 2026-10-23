@@ -237,7 +237,24 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
         fm(f"finmind_TaiwanStockPrice_{idx_id}.json",
            [{"date": str(d), "stock_id": idx_id, "close": v, "open": v, "max": v, "min": v, "spread": 0,
              "Trading_Volume": 0, "Trading_money": 0, "Trading_turnover": 0} for d, v in zip(days[-80:], ser)])
-    for sym, base in [("IDX_TWII", 27000), ("TWD_X", 30.6), ("DX-Y.NYB", 98.2),
+    # 台指期夜盤：期交所行情格式（含現貨列、兩個月份、價差組合，測試近月挑選）
+    w("taifex_quotes_1.json", {"RtCode": "0", "RtMsg": "", "RtData": {"QuoteList": [
+        {"SymbolID": "TXF-S", "DispCName": "臺指現貨", "CLastPrice": "27000.00", "CRefPrice": "26900.00", "CTotalVolume": "0"},
+        {"SymbolID": "TXFK6-M", "DispCName": "臺指期116", "CLastPrice": "27050.00", "CRefPrice": "27120.00",
+         "CDiff": "-70.00", "CTotalVolume": "41235", "CTime": "215803"},
+        {"SymbolID": "TXFL6-M", "DispCName": "臺指期126", "CLastPrice": "27010.00", "CRefPrice": "27080.00",
+         "CDiff": "-70.00", "CTotalVolume": "512", "CTime": "215801"},
+        {"SymbolID": "TXFK6/L6-M", "DispCName": "臺指期116/126", "CLastPrice": "40.00", "CRefPrice": "40.00",
+         "CTotalVolume": "99999", "CTime": "215700"}]}})
+    # FinMind 備援：TaiwanFuturesDaily（position = 日盤、after_market = 夜盤）
+    fm("finmind_TaiwanFuturesDaily_TX.json", [
+        {"date": str(last_day), "futures_id": "TX", "contract_date": cd, "open": 0, "max": 0, "min": 0,
+         "close": c, "spread": sp, "spread_per": 0, "volume": v, "settlement_price": 0, "open_interest": 0,
+         "trading_session": ses}
+        for cd, c, sp, v, ses in [("202611", 27120, 80, 90000, "position"), ("202611", 26990, -40, 38000, "after_market"),
+                                  ("202612", 26950, -42, 300, "after_market"),
+                                  ("202611/202612", 40, 0, 50000, "after_market")]])
+    for sym, base in [("IDX_TWII", 27000), ("TWD_X", 30.6), ("DX-Y.NYB", 98.2), ("IDX_DJI", 46000), ("IDX_IXIC", 22800),
                       ("IDX_TNX", 4.1), ("GC_F", 3900), ("IDX_SOX", 6200)]:
         yahoo(sym, base)
     for c, (n, m, _, base) in WATCH.items():

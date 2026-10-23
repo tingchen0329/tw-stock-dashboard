@@ -67,12 +67,14 @@ export function renderMacro(host, items) {
   if (!items?.length) { host.replaceChildren(); return; }
   host.replaceChildren(
     h('span', { class: 'strip-label' }, '總經'),
-    ...items.map((m) => h('div', { class: 'chip', title: `${m.source}，${F.when(m.time)}` },
+    h('div', { class: 'chips' }, ...items.map((m) => h('div', { class: 'chip', title: `${m.source}，${F.when(m.time)}` },
       h('span', { class: 't' }, m.label),
       h('span', { class: 'v' }, m.key === 'fed' || m.key === 'us10y' ? F.pct(m.value, 2) : m.key === 'usdtwd' ? F.num(m.value, 3) : F.num(m.value, m.value > 1000 ? 0 : 2)),
       h('span', { class: `d ${m.key === 'fed' ? 'flat' : F.dir(m.changePct)}` },
-        m.key === 'fed' ? `自 ${F.when(m.time)}` : F.isNum(m.changePct) ? `${m.changePct > 0 ? '▲' : m.changePct < 0 ? '▼' : ''} ${F.pct(m.changePct, 2, true)}` : '—'),
-    )),
+        m.key === 'fed' ? `自 ${F.when(m.time)}` : F.isNum(m.changePct) ? `${m.changePct > 0 ? '▲' : m.changePct < 0 ? '▼' : ''} ${F.pct(m.changePct, 2, true)}` : '—',
+        // 夜盤的價值在於「多新」：顯示報價時間（盤中為時:分，備援的昨夜收盤為日期）
+        m.key === 'txf_night' ? h('span', { class: 'when' }, F.when(m.time)) : null),
+    ))),
   );
 }
 

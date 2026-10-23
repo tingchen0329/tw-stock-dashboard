@@ -116,6 +116,37 @@ class Parsing(unittest.TestCase):
         self.assertEqual((r["prev"], r["change"]), (100, 5))
 
 
+class NightFutures(unittest.TestCase):
+    NOW = dt.datetime(2026, 10, 23, 22, 5, tzinfo=fd.TPE)
+
+    def q(self, *rows):
+        return {"RtData": {"QuoteList": list(rows)}}
+
+    def test_picks_most_traded_single_month_and_skips_spreads_and_spot(self):
+        r = fd.parse_taifex_quotes(self.q(
+            {"SymbolID": "TXF-S", "CLastPrice": "27000", "CRefPrice": "26900", "CTotalVolume": "0"},
+            {"SymbolID": "TXFK6-M", "DispCName": "臺指期116", "CLastPrice": "27050", "CRefPrice": "27120",
+             "CTotalVolume": "41235", "CTime": "215803"},
+            {"SymbolID": "TXFL6-M", "DispCName": "臺指期126", "CLastPrice": "27010", "CRefPrice": "27080",
+             "CTotalVolume": "512", "CTime": "215801"},
+            {"SymbolID": "TXFK6/L6-M", "DispCName": "臺指期116/126", "CLastPrice": "40", "CRefPrice": "40",
+             "CTotalVolume": "99999"}), self.NOW)
+        self.assertEqual((r["contract"], r["value"], r["change"]), ("臺指期116", 27050.0, -70.0))
+        self.assertEqual(r["changePct"], round(-70 / 27120 * 100, 2))
+        self.assertEqual(r["time"], "2026-10-23T21:58+08:00")
+
+    def test_time_after_midnight_belongs_to_previous_day_when_needed(self):
+        just_after = dt.datetime(2026, 10, 24, 0, 3, tzinfo=fd.TPE)
+        r = fd.parse_taifex_quotes(self.q({"SymbolID": "TXFK6-M", "CLastPrice": "1", "CRefPrice": "1",
+                                           "CTime": "235958"}), just_after)
+        self.assertEqual(r["time"], "2026-10-23T23:59+08:00")
+
+    def test_empty_or_changed_format_returns_none(self):
+        self.assertIsNone(fd.parse_taifex_quotes({"RtData": {"QuoteList": []}}, self.NOW))
+        self.assertIsNone(fd.parse_taifex_quotes({"unexpected": True}, self.NOW))
+        self.assertIsNone(fd.parse_taifex_quotes(self.q({"SymbolID": "TXFK6-M", "CLastPrice": "", "CRefPrice": "27120"}), self.NOW))
+
+
 class Security(unittest.TestCase):
     def test_token_goes_in_header_never_in_url(self):
         seen = {}
@@ -198,6 +229,26 @@ class EndToEnd(unittest.TestCase):
         watch = json.loads((ROOT / "config/watchlist.json").read_text())["stocks"]
         for code in watch:
             self.assertTrue((self.out / "stock" / f"{code}.json").exists(), code)
+
+    def test_macro_has_night_futures_dow_nasdaq_in_order(self):
+        items = json.loads((self.out / "macro.json").read_text())["items"]
+        keys = [m["key"] for m in items]
+        self.assertEqual(keys, ["taiex", "otc", "txf_night", "dji", "ixic", "sox", "usdtwd", "dxy", "us10y", "gold", "fed"])
+        night = items[2]
+        self.assertEqual((night["label"], night["value"], night["source"]), ("台指期夜盤", 27050.0, "期交所（臺指期116）"))
+
+    def test_night_futures_falls_back_to_finmind_close(self):
+        with tempfile.TemporaryDirectory() as d:
+            fx = make_fixtures(Path(d))
+            (fx / "taifex_quotes_1.json").unlink()           # 期交所 API 失敗
+            out = Path(d) / "out"
+            fd.main(["--fixtures", str(fx), "--out", str(out), "--today", "2026-10-19"])
+            night = {m["key"]: m for m in json.loads((out / "macro.json").read_text())["items"]}["txf_night"]
+            meta = json.loads((out / "meta.json").read_text())
+        # 近月（成交量最大的單一月份 202611），排除價差 202611/202612
+        self.assertEqual((night["value"], night["change"], night["source"]), (26990.0, -40.0, "FinMind（夜盤收盤）"))
+        self.assertFalse(meta["sources"]["taifex_night"]["ok"])
+        self.assertIn("FinMind", meta["sources"]["taifex_night"]["note"])
 
     def test_macro_otc_index_from_finmind(self):
         items = {m["key"]: m for m in json.loads((self.out / "macro.json").read_text())["items"]}
