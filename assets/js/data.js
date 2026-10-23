@@ -39,14 +39,15 @@ export async function loadBootstrap() {
   }
   const opt = { ttl: 10 * 60 * 1000, persist: true, timeout: 15000 };
   const settle = (p) => p.then((x) => x, () => null);
-  const [stocks, market, macro, quotes, spec] = await Promise.all([
+  const [stocks, market, macro, quotes, spec, overview] = await Promise.all([
     settle(fetchJSON(v('stocks.json'), opt)),
     settle(fetchJSON(v('market.json'), opt)),
     settle(fetchJSON(v('macro.json', macroVersion), opt)),
     settle(fetchJSON(v('quotes.json'), opt)),
     settle(fetchJSON(v('datasets.json'), { ...opt, ttl: DAY })),
+    settle(fetchJSON(v('overview.json'), opt)),
   ]);
-  return { meta, stocks, market, macro, quotes, spec: stripComments(spec) };
+  return { meta, stocks, market, macro, quotes, spec: stripComments(spec), overview };
 }
 
 const stripComments = (o) => (o ? Object.fromEntries(Object.entries(o).filter(([k]) => !k.startsWith('_'))) : {});
@@ -83,6 +84,9 @@ async function finmindTable(code, spec, signal) {
  * @param {string} code
  * @param {object} ctx  { meta, spec, signal, onUpdate(tables, {done, errors, source}) }
  */
+/** 台股 ETF 代號一律 00 開頭 */
+export const isEtf = (code) => code.startsWith('00');
+
 export async function loadStock(code, { meta, spec, signal, onUpdate }) {
   // A. 追蹤清單：一個檔案搞定
   if (meta?.watchlist?.includes(code)) {
@@ -99,7 +103,7 @@ export async function loadStock(code, { meta, spec, signal, onUpdate }) {
   // B. 即時查詢 FinMind（免 token），分兩波
   const tables = {};
   const errors = {};
-  const entries = Object.entries(spec);
+  const entries = Object.entries(spec).filter(([, s]) => !(s.skipEtf && isEtf(code)));   // ETF 沒有本益比、營收、財報
   for (const wave of [1, 2]) {
     const jobs = entries.filter(([, s]) => (s.wave ?? 1) === wave);
     await Promise.all(jobs.map(async ([key, s]) => {

@@ -21,18 +21,19 @@ on:
     branches: [main]
   workflow_dispatch:          # Actions 頁面可手動按「Run workflow」
     inputs:
-      macro_only:
-        description: "只更新總經（個股與全市場資料沿用網站上目前的版本）"
-        type: boolean
-        default: false
+      mode:
+        description: "auto：行情、總經照常更新，個股只抓新加入的｜full：個股全部重抓（約 470 次 FinMind 請求）｜macro：只更新總經"
+        type: choice
+        options: [auto, full, macro]
+        default: auto
   schedule:
     # cron 用 UTC；台北 = UTC+8。分鐘刻意避開整點（GitHub 整點排程最擁擠，常延遲）
-    - cron: "12 1-5 * * 1-5"  # 台北 09:12–13:12 盤中每小時（Yahoo 盤中價，約延遲 20 分）
-    - cron: "47 5 * * 1-5"    # 台北 13:47 收盤後
-    - cron: "23 8 * * 1-5"    # 台北 16:23 三大法人公布後
-    - cron: "37 11 * * 1-5"   # 台北 19:37 晚間補抓（融資券、月營收等較晚公布的資料）
-    # 夜間：台指期夜盤（15:00–05:00）與美股（台北 21:30–04:00，11 月起冬令 22:30–05:00）
-    # 這兩組只更新總經（見下方 MACRO_ONLY）；修改時兩處要一致
+    # 每個排程的更新模式寫在下方 MODE；修改排程時兩處要一致
+    - cron: "12 1-5 * * 1-5"  # 台北 09:12–13:12 盤中每小時：行情、盤中價、總經（auto）
+    - cron: "47 5 * * 1-5"    # 台北 13:47 收盤後：官方收盤價（auto）
+    - cron: "23 8 * * 1-5"    # 台北 16:23 三大法人公布後：個股資料全部重抓（full）
+    - cron: "37 11 * * 1-5"   # 台北 19:37 晚間再抓一次：融資券、月營收等較晚公布的資料（full）
+    # 夜間只更新總經（macro）：台指期夜盤（15:00–05:00）與美股（台北 21:30–04:00，11 月起冬令 22:30–05:00）
     - cron: "47 13,15 * * 1-5"  # 台北 21:47、23:47（週一至週五晚上）
     - cron: "17 18,21 * * 1-5"  # 台北 02:17、05:17（週二至週六凌晨；05:17 為夜盤與美股收盤後）
 
@@ -74,16 +75,22 @@ jobs:
       - name: Fetch data (FinMind token from Secrets)
         env:
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
-          # 夜間排程只更新總經：個股與全市場資料夜間不會變，沿用網站上目前的檔案（約 4 次 FinMind 請求，原本約 160 次）
-          # 取不到線上資料時，腳本會自動改跑完整模式
-          MACRO_ONLY: ${{ inputs.macro_only || github.event.schedule == '47 13,15 * * 1-5' || github.event.schedule == '17 18,21 * * 1-5' }}
+          # 更新模式（FinMind 免費額度每小時 600 次，追蹤清單 60 多檔完整抓一次約 470 次）：
+          #   full  16:23、19:37 收盤後：個股資料全部重抓（FinMind 個股資料本來就只在收盤後更新）
+          #   macro 夜間 4 次：只更新總經
+          #   auto  其他（盤中、push、手動預設）：行情、盤中價、總經照常更新；個股只抓網站上還沒有的
+          # 三種模式都會先取回網站上目前的資料；取不到時自動改成 full。額度用完時，沒抓到的個股沿用上一份
+          MODE: >-
+            ${{ inputs.mode
+            || ((github.event.schedule == '23 8 * * 1-5' || github.event.schedule == '37 11 * * 1-5') && 'full')
+            || ((github.event.schedule == '47 13,15 * * 1-5' || github.event.schedule == '17 18,21 * * 1-5') && 'macro')
+            || 'auto' }}
         run: |
-          if [ "$MACRO_ONLY" = "true" ]; then
-            python scripts/fetch_data.py --out _site/data --macro-only \
-              --base-url "https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/"
-          else
-            python scripts/fetch_data.py --out _site/data
-          fi
+          python scripts/fetch_data.py --out _site/data --mode "$MODE" \
+            --base-url "https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/"
+
+      - name: Build overview table
+        run: node scripts/build_overview.mjs _site/data
 
       - name: Annotate failed sources
         if: always()
@@ -96,10 +103,11 @@ jobs:
               m = json.loads(p.read_text())
               bad = [f"{k}: {s.get('note', '')}" for k, s in m["sources"].items() if not s["ok"]]
               ok = len(m["sources"]) - len(bad)
+              wl = m["sources"].get("finmind_watchlist", {}).get("note", "")
               if m.get("mode") == "macro":
                   print(f"::notice title=只更新總經 {m['macroAt']}::個股資料沿用 {m['generatedAt']}，{ok}/{len(m['sources'])} 個來源正常，FinMind 請求 {m['macroFinmindRequests']} 次")
               else:
-                  print(f"::notice title=資料更新 {m['generatedAt']}::{ok}/{len(m['sources'])} 個來源正常，FinMind 請求 {m['finmindRequests']} 次")
+                  print(f"::notice title=資料更新（{m.get('mode', 'full')}）{m['generatedAt']}::{ok}/{len(m['sources'])} 個來源正常，FinMind 請求 {m['finmindRequests']} 次。追蹤清單 {len(m['watchlist'])} 檔：{wl}")
               for b in bad:
                   print(f"::warning title=資料來源失敗::{b}")
           EOF
@@ -115,7 +123,7 @@ jobs:
           m = json.loads(p.read_text())
           if m.get("mode") == "macro":
               print(f"## 只更新總經 {m['macroAt']}（個股資料沿用 {m['generatedAt']}，本次 FinMind 請求 {m['macroFinmindRequests']} 次）")
-          print(f"## 資料更新 {m['generatedAt']}")
+          print(f"## 資料更新 {m['generatedAt']}（模式：{m.get('mode', 'full')}）")
           print(f"FinMind token：{'已使用' if m['tokenUsed'] else '未設定（匿名額度）'}，請求數 {m['finmindRequests']}\n")
           print("| 來源 | 狀態 | 筆數 | 耗時 | 備註 |\n|---|---|---|---|---|")
           for k, s in m["sources"].items():

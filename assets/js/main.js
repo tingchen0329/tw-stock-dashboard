@@ -17,7 +17,7 @@ import { summarize, marketRow } from './analytics.js';
 import { renderFreshness, renderWatchlist, renderMacro, renderStock, renderSetup, h } from './render.js';
 import { buildPrompt } from './prompt.js';
 import { marketStatus, marketNotice } from './market.js';
-import { overviewRow, renderOverview } from './overview.js';
+import { renderOverview } from './overview.js';
 import { toCSV, toXLSX, download } from './export.js';
 import * as F from './format.js';
 
@@ -194,33 +194,17 @@ async function showStock(code) {
   }
 }
 
-/* ───────── 追蹤清單總覽（模擬版）───────── */
+/* ───────── 追蹤清單總覽 ───────── */
 
-async function showOverview() {
+function showOverview() {
   const { boot } = state;
   if (!boot?.meta) return;
   state.current?.ctrl.abort();
   state.current?.cleanup?.();
-  const cur = { code: 'overview', ctrl: new AbortController(), cleanup: null, summary: null };
-  state.current = cur;
+  state.current = { code: 'overview', ctrl: new AbortController(), cleanup: null, summary: null };
   markCurrentChip('overview');
   document.title = '追蹤清單總覽｜台股研究台';
-  const codes = boot.meta.watchlist || [];
-  const rows = new Map();
-  const draw = () => state.current === cur && renderOverview($('stock'), codes.filter((c) => rows.has(c)).map((c) => rows.get(c)),
-    { onPick: pick, loading: codes.length - rows.size, dataDay: boot.meta.market?.lastTradingDay });
-  draw();
-  await Promise.all(codes.map((code) => loadStock(code, {
-    meta: boot.meta, spec: boot.spec, signal: cur.ctrl.signal,
-    onUpdate: (tables, m) => {
-      if (!m.done) return;
-      rows.set(code, overviewRow(summarize({
-        info: stockInfo(code), mkt: marketRow(boot.market, code), quote: boot.quotes?.rows?.[code] ?? null,
-        tables, asOf: boot.market?.asOf ?? {},
-      })));
-    },
-  }).catch((e) => { if (e.name !== 'AbortError') console.warn(code, e); })));
-  draw();
+  renderOverview($('stock'), boot.overview, { onPick: pick });
 }
 
 const route = () => {
@@ -338,6 +322,7 @@ async function boot() {
 
   window.addEventListener('hashchange', route);
   if (location.hash.length > 1) route();
+  else if (b.overview?.rows?.length) showOverview();         // 首頁：追蹤清單總覽
   else if (b.meta.watchlist?.[0]) showStock(b.meta.watchlist[0]);
 }
 

@@ -32,6 +32,7 @@ export function buildPrompt(s, meta, macro = []) {
   const { info, price: px, valuation: v, tech: t, river: rv, revenue: rev, inst, instToday, margin, holding, fundamentals: f } = s;
   const c = completeness(s);
   const dataDay = meta?.market?.lastTradingDay || t?.date || null;
+  const na = String(info.code).startsWith('00') ? '不適用（ETF）' : 'N/A';   // ETF 沒有本益比、營收、財報
   const L = [];
 
   L.push(`你是台股分析師，依下列數據分析 ${info.code} ${info.name}（${marketLabel(info.market)}｜${info.industry || '產業 N/A'}）。`);
@@ -54,7 +55,7 @@ export function buildPrompt(s, meta, macro = []) {
       `${rev.latest.period} ${F.twd(rev.latest.revenue)}，年增 ${pct(rev.latest.yoy)}、月增 ${pct(rev.latest.mom)}`,
       `近3月平均年增 ${pct(rev.avgYoY3)}`, `今年累計 ${pct(rev.ytdYoY)}`, `近12月累計 ${pct(rev.ttmYoY)}`,
     ])}\n　近12月年增（${rev.items.slice(-12)[0]?.period ?? ''} 起）：${rev.items.slice(-12).map((x) => pct(x.yoy)).join(', ')}`
-    : '【營收】N/A');
+    : `【營收】${na}`);
 
   L.push(f
     ? `【獲利】${join([
@@ -64,7 +65,7 @@ export function buildPrompt(s, meta, macro = []) {
       `毛利/營益/淨利率 ${F.pct(f.margins?.gross, 1)} / ${F.pct(f.margins?.op, 1)} / ${F.pct(f.margins?.net, 1)}（去年同期 ${F.pct(f.marginsLastYear?.gross, 1)} / ${F.pct(f.marginsLastYear?.op, 1)} / ${F.pct(f.marginsLastYear?.net, 1)}）`,
       `ROE ${F.pct(f.roe, 1)}`, `ROA ${F.pct(f.roa, 1)}`, `負債比 ${F.pct(f.debtRatio, 1)}`, `流動比 ${F.pct(f.currentRatio, 0)}`,
     ])}`
-    : '【獲利】N/A');
+    : `【獲利】${na}`);
 
   const lots = (o) => `外資 ${F.lots(o.foreign)}、投信 ${F.lots(o.trust)}、自營 ${F.lots(o.dealer)}`;
   L.push(`【籌碼，張】${join([
@@ -97,7 +98,7 @@ export function buildPrompt(s, meta, macro = []) {
       `10/25/50/75/90 分位 ${rv.mults.map((m) => F.num(m, 1)).join(' / ')} 倍`,
       `對應價 25/50/75 分位 ${F.price(rv.fair.low)} / ${F.price(rv.fair.mid)} / ${F.price(rv.fair.high)}`,
     ])}`
-    : '【本益比河流圖】N/A（虧損或資料不足，改用股價淨值比）');
+    : `【本益比河流圖】${na === 'N/A' ? 'N/A（虧損或資料不足，改用股價淨值比）' : na}`);
   L.push('');
 
   L.push(`請用繁體中文輸出，先結論後理由，每個判斷都引用上方數字：

@@ -24,6 +24,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 import fetch_data as fd  # noqa: E402
 
+WATCH = str(ROOT / "tests/fixtures/watchlist.json")   # 測試用清單（正式清單 config/watchlist.csv 沒有 fixture）
+
 T86_FIELDS = ["證券代號", "證券名稱", "外陸資買進股數(不含外資自營商)", "外陸資賣出股數(不含外資自營商)",
               "外陸資買賣超股數(不含外資自營商)", "外資自營商買進股數", "外資自營商賣出股數", "外資自營商買賣超股數",
               "投信買進股數", "投信賣出股數", "投信買賣超股數", "自營商買賣超股數", "自營商買進股數(自行買賣)",
@@ -213,6 +215,42 @@ class Security(unittest.TestCase):
             self.assertFalse(out.exists(), "整個輸出應被刪除，部署不會發生")
 
 
+class Watchlist(unittest.TestCase):
+    def load(self, text: str, suffix: str = ".csv") -> list[str]:
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / f"w{suffix}"
+            f.write_text(text, "utf-8-sig" if suffix == ".csv" else "utf-8")
+            return fd.load_watchlist(f)
+
+    def test_csv_from_user_keeps_order_and_reads_code_column(self):
+        csv_text = ("項次,股票代號,股票名稱,完整代號 (Yahoo),市場/類別\n"
+                    "1,2327,國巨*,2327.TW,上市\n2,5347,世界,5347.TWO,上櫃\n3,00919,群益台灣精選高息,00919.TW,ETF\n"
+                    "4,2327,國巨*,2327.TW,上市\n1500,abc,不是代號,,\n")
+        self.assertEqual(self.load(csv_text), ["2327", "5347", "00919"])     # 去重、略過無效列、項次不會被當成代號
+
+    def test_yahoo_finance_export_symbols(self):
+        csv_text = "Symbol,Current Price,Date\n2330.TW,1000,2026/10/22\n6488.two,500,2026/10/22\n00679b.TW,30,\n"
+        self.assertEqual(self.load(csv_text), ["2330", "6488", "00679B"])
+
+    def test_csv_without_header_and_json(self):
+        self.assertEqual(self.load("2330\n2454.TW\n"), ["2330", "2454"])
+        self.assertEqual(self.load('{"stocks": ["2330", "0050"]}', ".json"), ["2330", "0050"])
+
+    def test_repo_watchlist_is_valid(self):
+        codes = fd.load_watchlist(ROOT / "config/watchlist.csv")
+        self.assertGreater(len(codes), 0)
+        etf = [c for c in codes if fd.is_etf(c)]
+        # 每次完整更新的 FinMind 請求數（個股 8、ETF 4，另加清單與總經約 5）要留在免費額度 600 次/小時以內
+        self.assertLess((len(codes) - len(etf)) * 8 + len(etf) * 4 + 5, 600)
+
+    def test_etf_skips_per_revenue_and_financials(self):
+        tx = fd.FixtureTransport(make_fixtures(Path(tempfile.mkdtemp())))
+        d = fd.fetch_stock_detail(tx, "0050", fd.load_spec(), dt.date(2026, 10, 19))
+        self.assertEqual(sorted(d["tables"]), ["holding", "inst", "margin", "price"])
+        self.assertEqual(d["errors"], {})
+        self.assertEqual(tx.finmind_requests, 4)
+
+
 class MarketCalendar(unittest.TestCase):
     """休市日與臨時休市判斷（以 2026-10 薔琵颱風為例：10/23 五 停市、10/26 一 補假、10/27 二 開盤）"""
     HOL = [{"date": "2026-10-26", "name": "臺灣光復暨金門古寧頭大捷紀念日"}]
@@ -252,7 +290,7 @@ class EndToEnd(unittest.TestCase):
         cls.fx = make_fixtures(Path(cls.tmp.name))
         cls.out = Path(cls.tmp.name) / "site" / "data"
         with mock.patch.dict(os.environ, {"FINMIND_TOKEN": "SECRET-TOKEN-123"}):
-            cls.rc = fd.main(["--fixtures", str(cls.fx), "--out", str(cls.out), "--today", "2026-10-19"])
+            cls.rc = fd.main(["--watchlist", WATCH, "--fixtures", str(cls.fx), "--out", str(cls.out), "--today", "2026-10-19"])
 
     @classmethod
     def tearDownClass(cls):
@@ -262,7 +300,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(self.rc, 0)
         for name in ("meta.json", "stocks.json", "market.json", "macro.json", "quotes.json", "datasets.json"):
             self.assertTrue((self.out / name).exists(), name)
-        watch = json.loads((ROOT / "config/watchlist.json").read_text())["stocks"]
+        watch = json.loads(Path(WATCH).read_text())["stocks"]
         for code in watch:
             self.assertTrue((self.out / "stock" / f"{code}.json").exists(), code)
 
@@ -278,7 +316,7 @@ class EndToEnd(unittest.TestCase):
             fx = make_fixtures(Path(d))
             (fx / "taifex_quotes_1.json").unlink()           # 期交所 API 失敗
             out = Path(d) / "out"
-            fd.main(["--fixtures", str(fx), "--out", str(out), "--today", "2026-10-19"])
+            fd.main(["--watchlist", WATCH, "--fixtures", str(fx), "--out", str(out), "--today", "2026-10-19"])
             night = {m["key"]: m for m in json.loads((out / "macro.json").read_text())["items"]}["txf_night"]
             meta = json.loads((out / "meta.json").read_text())
         # 近月（成交量最大的單一月份 202611），排除價差 202611/202612
@@ -316,7 +354,7 @@ class EndToEnd(unittest.TestCase):
             fx = make_fixtures(Path(d))
             (fx / "openapi_v1_tpex_mainboard_quotes.json").unlink()
             out = Path(d) / "out"
-            rc = fd.main(["--fixtures", str(fx), "--out", str(out), "--today", "2026-10-19"])
+            rc = fd.main(["--watchlist", WATCH, "--fixtures", str(fx), "--out", str(out), "--today", "2026-10-19"])
             meta = json.loads((out / "meta.json").read_text())
             self.assertEqual(rc, 0)
             self.assertFalse(meta["sources"]["tpex_quotes"]["ok"])
@@ -364,7 +402,7 @@ class MacroOnly(unittest.TestCase):
         root = Path(cls.tmp.name)
         cls.fx = make_fixtures(root)
         cls.site = root / "site"
-        fd.main(["--fixtures", str(cls.fx), "--out", str(cls.site / "data"), "--today", "2026-10-19"])
+        fd.main(["--watchlist", WATCH, "--fixtures", str(cls.fx), "--out", str(cls.site / "data"), "--today", "2026-10-19"])
         cls.srv = serve(cls.site)
         cls.url = f"http://127.0.0.1:{cls.srv.server_address[1]}/"
 
@@ -374,7 +412,7 @@ class MacroOnly(unittest.TestCase):
         cls.tmp.cleanup()
 
     def run_macro(self, url: str, out: Path) -> int:
-        return fd.main(["--fixtures", str(self.fx), "--out", str(out), "--today", "2026-10-19",
+        return fd.main(["--watchlist", WATCH, "--fixtures", str(self.fx), "--out", str(out), "--today", "2026-10-19",
                         "--macro-only", "--base-url", url])
 
     def test_keeps_previous_data_and_refreshes_macro(self):
@@ -394,12 +432,83 @@ class MacroOnly(unittest.TestCase):
             self.assertTrue(meta["sources"]["twse_quotes"]["ok"])           # 上一份的來源狀態仍保留
             self.assertEqual(set(meta["bytes"]), set(prev["bytes"]))
 
+    def run_mode(self, mode: str, out: Path, watch: list[str] | None = None, url: str | None = None) -> dict:
+        args = ["--fixtures", str(self.fx), "--out", str(out), "--today", "2026-10-19", "--mode", mode,
+                "--base-url", url or self.url]
+        if watch is not None:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            wl = out.parent / "wl.json"
+            wl.write_text(json.dumps({"stocks": watch}))
+            args += ["--watchlist", str(wl)]
+        else:
+            args += ["--watchlist", WATCH]
+        self.assertEqual(fd.main(args), 0)
+        return json.loads((out / "meta.json").read_text())
+
+    def serve_without(self, tmp: Path, code: str) -> http.server.ThreadingHTTPServer:
+        """複製網站並拿掉一檔個股（meta.bytes 也拿掉，等同這檔從沒抓過）"""
+        site = tmp / "site"
+        shutil.copytree(self.site, site)
+        (site / f"data/stock/{code}.json").unlink()
+        meta_f = site / "data/meta.json"
+        m = json.loads(meta_f.read_text())
+        m["bytes"].pop(f"stock/{code}.json")
+        meta_f.write_text(json.dumps(m))
+        return serve(site)
+
+    def test_auto_fetches_only_new_stocks_and_drops_removed(self):
+        prev = json.loads((self.site / "data/meta.json").read_text())["watchlist"]
+        watch = [c for c in prev if c != "2330"] + ["3189"]          # 移除 2330；3189 本來就有
+        with tempfile.TemporaryDirectory() as d:
+            srv = self.serve_without(Path(d), "2454")          # 網站上缺 2454（模擬「新加入清單」）
+            try:
+                out = Path(d) / "out" / "data"
+                meta = self.run_mode("auto", out, watch, f"http://127.0.0.1:{srv.server_address[1]}/")
+            finally:
+                stop(srv)
+            self.assertEqual(meta["mode"], "auto")
+            self.assertTrue((out / "stock/2454.json").exists())                 # 新的：抓了
+            self.assertFalse((out / "stock/2330.json").exists())                # 移除的：刪掉
+            self.assertNotIn("stock/2330.json", meta["bytes"])
+            self.assertEqual((out / "stock/3189.json").read_bytes(), (self.site / "data/stock/3189.json").read_bytes())
+            # 只抓 2454 一檔（8 個資料集）+ 股票清單 1 + 總經 2
+            self.assertEqual(meta["finmindRequests"], 8 + 1 + 2)
+            self.assertIn("本次更新 1 檔", meta["sources"]["finmind_watchlist"]["note"])
+            self.assertTrue(meta["sources"]["finmind_watchlist"]["ok"])
+
+    def test_full_keeps_previous_files_when_quota_runs_out(self):
+        real = fd.FixtureTransport.get_json
+        def limited(tx, url, params=None, kind="public"):
+            if kind == "finmind" and tx.finmind_requests >= 40:            # 第 40 次之後 402
+                raise fd.QuotaExceeded("FinMind quota exceeded (HTTP 402)")
+            return real(tx, url, params, kind)
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(fd.FixtureTransport, "get_json", limited):
+            out = Path(d) / "data"
+            meta = self.run_mode("full", out)
+            watch = json.loads(Path(WATCH).read_text())["stocks"]
+            for c in watch:                                                  # 每一檔都還有資料（新的或上一份）
+                self.assertTrue((out / f"stock/{c}.json").exists(), c)
+            self.assertIn("額度用完", meta["sources"]["finmind_watchlist"]["note"])
+
+    def test_macro_mode_fills_missing_stock(self):
+        with tempfile.TemporaryDirectory() as d:
+            srv = self.serve_without(Path(d), "6669")          # 上次額度用完、沒抓到 6669
+            try:
+                out = Path(d) / "out" / "data"
+                meta = self.run_mode("macro", out, url=f"http://127.0.0.1:{srv.server_address[1]}/")
+            finally:
+                stop(srv)
+            self.assertEqual(meta["mode"], "macro")
+            self.assertTrue((out / "stock/6669.json").exists())
+            self.assertIn("stock/6669.json", meta["bytes"])
+            self.assertEqual(meta["macroFinmindRequests"], 2 + 8)
+
     def test_falls_back_to_full_run_when_site_unreachable(self):
         with tempfile.TemporaryDirectory() as d:
             out = Path(d) / "data"
             self.assertEqual(self.run_macro("http://127.0.0.1:9/", out), 0)
             meta = json.loads((out / "meta.json").read_text())
-            self.assertNotIn("mode", meta)
+            self.assertEqual(meta["mode"], "full")
             self.assertTrue((out / "stock" / "2330.json").exists())
 
     def test_falls_back_when_a_file_is_missing(self):
@@ -414,7 +523,7 @@ class MacroOnly(unittest.TestCase):
             finally:
                 stop(srv)
             meta = json.loads((out / "meta.json").read_text())
-            self.assertNotIn("mode", meta)                                # 完整模式重抓
+            self.assertEqual(meta["mode"], "full")                                # 完整模式重抓
             self.assertTrue((out / "stock" / "2330.json").exists())
 
 

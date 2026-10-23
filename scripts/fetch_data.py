@@ -41,8 +41,10 @@ GitHub Pages 是「純靜態」網站：放在網頁裡的任何東西（包含 
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import http.client
+import io
 import json
 import os
 import re
@@ -493,6 +495,41 @@ def build_stock_list(info_rows: list[dict], twse_q: dict, tpex_q: dict) -> list[
     return sorted(seen.values(), key=lambda r: r[0])
 
 
+# CSV 中「像股票代號」的儲存格：2330、00919、2330.TW、5347.TWO
+CSV_CODE = re.compile(r"(\d{4,6}[A-Z]?)(?:\.TWO?)?")
+
+
+def load_watchlist(path: Path) -> list[str]:
+    """
+    追蹤清單：CSV（Yahoo 自選股匯出或自製清單）或 JSON {"stocks": [...]}。
+    CSV 取標題含「代號 / Symbol / Code」的欄位；沒有標題就取每列第一個像代號的儲存格。
+    保留原本順序（= 網頁上的顯示順序），去除重複與無效代號。
+    """
+    text = path.read_text("utf-8-sig")                  # utf-8-sig：Excel 存的 CSV 開頭有 BOM
+    if path.suffix.lower() == ".json":
+        raw = json.loads(text)["stocks"]
+    else:
+        rows = [r for r in csv.reader(io.StringIO(text)) if any(c.strip() for c in r)]
+        head = [c.strip().lower() for c in rows[0]] if rows else []
+        col = next((i for i, c in enumerate(head) if any(k in c for k in ("代號", "symbol", "code", "ticker"))), None)
+        raw = []
+        for r in rows[1:] if col is not None else rows:
+            cells = [r[col]] if col is not None and col < len(r) else r
+            m = next((CSV_CODE.fullmatch(c.strip().upper()) for c in cells if CSV_CODE.fullmatch(c.strip().upper())), None)
+            if m:
+                raw.append(m.group(1))
+    out: list[str] = []
+    for c in (str(x).strip().upper() for x in raw):
+        if STOCK_CODE.fullmatch(c) and c not in out:
+            out.append(c)
+    return out
+
+
+def is_etf(code: str) -> bool:
+    """台股 ETF 代號一律 00 開頭（0050、00878、00679B）"""
+    return code.startswith("00")
+
+
 def load_spec() -> dict[str, dict]:
     spec = json.loads((REPO_ROOT / "assets" / "datasets.json").read_text("utf-8"))
     return {k: v for k, v in spec.items() if not k.startswith("_")}
@@ -521,6 +558,8 @@ def fetch_stock_detail(tx, code: str, spec: dict, today: dt.date) -> dict:
     """一檔股票的所有 FinMind 資料集。單一資料集失敗只記錄錯誤，不影響其他。"""
     tables, errors = {}, {}
     for key, s in spec.items():
+        if s.get("skipEtf") and is_etf(code):             # ETF 沒有本益比、月營收、財報：不浪費請求
+            continue
         start = (today - dt.timedelta(days=int(s["days"]))).isoformat()
         try:
             tables[key] = to_table(finmind(tx, s["dataset"], code, start), s)
@@ -530,6 +569,36 @@ def fetch_stock_detail(tx, code: str, spec: dict, today: dt.date) -> dict:
             errors[key] = str(e)[:160]
     return {"code": code, "fetchedAt": now_tpe().isoformat(timespec="seconds"),
             "tables": tables, "errors": errors}
+
+
+def fetch_details(tx, codes: list[str], spec: dict, today: dt.date, out: Path) -> tuple[int, bool]:
+    """
+    抓 codes 的個股資料寫到 out/stock/<代號>.json。回傳 (成功檔數, 是否遇到 FinMind 額度用完)。
+    新資料全部失敗、而上一份檔案還在時，保留上一份（寧可舊一點，也不要整頁空白）。
+    """
+    def one(code: str) -> tuple[str, dict | None, bool]:
+        try:
+            return code, fetch_stock_detail(tx, code, spec, today), False
+        except QuotaExceeded:
+            return code, None, True
+    fetched, quota = 0, False
+    with ThreadPoolExecutor(max_workers=FINMIND_WORKERS) as pool:
+        for code, detail, hit in pool.map(one, codes):
+            f = out / "stock" / f"{code}.json"
+            if detail and (detail["tables"] or not f.exists()):
+                write_json(f, detail)
+                fetched += 1 if detail["tables"] else 0
+            quota |= hit
+    return fetched, quota
+
+
+def stock_files(out: Path, watchlist: list[str]) -> dict[str, int]:
+    """移除已不在清單上的個股檔，回傳 {相對路徑: 位元組}（寫進 meta.bytes，下次可據此取回）"""
+    d = out / "stock"
+    for f in d.glob("*.json") if d.exists() else []:
+        if f.stem not in watchlist:
+            f.unlink()
+    return {f"stock/{c}.json": (d / f"{c}.json").stat().st_size for c in watchlist if (d / f"{c}.json").exists()}
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -769,10 +838,10 @@ def clock(today: dt.date) -> dt.datetime:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# 夜間輕量模式：個股與全市場資料夜間不會變 → 從已部署的網站取回上一份，只重抓總經
+# 增量更新：從已部署的網站取回上一份資料，只重抓需要的部分（見 main 的 --mode）
 # ──────────────────────────────────────────────────────────────────────
 def restore_previous(base_url: str, out: Path) -> dict | None:
-    """下載目前線上的完整資料到 out。任何一個檔案失敗就回傳 None（呼叫端改跑完整模式）"""
+    """下載目前線上的完整資料到 out。任何一個檔案失敗就回傳 None（呼叫端改從頭抓）"""
     stamp = int(time.time())
     def get(rel: str) -> bytes:
         # ?cb= 讓 GitHub Pages 的 CDN 快取（約 10 分鐘）失效，確保拿到同一版的檔案
@@ -791,7 +860,7 @@ def restore_previous(base_url: str, out: Path) -> dict | None:
             (out / rel).write_bytes(raw)
         return meta
     except Exception as e:  # noqa: BLE001
-        log(f"macro-only: 無法取回上一份資料（{str(e)[:120]}）→ 改跑完整模式")
+        log(f"無法取回網站上的上一份資料（{str(e)[:120]}）→ 從頭抓取")
         return None
 
 
@@ -821,13 +890,18 @@ def assert_no_secret(out_dir: Path, secret: str | None) -> None:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default="_site/data", help="輸出目錄")
-    ap.add_argument("--watchlist", default=str(REPO_ROOT / "config" / "watchlist.json"))
+    ap.add_argument("--watchlist", default=str(REPO_ROOT / "config" / "watchlist.csv"),
+                    help="追蹤清單 CSV（Yahoo 自選股匯出）或 JSON")
     ap.add_argument("--fixtures", help="離線模式：從此資料夾讀 fixture，不連網")
     ap.add_argument("--today", help="覆寫今天日期 YYYY-MM-DD（測試用）")
-    ap.add_argument("--macro-only", action="store_true",
-                    help="夜間輕量模式：只重抓總經，其餘資料從 --base-url（已部署的網站）取回")
-    ap.add_argument("--base-url", help="已部署網站的網址，例如 https://<帳號>.github.io/<repo>/")
+    ap.add_argument("--mode", choices=["full", "auto", "macro"], default="full", help=(
+        "full：個股資料全部重抓（收盤後）｜auto：個股只抓新加入的，其餘沿用網站上的版本，行情與總經照常更新｜"
+        "macro：只更新總經。auto / macro 需要 --base-url，取不到網站資料時自動改成 full"))
+    ap.add_argument("--macro-only", action="store_true", help="同 --mode macro")
+    ap.add_argument("--base-url", help="已部署網站的網址，例如 https://<帳號>.github.io/<repo>/。"
+                                       "full 模式也建議提供：額度用完時，沒抓到的個股沿用網站上的版本")
     args = ap.parse_args(argv)
+    mode = "macro" if args.macro_only else args.mode
 
     token = os.environ.get("FINMIND_TOKEN", "").strip() or None
     tx = FixtureTransport(Path(args.fixtures)) if args.fixtures else HttpTransport(token)
@@ -837,17 +911,19 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(out)
     out.mkdir(parents=True)
 
-    if args.macro_only:
-        prev = restore_previous(args.base_url, out) if args.base_url else None
-        if prev:
-            return run_macro_only(tx, out, prev, today, token)
+    watchlist = load_watchlist(Path(args.watchlist))
+    spec = load_spec()
+    prev = restore_previous(args.base_url, out) if args.base_url else None
+    if prev is None:
         shutil.rmtree(out)                                   # 清掉可能下載到一半的檔案
         out.mkdir(parents=True)
+        mode = "full"
+    if mode == "macro":
+        return run_macro_only(tx, out, prev, today, token, watchlist, spec)
 
-    watchlist = json.loads(Path(args.watchlist).read_text("utf-8"))["stocks"]
-    spec = load_spec()
     report = SourceReport()
-    log(f"start: today={today} watchlist={len(watchlist)} token={'yes' if token else 'no (anonymous quota)'}")
+    log(f"start: mode={mode} today={today} watchlist={len(watchlist)} "
+        f"token={'yes' if token else 'no (anonymous quota)'}")
 
     # 1) 全市場（免 token）— 證交所 OpenAPI 與櫃買 OpenAPI 可平行；T86 走 www 站需節流
     with ThreadPoolExecutor(max_workers=5) as pool:
@@ -904,22 +980,21 @@ def main(argv: list[str] | None = None) -> int:
     report.items["yahoo_quotes"] = {"ok": bool(quotes), "rows": len(quotes), "ms": 0}
     sizes["quotes.json"] = write_json(out / "quotes.json", {"rows": quotes})
 
-    detail_ok = 0
-    if not quota_hit:
-        def one(code: str) -> tuple[str, dict | None, str | None]:
-            try:
-                return code, fetch_stock_detail(tx, code, spec, today), None
-            except QuotaExceeded as e:
-                return code, None, str(e)
-        with ThreadPoolExecutor(max_workers=FINMIND_WORKERS) as pool:
-            for code, detail, err in pool.map(one, watchlist):
-                if detail:
-                    sizes[f"stock/{code}.json"] = write_json(out / "stock" / f"{code}.json", detail)
-                    detail_ok += 1 if detail["tables"] else 0
-                if err:
-                    quota_hit = True
-    report.items["finmind_watchlist"] = {"ok": detail_ok == len(watchlist), "rows": detail_ok,
-                                         "ms": 0, "note": "FinMind 額度用完 (HTTP 402)" if quota_hit else ""}
+    # 個股：full 全部重抓；auto 只抓網站上還沒有的（新加入清單、或上次額度用完沒抓到的）
+    stock_dir = out / "stock"
+    todo = watchlist if mode == "full" else [c for c in watchlist if not (stock_dir / f"{c}.json").exists()]
+    fetched = 0
+    if todo and not quota_hit:
+        fetched, quota_hit = fetch_details(tx, todo, spec, today, out)
+    files = stock_files(out, watchlist)
+    sizes.update(files)
+    detail_ok = len(files)
+    report.items["finmind_watchlist"] = {
+        "ok": detail_ok == len(watchlist), "rows": detail_ok, "ms": 0,
+        "note": "；".join(x for x in (
+            f"本次更新 {fetched} 檔，沿用上一份 {detail_ok - fetched} 檔" if mode != "full" or detail_ok > fetched else "",
+            f"缺 {len(watchlist) - detail_ok} 檔" if detail_ok < len(watchlist) else "",
+            "FinMind 額度用完 (HTTP 402)，下次執行會補抓" if quota_hit else "") if x)}
 
     # 3) 共用規格 + meta
     shutil.copy(REPO_ROOT / "assets" / "datasets.json", out / "datasets.json")
@@ -930,6 +1005,7 @@ def main(argv: list[str] | None = None) -> int:
         "tokenUsed": bool(token),          # 只記錄「有沒有用 token」，不記錄 token 本身
         "demo": bool(args.fixtures),       # 離線假資料 → 網頁顯示「示範資料」橫幅
         "watchlist": watchlist,
+        "mode": mode,
         "finmindRequests": tx.finmind_requests,
         "sources": report.items,
         "bytes": sizes,
@@ -946,20 +1022,31 @@ def main(argv: list[str] | None = None) -> int:
     return 0 if (market_rows or detail_ok) else 1
 
 
-def run_macro_only(tx, out: Path, prev: dict, today: dt.date, token: str | None) -> int:
-    """夜間輕量模式：沿用上一份完整資料，只更新 macro.json 與開休市狀態（約 3–4 次 FinMind 請求）"""
+def run_macro_only(tx, out: Path, prev: dict, today: dt.date, token: str | None,
+                   watchlist: list[str], spec: dict) -> int:
+    """
+    夜間輕量模式：沿用上一份完整資料，只更新 macro.json 與開休市狀態（約 2–4 次 FinMind 請求）。
+    順便補抓清單上還沒有資料的個股（上次額度用完時沒抓到的）。
+    """
     report = SourceReport()
     try:
         macro = fetch_macro(tx, report, today, use_finmind=True)
     except QuotaExceeded:
         macro = json.loads((out / "macro.json").read_text("utf-8"))["items"]    # 額度用完：保留舊總經
-    sizes = dict(prev["bytes"])
+    missing = [c for c in watchlist if not (out / "stock" / f"{c}.json").exists()]
+    fetched = fetch_details(tx, missing, spec, today, out)[0] if missing else 0
+    sizes = {k: v for k, v in prev["bytes"].items() if not k.startswith("stock/")}
+    sizes.update(stock_files(out, watchlist))
     sizes["macro.json"] = write_json(out / "macro.json", {"items": macro})
     asof = json.loads((out / "market.json").read_text("utf-8")).get("asOf", {})
     market = market_block(tx, report, today, clock(today), asof.get("twse") or asof.get("tpex"), macro,
                           prev.get("market"))
+    now = now_tpe().isoformat(timespec="seconds")
     meta = {**prev,
-            "macroAt": now_tpe().isoformat(timespec="seconds"),   # generatedAt 不變：個股資料仍是上一份
+            "macroAt": now,
+            # generatedAt 不變（個股資料仍是上一份）；有補抓個股時才更新，讓瀏覽器重新讀取
+            "generatedAt": now if fetched else prev["generatedAt"],
+            "watchlist": watchlist,
             "mode": "macro",
             "sources": {**prev.get("sources", {}), **report.items},
             "macroFinmindRequests": tx.finmind_requests,

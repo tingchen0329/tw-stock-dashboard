@@ -1,6 +1,6 @@
 # 台股研究台 (tw-stock-dashboard) v6
 
-個人台股研究儀表板：全市場搜尋、追蹤清單、技術指標、本益比河流圖、月營收、籌碼與財報，
+個人台股研究儀表板：追蹤清單總覽、全市場搜尋、技術指標、本益比河流圖、月營收、籌碼與財報，
 一鍵產生可貼到任何 AI 的分析指令，可匯出 CSV / Excel。
 
 **網站**：https://tingchen0329.github.io/tw-stock-dashboard/
@@ -25,7 +25,8 @@ flowchart LR
 
 - **token 永遠不進瀏覽器**：只存在 GitHub Secrets，由 Actions 在伺服器端使用（[原因與設定](docs/SETUP.md)）
 - **全市場資料**（證交所 + 櫃買）伺服器端抓好，不再依賴不穩定的公共 CORS proxy
-- **追蹤清單**（`config/watchlist.json`）用 FinMind token 預抓 3 年完整資料
+- **追蹤清單**（`config/watchlist.csv`，可直接用 Yahoo 自選股整理的 CSV）用 FinMind token 預抓 3 年完整資料；
+  收盤後完整更新，盤中與夜間只更新行情與總經（[更新時段](docs/SETUP.md)）
 - **清單外股票**仍可搜尋，網頁用 FinMind 免 token 額度即時查詢
 
 ## 開始使用
@@ -40,6 +41,7 @@ flowchart LR
 
 | 區塊 | 內容 | 資料來源 |
 |---|---|---|
+| 總覽（首頁） | 追蹤清單每檔一列：股價、60 日走勢、本益比、河流圖位階、營收 / EPS 年增、ROE、法人 20 日、均線、KD、RSI；可排序、篩選個股 / ETF | 同下 |
 | 搜尋 | 代號、名稱、部分名稱、全形數字、臺/台、產業別；`/` 快速聚焦、↑↓ Enter | FinMind TaiwanStockInfo |
 | 報價與估值 | 收盤 / 盤中價、本益比、股價淨值比、殖利率、三大法人 | 證交所、櫃買、Yahoo |
 | 技術面 | MA5/20/60/240、均線排列、KD、RSI、MACD、量比、區間報酬、價格位階、前高前低 | FinMind（3 年日線） |
@@ -70,11 +72,11 @@ Skill 檔案取自 FinMind 官方 repo（Apache-2.0，見 `.claude/commands/finm
 
 | 項目 | 方案 | 費用 | 本專案用量 / 說明 |
 |---|---|---|---|
-| GitHub repo + Actions | Free（公開 repo） | NT$0 | 公開 repo 的標準 runner 不計分鐘數。每交易日 9 次完整更新 + 4 次夜間總經更新，各約 1–2 分鐘。若改私有 repo，每月有 2,000 分鐘免費額度，本專案約用 500 分鐘 |
+| GitHub repo + Actions | Free（公開 repo） | NT$0 | 公開 repo 的標準 runner 不計分鐘數。每交易日 13 次，各約 0.5–3 分鐘。若改私有 repo，每月有 2,000 分鐘免費額度，本專案約用 500 分鐘 |
 | GitHub Pages | Free | NT$0 | 網站約 2 MB；軟上限 1 GB 容量、每月 100 GB 流量 |
 | 證交所 / 櫃買 OpenAPI | 政府開放資料 | NT$0 | 全市場行情、本益比、三大法人 |
 | Yahoo Finance chart API | 非官方、免費 | NT$0 | 指數、匯率、盤中價。無服務保證，偶爾限流 |
-| FinMind 註冊會員 | Free | NT$0 | 每小時 600 次；完整更新約 160 次，夜間只更新總經約 2–4 次 |
+| FinMind 註冊會員 | Free | NT$0 | 每小時 600 次；收盤後完整更新約 510 次（68 檔），其他時段約 3 次。清單上限約 70 檔 |
 | Claude | 你現有的方案 | 不增加 | 貼上「分析指令」或在 Claude Code 使用 skill |
 | *選用* FinMind Backer | 付費 | NT$699/月 | 單日全市場批次下載（可做全市場篩選）、股權分散表（千張大戶）、還原股價 |
 | *選用* FinMind Sponsor | 付費 | NT$999/月 | 盤中即時快照、分點進出、八大行庫 |
@@ -118,10 +120,12 @@ assets/
   js/render.js                畫面
   js/prompt.js                分析指令
   js/market.js                開休市狀態（純函式）
+  js/overview.js              追蹤清單總覽表
   js/export.js                CSV / XLSX
   js/format.js                數字與日期格式
-config/watchlist.json         追蹤清單
+config/watchlist.csv          追蹤清單（Yahoo 自選股 CSV）
 scripts/fetch_data.py         資料管線（GitHub Actions 執行）
+scripts/build_overview.mjs    總覽表資料（Actions 執行，與網頁同一套計算）
 scripts/summarize.mjs         終端機版個股摘要
 scripts/preview.sh            本機預覽
 tests/                        py / js / e2e / bench / fixtures（合成資料產生器）

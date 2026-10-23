@@ -505,25 +505,59 @@ export function summarize({ info, mkt, quote, tables = {}, asOf = {} }) {
 /** 資料完整度：對照「七段分析」需要的欄位，列出缺哪些 */
 export function completeness(s) {
   const f = s.fundamentals;
+  const etf = String(s.info?.code ?? '').startsWith('00');   // ETF 沒有本益比、營收、財報：不列入完整度
   const checks = [
     ['股價', isNum(s.price?.price)],
-    ['本益比', isNum(s.valuation?.pe)],
-    ['股價淨值比', isNum(s.valuation?.pb)],
-    ['殖利率', isNum(s.valuation?.yield)],
+    ['本益比', isNum(s.valuation?.pe), 'stock'],
+    ['股價淨值比', isNum(s.valuation?.pb), 'stock'],
+    ['殖利率', isNum(s.valuation?.yield), 'stock'],
     ['三大法人（當日）', isNum(s.instToday?.foreign)],
     ['三大法人（20 日）', !!s.inst],
     ['外資持股比例', isNum(s.holding?.ratio)],
     ['融資融券', isNum(s.margin?.margin)],
-    ['月營收年增率', isNum(s.revenue?.latest?.yoy)],
-    ['近四季 EPS', isNum(f?.eps4)],
-    ['毛利率 / 營益率', isNum(f?.margins?.gross)],
-    ['ROE', isNum(f?.roe)],
-    ['負債比', isNum(f?.debtRatio)],
+    ['月營收年增率', isNum(s.revenue?.latest?.yoy), 'stock'],
+    ['近四季 EPS', isNum(f?.eps4), 'stock'],
+    ['毛利率 / 營益率', isNum(f?.margins?.gross), 'stock'],
+    ['ROE', isNum(f?.roe), 'stock'],
+    ['負債比', isNum(f?.debtRatio), 'stock'],
     ['均線', isNum(s.tech?.ma?.[60])],
     ['KD / RSI / MACD', isNum(s.tech?.k) && isNum(s.tech?.rsi) && isNum(s.tech?.dif)],
-    ['本益比河流圖', !!s.river],
+    ['本益比河流圖', !!s.river, 'stock'],
     ['一年價格位階', isNum(s.tech?.pct1y)],
-  ];
+  ].filter(([, , only]) => !(etf && only === 'stock'));
   const ok = checks.filter(([, v]) => v).length;
   return { pct: Math.round((ok / checks.length) * 100), missing: checks.filter(([, v]) => !v).map(([k]) => k), total: checks.length, ok };
+}
+
+/**
+ * 追蹤清單總覽表的一列（summarize() 結果 → 精簡欄位）。
+ * 由 scripts/build_overview.mjs 在 GitHub Actions 預先算好寫成 overview.json，網頁只負責顯示。
+ */
+export function overviewRow(s) {
+  const t = s.tech;
+  const f = s.fundamentals;
+  const align = t?.alignment ?? '';
+  const r2 = (v) => (isNum(v) ? Math.round(v * 100) / 100 : null);
+  return {
+    code: s.info.code,
+    name: s.info.name,
+    industry: s.info.industry || '',
+    etf: s.info.code.startsWith('00'),
+    price: r2(s.price?.price),
+    chgPct: r2(s.price?.changePct),
+    priceKind: s.price?.kind ?? null,
+    spark: (s.series?.close ?? []).slice(-60).map(r2),
+    r20: r2(t?.returns?.d20),
+    pe: r2(s.valuation?.pe),
+    riverPct: r2(s.river?.percentile),
+    zone: s.river?.zone ?? null,
+    revYoY: r2(s.revenue?.latest?.yoy),
+    epsYoY: r2(f?.eps4YoY),
+    roe: r2(f?.roe),
+    f20: s.inst?.sum20?.foreign ?? null,
+    t20: s.inst?.sum20?.trust ?? null,
+    trend: align.startsWith('多頭') ? 1 : align.startsWith('空頭') ? -1 : align === '均線糾結' ? 0 : null,
+    k: r2(t?.k),
+    rsi: r2(t?.rsi),
+  };
 }

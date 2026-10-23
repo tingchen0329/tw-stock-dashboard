@@ -42,7 +42,9 @@ def build_site(tmp: Path) -> tuple[Path, Path]:
     shutil.copytree(ROOT / "assets", site / "assets")
     env = {**os.environ, "FINMIND_TOKEN": SECRET}
     subprocess.run([sys.executable, ROOT / "scripts/fetch_data.py", "--fixtures", fx, "--out", site / "data",
-                    "--today", "2026-10-19"], check=True, capture_output=True, env=env)
+                    "--today", "2026-10-19", "--watchlist", ROOT / "tests/fixtures/watchlist.json"],
+                   check=True, capture_output=True, env=env)
+    subprocess.run(["node", ROOT / "scripts/build_overview.mjs", site / "data"], check=True, capture_output=True)
     return site, fx
 
 
@@ -188,6 +190,32 @@ class Dashboard(unittest.TestCase):
         self.assertIn("破線停損價", text)
         self.assertNotIn("undefined", text)
         self.assertLess(len(text), 3200)                # 精簡版：v2 約 4,800 字
+
+    def test_overview_is_home_page_with_filters_sort_and_click(self):
+        self.page.goto(self.base)
+        rows = self.page.locator(".ov tbody tr")
+        rows.nth(19).wait_for()
+        self.assertEqual(rows.count(), 20)
+        self.assertEqual(self.page.locator("#watchlist .ov-chip").get_attribute("aria-current"), "true")
+        # 篩選 ETF → 只剩 0050，本益比等欄位顯示 N/A
+        self.page.get_by_role("button", name="ETF 1").click()
+        self.assertEqual(rows.count(), 1)
+        self.assertIn("0050", rows.first.inner_text())
+        self.assertIn("N/A", rows.first.inner_text())
+        self.page.get_by_role("button", name="個股 19").click()
+        self.assertEqual(rows.count(), 19)
+        # 排序：第一次點由大到小
+        th = self.page.locator(".ov th", has_text="營收年增")
+        th.click()
+        self.assertEqual(th.get_attribute("aria-sort"), "descending")
+        vals = [float(t.replace("%", "").replace("+", "")) for t in
+                self.page.locator(".ov tbody tr td:nth-child(7)").all_inner_texts()]
+        self.assertEqual(vals, sorted(vals, reverse=True))
+        # 點一列 → 開啟個股
+        code = rows.first.get_attribute("data-code")
+        rows.first.click()
+        self.wait_stock(code)
+        self.assertEqual(self.errors, [])
 
     def test_market_closed_banner_uses_holiday_schedule(self):
         # 週六上午：下次開盤要跳過 10/26（fixture 的證交所休市表）→ 10/27

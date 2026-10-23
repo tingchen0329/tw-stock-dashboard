@@ -78,7 +78,7 @@ let tables = readLocal(`stock/${code}.json`)?.tables;
 const errors = {};
 if (!tables) {
   tables = {};
-  await Promise.all(Object.entries(spec).map(async ([k, s]) => {
+  await Promise.all(Object.entries(spec).filter(([, s]) => !(s.skipEtf && code.startsWith('00'))).map(async ([k, s]) => {
     try {
       tables[k] = toTable(await finmind({ dataset: s.dataset, data_id: code, start_date: daysBefore(todayTPE(), s.days) }), s);
     } catch (e) { errors[k] = e.message; }

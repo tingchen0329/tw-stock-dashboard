@@ -121,8 +121,9 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
                            "HighestPrice": f"{hi:.2f}", "LowestPrice": f"{lo:.2f}",
                            "ClosingPrice": f"{last:.2f}", "Change": f"{last - prev:+.2f}",
                            "Transaction": str(rng.randint(100, 50000))})
-            twse_v.append({"Date": roc(last_day), "Code": c, "Name": n, "PEratio": str(pe),
-                           "DividendYield": str(yld), "PBratio": str(pb)})
+            if not c.startswith("00"):                       # 證交所本益比表不含 ETF
+                twse_v.append({"Date": roc(last_day), "Code": c, "Name": n, "PEratio": str(pe),
+                               "DividendYield": str(yld), "PBratio": str(pb)})
             t86.append([c, n, "0", "0", f"{f_net:,}", "0", "0", "0", "0", "0", f"{t_net:,}",
                         f"{d_net:,}", "0", "0", "0", "0", "0", "0", f"{f_net + t_net + d_net:,}"])
         else:
@@ -152,7 +153,8 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
     def fm(name, data):
         w(name, {"msg": "success", "status": 200, "data": data})
 
-    for c in [k for k in WATCH if k != "0050"]:
+    for c in WATCH:
+        etf = c.startswith("00")                  # ETF：沒有本益比、月營收、財報（pipeline 也不會查）
         r = random.Random(int(c))
         cl = closes[c]
         price = []
@@ -167,7 +169,8 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
         per = [{"date": str(d), "stock_id": c, "dividend_yield": round(r.uniform(1.5, 4.5), 2),
                 "PER": round(v / (eps0 * (1 + 0.15 * i / len(days))), 2), "PBR": round(v / (eps0 * 6), 2)}
                for i, (d, v) in enumerate(zip(days, cl))]
-        fm(f"finmind_TaiwanStockPER_{c}.json", per)
+        if not etf:
+            fm(f"finmind_TaiwanStockPER_{c}.json", per)
         rev, base_rev = [], r.uniform(2e9, 3e11)
         for k in range(26, 0, -1):
             y, mth = (today.year, today.month - k) if today.month - k > 0 else (today.year - 1, today.month - k + 12)
@@ -177,7 +180,8 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
             rev.append({"date": str(nxt), "stock_id": c, "country": "Taiwan",
                         "revenue": int(base_rev * (1 + 0.012 * (26 - k)) * r.uniform(0.85, 1.15)),
                         "revenue_month": mth, "revenue_year": y, "create_time": ""})
-        fm(f"finmind_TaiwanStockMonthRevenue_{c}.json", rev)
+        if not etf:
+            fm(f"finmind_TaiwanStockMonthRevenue_{c}.json", rev)
         inst = [{"date": str(d), "stock_id": c, "name": nm, "buy": r.randint(0, 9000) * 1000,
                  "sell": r.randint(0, 9000) * 1000} for d in days[-40:] for nm in INST_NAMES]
         fm(f"finmind_TaiwanStockInstitutionalInvestorsBuySell_{c}.json", inst)
@@ -215,8 +219,9 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
                             ("CurrentLiabilities", ta * .18, "流動負債合計"), ("CashAndCashEquivalents", ta * .2, "現金及約當現金"),
                             ("Liabilities_per", 40, "負債總計")]:
                 bal.append({"date": str(qe), "stock_id": c, "type": t, "value": round(v, 2), "origin_name": o})
-        fm(f"finmind_TaiwanStockFinancialStatements_{c}.json", inc)
-        fm(f"finmind_TaiwanStockBalanceSheet_{c}.json", bal)
+        if not etf:
+            fm(f"finmind_TaiwanStockFinancialStatements_{c}.json", inc)
+            fm(f"finmind_TaiwanStockBalanceSheet_{c}.json", bal)
 
     # ── 總經 ──
     fm("finmind_InterestRate_FED.json", [
