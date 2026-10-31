@@ -42,6 +42,7 @@ flowchart LR
 | 區塊 | 內容 | 資料來源 |
 |---|---|---|
 | 總覽（首頁） | 追蹤清單每檔一列：股價、60 日走勢、本益比、河流圖位階、營收 / EPS 年增、ROE、法人 20 日、均線、KD、RSI；可排序、篩選個股 / ETF | 同下 |
+| 選股 | 全市場上市櫃個股：成長型（營收、獲利成長）、殖利率型（高殖利率、低本益比）兩組條件，門檻可自訂 | 證交所、櫃買開放資料（月營收、損益表、本益比） |
 | 搜尋 | 代號、名稱、部分名稱、全形數字、臺/台、產業別；`/` 快速聚焦、↑↓ Enter | FinMind TaiwanStockInfo |
 | 報價與估值 | 收盤 / 盤中價、本益比、股價淨值比、殖利率、三大法人 | 證交所、櫃買、Yahoo |
 | 技術面 | MA5/20/60/240、均線排列、KD、RSI、MACD、量比、區間報酬、價格位階、前高前低 | FinMind（3 年日線） |
@@ -80,6 +81,7 @@ Skill 檔案取自 FinMind 官方 repo（Apache-2.0，見 `.claude/commands/finm
 | Claude | 你現有的方案 | 不增加 | 貼上「分析指令」或在 Claude Code 使用 skill |
 | *選用* FinMind Backer | 付費 | NT$699/月 | 單日全市場批次下載（可做全市場篩選）、股權分散表（千張大戶）、還原股價 |
 | *選用* FinMind Sponsor | 付費 | NT$999/月 | 盤中即時快照、分點進出、八大行庫 |
+| cron-job.org | Free | NT$0 | 外部排程，準時觸發更新（[設定](docs/SCHEDULER.md)） |
 | *選用* 自訂網域 | 網域商 | 約 NT$400–1,000/年 | 例如 stock.你的網域.tw |
 
 FinMind 價格取自 https://finmind.github.io/Pricing/ （2026-10）。分析框架中「千張大戶、借券、景氣燈號」
@@ -121,6 +123,7 @@ assets/
   js/prompt.js                分析指令
   js/market.js                開休市狀態（純函式）
   js/overview.js              追蹤清單總覽表
+  js/screen.js                全市場選股
   js/export.js                CSV / XLSX
   js/format.js                數字與日期格式
 config/watchlist.csv          追蹤清單（Yahoo 自選股 CSV）

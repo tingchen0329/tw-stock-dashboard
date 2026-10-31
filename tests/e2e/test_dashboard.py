@@ -196,7 +196,7 @@ class Dashboard(unittest.TestCase):
         rows = self.page.locator(".ov tbody tr")
         rows.nth(19).wait_for()
         self.assertEqual(rows.count(), 20)
-        self.assertEqual(self.page.locator("#watchlist .ov-chip").get_attribute("aria-current"), "true")
+        self.assertEqual(self.page.locator('#watchlist .ov-chip[data-code="overview"]').get_attribute("aria-current"), "true")
         # 篩選 ETF → 只剩 0050，本益比等欄位顯示 N/A
         self.page.get_by_role("button", name="ETF 1").click()
         self.assertEqual(rows.count(), 1)
@@ -214,6 +214,31 @@ class Dashboard(unittest.TestCase):
         # 點一列 → 開啟個股
         code = rows.first.get_attribute("data-code")
         rows.first.click()
+        self.wait_stock(code)
+        self.assertEqual(self.errors, [])
+
+    def test_screener_presets_thresholds_and_click(self):
+        self.page.goto(self.base + "#screen")
+        count = self.page.locator(".screen-count")
+        count.filter(has_text="符合").wait_for()
+        growth = count.inner_text()
+        self.assertEqual(self.page.get_by_role("button", name="成長型").get_attribute("aria-pressed"), "true")
+        # 切到殖利率型：條件與結果不同
+        self.page.get_by_role("button", name="殖利率型").click()
+        self.assertNotEqual(count.inner_text(), growth)
+        self.assertIn("殖利率", self.page.locator(".screen-form").inner_text())
+        # 每一列都符合殖利率 ≥ 5%（第 7 欄）
+        ys = [float(t.rstrip("%")) for t in self.page.locator(".ov tbody tr td:nth-child(7)").all_inner_texts()]
+        self.assertTrue(ys and all(y >= 5 for y in ys), ys)
+        # 放寬門檻 → 結果變多
+        before = int(count.inner_text().split("符合 ")[1].split(" 檔")[0].replace(",", ""))
+        self.page.get_by_label("殖利率 ≥").fill("3")
+        after = int(count.inner_text().split("符合 ")[1].split(" 檔")[0].replace(",", ""))
+        self.assertGreater(after, before)
+        # 點一列 → 開啟個股（清單外的股票走即時查詢）
+        row = self.page.locator(".ov tbody tr").first
+        code = row.get_attribute("data-code")
+        row.click()
         self.wait_stock(code)
         self.assertEqual(self.errors, [])
 

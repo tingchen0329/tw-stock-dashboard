@@ -11,13 +11,14 @@
  *       c. 使用者若在途中改查別檔，前一個請求以 AbortController 取消 → 不會出現「資料錯置」
  */
 
-import { loadBootstrap, loadStock } from './data.js';
+import { loadBootstrap, loadStock, loadScreen } from './data.js';
 import { buildIndex, search, resolveExact, highlightParts, marketLabel } from './search.js';
 import { summarize, marketRow } from './analytics.js';
 import { renderFreshness, renderWatchlist, renderMacro, renderStock, renderSetup, h } from './render.js';
 import { buildPrompt } from './prompt.js';
 import { marketStatus, marketNotice } from './market.js';
 import { renderOverview } from './overview.js';
+import { renderScreen } from './screen.js';
 import { toCSV, toXLSX, download } from './export.js';
 import * as F from './format.js';
 
@@ -207,9 +208,28 @@ function showOverview() {
   renderOverview($('stock'), boot.overview, { onPick: pick });
 }
 
+/* ───────── 全市場選股 ───────── */
+
+async function showScreen() {
+  const { boot } = state;
+  if (!boot?.meta) return;
+  state.current?.ctrl.abort();
+  state.current?.cleanup?.();
+  const cur = { code: 'screen', ctrl: new AbortController(), cleanup: null, summary: null };
+  state.current = cur;
+  markCurrentChip('screen');
+  document.title = '全市場選股｜台股研究台';
+  $('stock').replaceChildren(h('p', { class: 'note' }, '載入全市場資料中…'));
+  let data = null;
+  try { data = await loadScreen(); } catch { /* 顯示「尚未產生」 */ }
+  if (state.current !== cur) return;
+  renderScreen($('stock'), data, { watchlist: boot.meta.watchlist, onPick: pick });
+}
+
 const route = () => {
   const c = decodeURIComponent(location.hash.slice(1));
   if (c === 'overview') showOverview();
+  else if (c === 'screen') showScreen();
   else if (c) showStock(c);
 };
 
@@ -317,7 +337,10 @@ async function boot() {
   renderWatchlist($('watchlist'), wl, pick);
   $('watchlist').firstChild.after(h('button', {
     class: 'chip ov-chip', type: 'button', dataset: { code: 'overview' }, on: { click: () => pick('overview') },
-  }, h('span', { class: 't' }, '總覽'), h('span', { class: 'v' }, `${wl.length} 檔`)));
+  }, h('span', { class: 't' }, '總覽'), h('span', { class: 'v' }, `${wl.length} 檔`)),
+  h('button', {
+    class: 'chip ov-chip', type: 'button', dataset: { code: 'screen' }, on: { click: () => pick('screen') },
+  }, h('span', { class: 't' }, '選股'), h('span', { class: 'v' }, '全市場')));
   renderMacro($('macro'), b.macro?.items);
 
   window.addEventListener('hashchange', route);

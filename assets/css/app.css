@@ -183,6 +183,23 @@ button, input { font: inherit; color: inherit; }
 .ov .hot { color: var(--warn); font-weight: 600; }
 .ov .cold { color: var(--accent); font-weight: 600; }
 
+/* ── 全市場選股 ─────────────────────────────────────────────── */
+.screen-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.screen-form .crit {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px;
+  background: var(--surface); border: 1px solid var(--hair); border-radius: 8px; font-size: 13px;
+}
+.screen-form .crit .t { color: var(--ink-2); }
+.screen-form .crit .op { color: var(--muted); }
+.screen-form .crit .unit { color: var(--muted); }
+.screen-form input {
+  width: 64px; height: 28px; padding: 0 6px; font: inherit; font-variant-numeric: tabular-nums; text-align: right;
+  color: var(--ink); background: var(--surface-2); border: 1px solid var(--axis); border-radius: 6px;
+}
+.screen-form input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.screen-count { font-weight: 600; margin: 6px 0 0; }
+.ov .star { color: var(--warn); margin-left: 4px; }
+
 /* ── 個股區 ─────────────────────────────────────────────────── */
 .stock { margin-top: 18px; }
 .stock-head {

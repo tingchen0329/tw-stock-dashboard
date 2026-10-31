@@ -781,6 +781,116 @@ def fetch_macro(tx, report: SourceReport, today: dt.date, use_finmind: bool) -> 
 
 
 # ──────────────────────────────────────────────────────────────────────
+# 全市場選股（screen.json）：只用證交所 / 櫃買開放資料，不花 FinMind 額度
+#   月營收：上市 t187ap05_L、上櫃 mopsfin_t187ap05_O（每月一次，全部公司一個檔案）
+#   損益表：上市 t187ap06_L_*、上櫃 mopsfin_t187ap06_O_*（最新一季累計；一般業 / 金融 / 證券 / 金控 / 保險 / 異業）
+#   本益比、股價淨值比、殖利率、成交量、法人：沿用 market.json
+# 篩選條件在網頁端（assets/js/screen.js），這裡只整理資料。
+# ──────────────────────────────────────────────────────────────────────
+INCOME_KINDS = ["ci", "basi", "bd", "fh", "ins", "mim"]
+SCREEN_COLS = ["code", "name", "market", "industry", "close", "chgPct", "volume", "pe", "pb", "yield", "roe",
+               "revYm", "revYoY", "revMoM", "revCumYoY", "epsPeriod", "eps", "gm", "om", "foreign", "trust"]
+
+
+def _code(r: dict) -> str:
+    return str(pick(r, "公司代號", "SecuritiesCompanyCode", "CompanyCode", "Code") or "").strip()
+
+
+def parse_revenue(rows: list[dict]) -> dict[str, dict]:
+    """月營收彙總表 → {代號: {ym, yoy, mom, cumYoy}}。資料年月 11509 → 2026-09"""
+    out = {}
+    for r in rows or []:
+        code, ym = _code(r), str(pick(r, "資料年月", "YearMonth") or "").strip()
+        if not code or not re.fullmatch(r"\d{4,5}", ym):
+            continue
+        out[code] = {"ym": f"{int(ym[:-2]) + 1911}-{ym[-2:]}",
+                     "yoy": to_num(pick(r, "營業收入-去年同月增減(%)")),
+                     "mom": to_num(pick(r, "營業收入-上月比較增減(%)")),
+                     "cumYoy": to_num(pick(r, "累計營業收入-前期比較增減(%)"))}
+    return out
+
+
+def parse_income(rows: list[dict]) -> dict[str, dict]:
+    """綜合損益表（最新一季累計）→ {代號: {period, eps, gm, om}}。金融業沒有毛利 → None"""
+    out = {}
+    for r in rows or []:
+        code = _code(r)
+        y, q = str(pick(r, "年度", "Year") or "").strip(), str(pick(r, "季別", "Season", "Quarter") or "").strip()
+        eps = to_num(pick(r, "基本每股盈餘（元）", "基本每股盈餘(元)", "基本每股盈餘"))
+        if not code or eps is None or not y.isdigit() or not q.isdigit():
+            continue
+        rev = to_num(pick(r, "營業收入", "收益合計", "淨收益"))
+        gp = to_num(pick(r, "營業毛利（毛損）淨額", "營業毛利（毛損）"))
+        op = to_num(pick(r, "營業利益（損失）"))
+        pct = lambda v: round(v / rev * 100, 2) if v is not None and rev else None  # noqa: E731
+        out[code] = {"period": f"{int(y) + 1911}Q{q}", "eps": eps, "gm": pct(gp), "om": pct(op)}
+    return out
+
+
+def _fetch_parts(tx, report: SourceReport, name: str, urls: list[str], parser) -> dict[str, dict]:
+    """多個端點合併成一個資料源；部分失敗只記在備註。解析出 0 筆時把欄位名稱寫進備註（方便發現改版）"""
+    merged, failed, keys = {}, [], None
+    def fetch_all():
+        nonlocal keys
+        for url in urls:
+            try:
+                rows = tx.get_json(url)
+            except Exception as e:  # noqa: BLE001
+                failed.append(f"{url.rsplit('/', 1)[-1]}: {str(e)[:60]}")
+                continue
+            got = parser(rows)
+            if not got and rows and isinstance(rows, list) and isinstance(rows[0], dict):
+                keys = list(rows[0])[:8]
+            merged.update(got)
+        return merged
+    report.run(name, fetch_all)
+    notes = [f"失敗 {len(failed)}/{len(urls)}：" + "；".join(failed[:3])] if failed else []
+    if keys and not merged:
+        notes.append(f"欄位不符：{keys}")
+    if notes:
+        report.items[name]["note"] = "；".join(notes)
+    return merged
+
+
+def build_screen(tx, report: SourceReport, market_rows: dict, stock_list: list[list[str]], asof: dict) -> dict:
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        jobs = {
+            "twse_revenue": ([f"{TWSE_OPENAPI}/opendata/t187ap05_L"], parse_revenue),
+            "tpex_revenue": ([f"{TPEX_OPENAPI}/mopsfin_t187ap05_O"], parse_revenue),
+            "twse_income": ([f"{TWSE_OPENAPI}/opendata/t187ap06_L_{k}" for k in INCOME_KINDS], parse_income),
+            "tpex_income": ([f"{TPEX_OPENAPI}/mopsfin_t187ap06_O_{k}" for k in INCOME_KINDS], parse_income),
+        }
+        futs = {k: pool.submit(_fetch_parts, tx, report, k, urls, fn) for k, (urls, fn) in jobs.items()}
+        rev = futs["twse_revenue"].result() | futs["tpex_revenue"].result()
+        inc = futs["twse_income"].result() | futs["tpex_income"].result()
+    col = {c: i for i, c in enumerate(MARKET_COLS)}
+    rows = []
+    for code, name, market, industry in stock_list:
+        m = market_rows.get(code)
+        # 個股才列入：4 碼、非 ETF（00 開頭）、今天有成交資料
+        if m is None or market not in ("twse", "tpex") or not re.fullmatch(r"[1-9]\d{3}", code):
+            continue
+        g = lambda k: m[col[k]]  # noqa: E731
+        close, chg, pe, pb = g("close"), g("change"), g("pe"), g("pb")
+        prev_close = close - chg if close is not None and chg is not None else None
+        lots = lambda v: round(v / 1000) if v is not None else None  # noqa: E731
+        r, i = rev.get(code, {}), inc.get(code, {})
+        rows.append([
+            code, name, market, industry, close,
+            round(chg / prev_close * 100, 2) if prev_close else None,
+            lots(g("volume")), pe, pb, g("yield"),
+            round(pb / pe * 100, 2) if pe and pb else None,          # ROE 推估 = 股價淨值比 ÷ 本益比
+            r.get("ym"), r.get("yoy"), r.get("mom"), r.get("cumYoy"),
+            i.get("period"), i.get("eps"), i.get("gm"), i.get("om"),
+            lots(g("foreign")), lots(g("trust")),
+        ])
+    periods = sorted({x[15] for x in rows if x[15]})
+    months = sorted({x[11] for x in rows if x[11]})
+    return {"asOf": {**asof, "revenue": months[-1] if months else None, "income": periods[-1] if periods else None},
+            "cols": SCREEN_COLS, "rows": rows}
+
+
+# ──────────────────────────────────────────────────────────────────────
 # 開休市狀態：給網頁顯示「今日休市，顯示 X 日收盤；下次開盤 Y 日」
 #   排定休市：證交所 OpenAPI holidaySchedule（國定假日、補假、春節結算日）
 #   臨時休市：颱風等當天才宣布 → 收盤後證交所與加權指數都還停在前一天 → 判定今天沒開盤
@@ -835,6 +945,31 @@ def market_block(tx, report: SourceReport, today: dt.date, now: dt.datetime,
             "holidaysOk": hol is not None,               # 休市表抓失敗時，網頁不把推斷出的休市標成「臨時」
             "closures": detect_closures(today, now, last_trading_day,
                                         ((taiex or {}).get("time") or "")[:10] or None, hol or [])}
+
+
+FULL_CUTOFFS = (dt.time(19, 30), dt.time(16, 15))   # 收盤後兩次完整更新：法人（16:15 後）、融資券與較晚的資料（19:30 後）
+
+
+def decide_mode(now: dt.datetime, prev: dict) -> str:
+    """
+    smart 模式：依「現在時間」與「上次完整更新時間」決定這次做什麼，跟是哪個排程觸發的無關。
+    外部排程或 GitHub 排程延遲、重複觸發都不會浪費 FinMind 額度。
+      交易日 16:15 / 19:30 之後，且上次完整更新早於該時間 → full
+      上次完整更新超過 3 天（漏跑）→ full
+      21:00–08:30 → macro；其他 → auto
+    """
+    day, t = now.date(), now.time()
+    mk = prev.get("market") or {}
+    off = {h["date"] for h in mk.get("holidays", [])} | set(mk.get("closures", []))
+    trading = day.weekday() < 5 and day.isoformat() not in off
+    full_at = dt.datetime.fromisoformat(prev["fullAt"]) if prev.get("fullAt") else None
+    if full_at is None or now - full_at > dt.timedelta(days=3):
+        return "full"
+    if trading:
+        cutoff = next((c for c in FULL_CUTOFFS if t >= c), None)
+        if cutoff and full_at < dt.datetime.combine(day, cutoff, tzinfo=TPE):
+            return "full"
+    return "macro" if t >= dt.time(21, 0) or t < dt.time(8, 30) else "auto"
 
 
 def clock(today: dt.date) -> dt.datetime:
@@ -899,9 +1034,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="追蹤清單 CSV（Yahoo 自選股匯出）或 JSON")
     ap.add_argument("--fixtures", help="離線模式：從此資料夾讀 fixture，不連網")
     ap.add_argument("--today", help="覆寫今天日期 YYYY-MM-DD（測試用）")
-    ap.add_argument("--mode", choices=["full", "auto", "macro"], default="full", help=(
+    ap.add_argument("--mode", choices=["full", "auto", "macro", "smart"], default="full", help=(
         "full：個股資料全部重抓（收盤後）｜auto：個股只抓新加入的，其餘沿用網站上的版本，行情與總經照常更新｜"
-        "macro：只更新總經。auto / macro 需要 --base-url，取不到網站資料時自動改成 full"))
+        "macro：只更新總經｜smart：依時間與上次完整更新自動選擇（排程用）。"
+        "auto / macro / smart 需要 --base-url，取不到網站資料時自動改成 full"))
     ap.add_argument("--macro-only", action="store_true", help="同 --mode macro")
     ap.add_argument("--base-url", help="已部署網站的網址，例如 https://<帳號>.github.io/<repo>/。"
                                        "full 模式也建議提供：額度用完時，沒抓到的個股沿用網站上的版本")
@@ -923,6 +1059,9 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(out)                                   # 清掉可能下載到一半的檔案
         out.mkdir(parents=True)
         mode = "full"
+    elif mode == "smart":
+        mode = decide_mode(clock(today), prev)
+        log(f"smart → {mode}（上次完整更新 {prev.get('fullAt')}）")
     if mode == "macro":
         return run_macro_only(tx, out, prev, today, token, watchlist, spec)
 
@@ -1001,6 +1140,11 @@ def main(argv: list[str] | None = None) -> int:
             f"缺 {len(watchlist) - detail_ok} 檔" if detail_ok < len(watchlist) else "",
             "FinMind 額度用完 (HTTP 402)，下次執行會補抓" if quota_hit else "") if x)}
 
+    # 全市場選股資料（證交所 / 櫃買開放資料，免 FinMind）
+    screen = build_screen(tx, report, market_rows, stock_list,
+                          {"twse": twse_date, "tpex": tpex_date, "inst": t86_date})
+    sizes["screen.json"] = write_json(out / "screen.json", screen)
+
     # 3) 共用規格 + meta
     shutil.copy(REPO_ROOT / "assets" / "datasets.json", out / "datasets.json")
     meta = {
@@ -1017,6 +1161,8 @@ def main(argv: list[str] | None = None) -> int:
     }
     meta["market"] = market_block(tx, report, today, clock(today), twse_date or tpex_date, macro)
     meta["macroAt"] = meta["generatedAt"]
+    # 上次完整更新時間（smart 模式據此判斷）；額度用完沒抓齊不算完成，下次會再做一次
+    meta["fullAt"] = meta["generatedAt"] if mode == "full" and not quota_hit else (prev or {}).get("fullAt")
     write_json(out / "meta.json", meta)
     assert_no_secret(out, token)
 

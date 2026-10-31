@@ -251,6 +251,31 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
          "CDiff": "-70.00", "CTotalVolume": "512", "CTime": "215801"},
         {"SymbolID": "TXFK6/L6-M", "DispCName": "臺指期116/126", "CLastPrice": "40.00", "CRefPrice": "40.00",
          "CTotalVolume": "99999", "CTime": "215700"}]}})
+    # 全市場選股：月營收彙總表與綜合損益表（上市 opendata、上櫃 mopsfin，欄位名稱相同）
+    rr = random.Random(7)
+    pm = dt.date(today.year, today.month, 1) - dt.timedelta(days=1)          # 上個月
+    ym = f"{pm.year - 1911}{pm.month:02d}"
+    revs = {"twse": [], "tpex": []}
+    incs = {"twse": [], "tpex": []}
+    for c, (n, m, ind) in universe.items():
+        if m not in revs or c.startswith("00"):
+            continue
+        yoy = round(rr.uniform(-35, 70), 2)
+        revs[m].append({"出表日期": roc(today), "資料年月": ym, "公司代號": c, "公司名稱": n, "產業別": ind,
+                        "營業收入-當月營收": str(rr.randint(10**5, 10**8)), "營業收入-上月比較增減(%)": str(round(rr.uniform(-20, 25), 2)),
+                        "營業收入-去年同月增減(%)": str(yoy), "累計營業收入-前期比較增減(%)": str(round(yoy * rr.uniform(0.5, 1.1), 2)),
+                        "備註": "-"})
+        rv = rr.randint(10**6, 10**9)
+        incs[m].append({"出表日期": roc(today), "年度": str(today.year - 1911), "季別": "2", "公司代號": c, "公司名稱": n,
+                        "營業收入": str(rv), "營業毛利（毛損）淨額": str(int(rv * rr.uniform(0.05, 0.6))),
+                        "營業利益（損失）": str(int(rv * rr.uniform(-0.1, 0.35))),
+                        "基本每股盈餘（元）": str(round(rr.uniform(-2, 18), 2))})
+    w("v1_opendata_t187ap05_L.json", revs["twse"])
+    w("openapi_v1_mopsfin_t187ap05_O.json", revs["tpex"])
+    for k in ["ci", "basi", "bd", "fh", "ins", "mim"]:
+        w(f"v1_opendata_t187ap06_L_{k}.json", incs["twse"] if k == "ci" else [])
+        w(f"openapi_v1_mopsfin_t187ap06_O_{k}.json", incs["tpex"] if k == "ci" else [])
+
     # 證交所休市日（含兩筆「有開盤」的說明列，應被排除）
     w("v1_holidaySchedule_holidaySchedule.json", [
         {"Name": n, "Date": roc(dt.date.fromisoformat(d)), "Weekday": wd, "Description": desc}

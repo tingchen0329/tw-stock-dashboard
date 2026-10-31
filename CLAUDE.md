@@ -16,8 +16,10 @@ python tests/bench/run_bench.py                # 新舊版效能比較
 ## 架構
 - `scripts/fetch_data.py`：伺服器端抓資料（只用標準函式庫）。FinMind token 只從環境變數讀、只放 HTTP header。
 - `assets/datasets.json`：FinMind 資料集規格，Python 與網頁共用 —— 改欄位要兩邊一起生效，只改這一個檔。
-- `assets/js/`：`analytics.js`（純計算）、`market.js`（開休市，純計算）、`search.js`、`charts.js`（SVG）、`render.js`（DOM）、`overview.js`（總覽表）、`prompt.js`（分析指令）、`main.js`（狀態與事件）。
+- `assets/js/`：`analytics.js`（純計算）、`market.js`（開休市，純計算）、`search.js`、`charts.js`（SVG）、`render.js`（DOM）、`overview.js`（總覽表）、`screen.js`（選股）、`prompt.js`（分析指令）、`main.js`（狀態與事件）。
 - `fetch_data.py --mode full|auto|macro --base-url`：先取回網站上的上一份資料。full（16:23、19:37）個股全部重抓；auto（盤中、push）個股只抓缺的；macro（夜間）只更新總經。取不到網站資料就改 full。
+- `--mode smart`（排程用）：`decide_mode()` 依現在時間與 meta.fullAt 選 full / auto / macro；主要由 cron-job.org 呼叫 workflow_dispatch（docs/SCHEDULER.md），GitHub schedule 只留 2 個備援。
+- `screen.json`：全市場選股資料（證交所 t187ap05_L / t187ap06_L_*、櫃買 mopsfin_t187ap05_O / mopsfin_t187ap06_O_*），條件在 `assets/js/screen.js`。不花 FinMind 額度。
 - `scripts/build_overview.mjs`：fetch 之後執行，用 analytics.js 產生 `overview.json`（網頁首頁總覽表）。
 - `config/watchlist.csv`：追蹤清單（Yahoo 自選股 CSV，順序即顯示順序）。約 70 檔是 FinMind 免費額度上限（`test_repo_watchlist_is_valid` 會檢查）。
 - 測試用清單是 `tests/fixtures/watchlist.json`（對應 fixtures 的合成資料），不是正式清單。

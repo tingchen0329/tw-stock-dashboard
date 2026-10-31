@@ -226,6 +226,64 @@ class Valuation(unittest.TestCase):
         self.assertIsNone(v["2330"]["pb"])
 
 
+class SmartMode(unittest.TestCase):
+    """smart：依時間與上次完整更新決定模式（外部排程重複或延遲觸發都不浪費額度）"""
+    PREV = {"fullAt": "2026-10-29T19:45:00+08:00",
+            "market": {"holidays": [{"date": "2026-10-26", "name": "補假"}], "closures": ["2026-10-23"]}}
+
+    def mode(self, when: str, prev: dict | None = None) -> str:
+        return fd.decide_mode(dt.datetime.fromisoformat(when + "+08:00"), prev or self.PREV)
+
+    def test_trading_day_schedule(self):
+        self.assertEqual(self.mode("2026-10-30T10:40"), "auto")      # 盤中
+        self.assertEqual(self.mode("2026-10-30T14:40"), "auto")      # 收盤後官方收盤價
+        self.assertEqual(self.mode("2026-10-30T16:40"), "full")      # 法人公布後
+        self.assertEqual(self.mode("2026-10-30T19:40"), "full")      # 晚間再一次
+        done = {**self.PREV, "fullAt": "2026-10-30T19:42:00+08:00"}
+        self.assertEqual(self.mode("2026-10-30T21:40", done), "macro")
+        self.assertEqual(self.mode("2026-10-31T02:40", done), "macro")
+        self.assertEqual(self.mode("2026-10-30T21:40"), "full")      # 今天還沒完整更新過 → 補做
+
+    def test_repeated_or_late_trigger_does_not_refetch(self):
+        prev = {**self.PREV, "fullAt": "2026-10-30T16:41:00+08:00"}
+        self.assertEqual(self.mode("2026-10-30T17:10", prev), "auto")     # 16:40 已完整更新
+        prev = {**self.PREV, "fullAt": "2026-10-30T19:41:00+08:00"}
+        self.assertEqual(self.mode("2026-10-30T23:13", prev), "macro")    # 延遲的排程：不再重抓
+
+    def test_holidays_and_weekend_skip_full(self):
+        prev = {**self.PREV, "fullAt": "2026-10-22T19:45:00+08:00"}
+        self.assertEqual(self.mode("2026-10-23T16:40", prev), "auto")     # 颱風停市日
+        self.assertEqual(self.mode("2026-10-24T16:40", prev), "auto")     # 週六
+        self.assertEqual(self.mode("2026-10-26T19:40", prev), "full")     # 超過 3 天 → 補做一次
+
+    def test_missing_full_at_means_full(self):
+        self.assertEqual(self.mode("2026-10-30T10:40", {"market": {}}), "full")
+
+
+class Screener(unittest.TestCase):
+    def test_parse_revenue_roc_month(self):
+        r = fd.parse_revenue([{"資料年月": "11509", "公司代號": "2330", "營業收入-去年同月增減(%)": "31.4",
+                               "營業收入-上月比較增減(%)": "-2.1", "累計營業收入-前期比較增減(%)": "36.2"},
+                              {"資料年月": "", "公司代號": "9999"}])
+        self.assertEqual(r, {"2330": {"ym": "2026-09", "yoy": 31.4, "mom": -2.1, "cumYoy": 36.2}})
+
+    def test_parse_income_margins_and_financials(self):
+        r = fd.parse_income([
+            {"年度": "115", "季別": "3", "公司代號": "2330", "營業收入": "1000", "營業毛利（毛損）淨額": "590",
+             "營業利益（損失）": "490", "基本每股盈餘（元）": "45.2"},
+            {"年度": "115", "季別": "3", "公司代號": "2881", "收益合計": "500", "基本每股盈餘（元）": "8.1"}])
+        self.assertEqual(r["2330"], {"period": "2026Q3", "eps": 45.2, "gm": 59.0, "om": 49.0})
+        self.assertEqual(r["2881"], {"period": "2026Q3", "eps": 8.1, "gm": None, "om": None})
+
+    def test_unknown_fields_are_reported(self):
+        tx = mock.Mock()
+        tx.get_json.return_value = [{"Foo": "1", "Bar": "2"}]
+        rep = fd.SourceReport()
+        self.assertEqual(fd._fetch_parts(tx, rep, "x", ["u"], fd.parse_revenue), {})
+        self.assertFalse(rep.items["x"]["ok"])
+        self.assertIn("欄位不符", rep.items["x"]["note"])
+
+
 class Watchlist(unittest.TestCase):
     def load(self, text: str, suffix: str = ".csv") -> list[str]:
         with tempfile.TemporaryDirectory() as d:
@@ -379,6 +437,20 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(mk["closures"], [])
         self.assertTrue(mk["holidaysOk"])
         self.assertEqual(meta["macroAt"], meta["generatedAt"])
+
+    def test_screen_json_covers_market_without_etf(self):
+        sc = json.loads((self.out / "screen.json").read_text())
+        rows = [dict(zip(sc["cols"], r)) for r in sc["rows"]]
+        codes = {r["code"] for r in rows}
+        self.assertIn("2330", codes)
+        self.assertIn("5289", codes)                          # 上櫃
+        self.assertNotIn("0050", codes)                       # ETF 不列入選股
+        tsmc = next(r for r in rows if r["code"] == "2330")
+        self.assertEqual(tsmc["roe"], round(tsmc["pb"] / tsmc["pe"] * 100, 2))
+        self.assertIsNotNone(tsmc["revYoY"])
+        self.assertEqual(sc["asOf"]["revenue"], "2026-09")
+        meta = json.loads((self.out / "meta.json").read_text())
+        self.assertEqual(meta["fullAt"], meta["generatedAt"])
 
     def test_t86_falls_back_to_previous_trading_day(self):
         tx = fd.FixtureTransport(self.fx)
