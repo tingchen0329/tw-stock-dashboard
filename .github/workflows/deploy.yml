@@ -104,6 +104,15 @@ jobs:
                   print(f"::notice title=資料更新（{m.get('mode', 'full')}）{m['generatedAt']}::{ok}/{len(m['sources'])} 個來源正常，FinMind 請求 {m['finmindRequests']} 次。追蹤清單 {len(m['watchlist'])} 檔：{wl}")
               for b in bad:
                   print(f"::warning title=資料來源失敗::{b}")
+              sp = pathlib.Path("_site/data/screen.json")
+              if sp.exists():
+                  sc = json.loads(sp.read_text())
+                  rows = [dict(zip(sc["cols"], r)) for r in sc["rows"]]
+                  cnt = lambda mk, k: sum(1 for r in rows if r["market"] == mk and r[k] is not None)
+                  notes = "；".join(f"{k} {m['sources'][k].get('note')}" for k in ("twse_revenue", "tpex_revenue", "twse_income", "tpex_income")
+                                   if m["sources"].get(k, {}).get("note"))
+                  print(f"::notice title=選股資料 {len(rows)} 檔::月營收 {sc['asOf'].get('revenue')}（上市 {cnt('twse', 'revYoY')}、上櫃 {cnt('tpex', 'revYoY')} 檔），"
+                        f"財報 {sc['asOf'].get('income')}（上市 {cnt('twse', 'eps')}、上櫃 {cnt('tpex', 'eps')} 檔）{('；' + notes) if notes else ''}")
           EOF
 
       - name: Summary
