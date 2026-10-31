@@ -50,7 +50,7 @@ export async function loadBootstrap() {
   return { meta, stocks, market, macro, quotes, spec: stripComments(spec), overview };
 }
 
-/** 全市場選股資料（約 250 KB，壓縮後約 70 KB）：第一次打開選股頁才下載 */
+/** 全市場選股資料（約 300 KB，壓縮後約 80 KB）：第一次打開選股頁才下載 */
 export const loadScreen = () => fetchJSON(v('screen.json'), { ttl: 10 * 60 * 1000, persist: true, timeout: 20000 });
 
 const stripComments = (o) => (o ? Object.fromEntries(Object.entries(o).filter(([k]) => !k.startsWith('_'))) : {});

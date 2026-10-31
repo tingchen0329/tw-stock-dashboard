@@ -1,7 +1,7 @@
 /**
  * 全市場選股：成長型 / 殖利率型
  *
- * 資料：screen.json（scripts/fetch_data.py 每次更新時用證交所、櫃買開放資料整理，約 1,700 檔上市櫃個股，不含 ETF）
+ * 資料：screen.json（scripts/fetch_data.py 每次更新時用證交所、櫃買開放資料整理，約 2,000 檔上市櫃個股，不含 ETF）
  * 篩選全部在瀏覽器端完成：改門檻立即重算，門檻記在這台瀏覽器（localStorage，失敗也不影響使用）。
  *
  * 限制：開放資料只有「最新一期」月營收與損益表，沒有多年歷史，
@@ -83,7 +83,7 @@ function columns(watch) {
   ];
 }
 
-const MAX_ROWS = 300;   // 條件全部清空時避免一次畫 1,700 列
+const MAX_ROWS = 300;   // 條件全部清空時避免一次畫 2,000 列
 
 export function renderScreen(host, screen, { watchlist = [], onPick }) {
   const all = toObjects(screen);
