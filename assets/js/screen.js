@@ -153,11 +153,17 @@ export function renderScreen(host, screen, { watchlist = [], onPick }) {
   drawForm();
   drawTable();
   const a = screen?.asOf ?? {};
+  // 新一季財報公布期間（季底後約 45 天）多數公司還沒有新資料：提醒可清空財報條件
+  const withEps = all.filter((r) => F.isNum(r.eps)).length;
+  const epsNote = all.length && withEps < all.length / 2
+    ? h('p', { class: 'banner warn' }, `財報公布期間：目前只有 ${withEps.toLocaleString()} 檔有最新財報（EPS、利益率），其餘顯示 N/A 並會被條件排除。`
+      + '要納入全部股票，請清空「今年累計 EPS」與「營業利益率」兩個條件。')
+    : null;
   host.replaceChildren(h('section', { class: 'overview screen' },
     h('div', { class: 'overview-head' },
       h('h2', {}, '全市場選股'),
       h('p', { class: 'note' }, `收盤 ${F.when(a.twse)}；月營收 ${a.revenue ?? F.NA}；財報 ${a.income ?? F.NA}`)),
-    tabs, desc, form, count,
+    epsNote, tabs, desc, form, count,
     all.length ? h('div', { class: 'ov-wrap' }, table) : h('p', { class: 'note' }, '選股資料尚未產生：下一次 GitHub Actions 更新後就會出現。'),
     h('p', { class: 'note' }, '上市、上櫃個股（不含 ETF），資料來自證交所與櫃買中心開放資料。條件留空代表不使用。缺資料的股票不會被選入。'
       + 'ROE 為推估值（股價淨值比 ÷ 本益比）；EPS 與利益率為今年累計至最新一季。★ 表示已在追蹤清單。'),

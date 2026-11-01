@@ -275,6 +275,27 @@ class Screener(unittest.TestCase):
         self.assertEqual(r["2330"], {"period": "2026Q3", "eps": 45.2, "gm": 59.0, "om": 49.0})
         self.assertEqual(r["2881"], {"period": "2026Q3", "eps": 8.1, "gm": None, "om": None})
 
+    def test_companies_not_yet_reporting_keep_previous_quarter(self):
+        with tempfile.TemporaryDirectory() as d:
+            prev = Path(d) / "screen.json"
+            prev.write_text(json.dumps({"cols": fd.SCREEN_COLS, "rows": [
+                ["1101", "台泥", "twse", "水泥", 0, 0, 0, 0, 0, 0, 0, "2026-09", 1.0, 2.0, 3.0, "2026Q2", 0.9, 20.0, 8.0, 0, 0]]}))
+            col = {c: i for i, c in enumerate(fd.MARKET_COLS)}
+            m1101 = [None] * len(fd.MARKET_COLS); m2330 = [None] * len(fd.MARKET_COLS)
+            for m in (m1101, m2330):
+                m[col["close"]], m[col["change"]], m[col["pe"]], m[col["pb"]] = 30.0, 0.5, 15.0, 1.5
+            def fake(url, params=None, kind="public"):
+                if "t187ap06_L_ci" in url:            # 新一季只有 2330 公布
+                    return [{"年度": "115", "季別": "3", "公司代號": "2330", "營業收入": "100", "基本每股盈餘（元）": "50"}]
+                return []
+            tx = mock.Mock(); tx.get_json.side_effect = fake
+            sc = fd.build_screen(tx, fd.SourceReport(), {"1101": m1101, "2330": m2330},
+                                 [["1101", "台泥", "twse", "水泥"], ["2330", "台積電", "twse", "半導體業"]], {}, prev)
+            rows = {r[0]: dict(zip(sc["cols"], r)) for r in sc["rows"]}
+            self.assertEqual((rows["2330"]["epsPeriod"], rows["2330"]["eps"]), ("2026Q3", 50.0))
+            self.assertEqual((rows["1101"]["epsPeriod"], rows["1101"]["eps"]), ("2026Q2", 0.9))   # 沿用上一季
+            self.assertEqual(sc["asOf"]["income"], "2026Q2～2026Q3")
+
     def test_unknown_fields_are_reported(self):
         tx = mock.Mock()
         tx.get_json.return_value = [{"Foo": "1", "Bar": "2"}]

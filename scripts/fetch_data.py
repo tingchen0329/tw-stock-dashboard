@@ -852,7 +852,27 @@ def _fetch_parts(tx, report: SourceReport, name: str, urls: list[str], parser) -
     return merged
 
 
-def build_screen(tx, report: SourceReport, market_rows: dict, stock_list: list[list[str]], asof: dict) -> dict:
+def previous_screen(path: Path) -> tuple[dict[str, dict], dict[str, dict]]:
+    """
+    上一份 screen.json 的月營收與財報。新一季財報公布期間（例如 11 月中前），開放資料只剩「已公布」的公司，
+    沒公布的沿用上一季，避免 EPS 一夕之間變成 N/A。
+    """
+    try:
+        sc = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}, {}
+    rev, inc = {}, {}
+    for r in sc.get("rows", []):
+        x = dict(zip(sc.get("cols", []), r))
+        if x.get("revYm"):
+            rev[x["code"]] = {"ym": x["revYm"], "yoy": x.get("revYoY"), "mom": x.get("revMoM"), "cumYoy": x.get("revCumYoY")}
+        if x.get("epsPeriod"):
+            inc[x["code"]] = {"period": x["epsPeriod"], "eps": x.get("eps"), "gm": x.get("gm"), "om": x.get("om")}
+    return rev, inc
+
+
+def build_screen(tx, report: SourceReport, market_rows: dict, stock_list: list[list[str]], asof: dict,
+                 prev_path: Path | None = None) -> dict:
     with ThreadPoolExecutor(max_workers=4) as pool:
         jobs = {
             "twse_revenue": ([f"{TWSE_OPENAPI}/opendata/t187ap05_L"], parse_revenue),
@@ -863,6 +883,9 @@ def build_screen(tx, report: SourceReport, market_rows: dict, stock_list: list[l
         futs = {k: pool.submit(_fetch_parts, tx, report, k, urls, fn) for k, (urls, fn) in jobs.items()}
         rev = futs["twse_revenue"].result() | futs["tpex_revenue"].result()
         inc = futs["twse_income"].result() | futs["tpex_income"].result()
+    old_rev, old_inc = previous_screen(prev_path) if prev_path else ({}, {})
+    rev = old_rev | rev                     # 新資料優先；新一期還沒公布的公司沿用上一期
+    inc = old_inc | inc
     col = {c: i for i, c in enumerate(MARKET_COLS)}
     rows = []
     for code, name, market, industry in stock_list:
@@ -886,7 +909,8 @@ def build_screen(tx, report: SourceReport, market_rows: dict, stock_list: list[l
         ])
     periods = sorted({x[15] for x in rows if x[15]})
     months = sorted({x[11] for x in rows if x[11]})
-    return {"asOf": {**asof, "revenue": months[-1] if months else None, "income": periods[-1] if periods else None},
+    span = lambda v: None if not v else v[-1] if len(v) == 1 else f"{v[0]}～{v[-1]}"  # noqa: E731
+    return {"asOf": {**asof, "revenue": span(months), "income": span(periods)},
             "cols": SCREEN_COLS, "rows": rows}
 
 
@@ -1142,7 +1166,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 全市場選股資料（證交所 / 櫃買開放資料，免 FinMind）
     screen = build_screen(tx, report, market_rows, stock_list,
-                          {"twse": twse_date, "tpex": tpex_date, "inst": t86_date})
+                          {"twse": twse_date, "tpex": tpex_date, "inst": t86_date}, out / "screen.json")
     sizes["screen.json"] = write_json(out / "screen.json", screen)
 
     # 3) 共用規格 + meta
