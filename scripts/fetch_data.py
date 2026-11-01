@@ -85,7 +85,9 @@ FINMIND_WORKERS = 4         # FinMind 同時連線數。太高會被限流，4 �
 TWSE_GAP_SEC = 1.2          # 證交所 www 站有防爬（短時間大量請求會封 IP），每次請求間隔
 USER_AGENT = "tw-stock-dashboard/6 (+https://github.com/tingchen0329/tw-stock-dashboard)"
 # SEC EDGAR 規定 User-Agent 要有聯絡方式（https://www.sec.gov/os/accessing-edgar-data）
-SEC_USER_AGENT = "tw-stock-dashboard tingchen0329@users.noreply.github.com"
+# 可用環境變數覆寫（GitHub → Settings → Secrets and variables → Actions → Variables → SEC_USER_AGENT）
+# SEC 會拒絕看起來不像真實聯絡方式的 User-Agent（HTTP 403），建議填「名稱 + 你的 email」
+SEC_USER_AGENT = os.environ.get("SEC_USER_AGENT", "").strip() or "tw-stock-dashboard tingchen0329@users.noreply.github.com"
 
 
 # ──────────────────────────────────────────────────────────────────────

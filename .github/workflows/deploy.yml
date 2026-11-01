@@ -71,6 +71,7 @@ jobs:
       - name: Fetch data (FinMind token from Secrets)
         env:
           FINMIND_TOKEN: ${{ secrets.FINMIND_TOKEN }}
+          SEC_USER_AGENT: ${{ vars.SEC_USER_AGENT }}   # SEC EDGAR 要求 User-Agent 含聯絡方式（見 docs/SETUP.md）
           # 更新模式（FinMind 免費額度每小時 600 次，追蹤清單 68 檔完整抓一次約 510 次）：
           #   smart 排程用（外部排程與備援排程）：依時間與上次完整更新自動選擇下面三種
           #         交易日 16:15、19:30 後尚未完整更新 → full；21:00–08:30 → macro；其他 → auto

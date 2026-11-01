@@ -103,3 +103,14 @@ export FINMIND_TOKEN="你的 token"     # Windows PowerShell：$env:FINMIND_TOKE
 node scripts/summarize.mjs 2330       # 終端機個股摘要
 ```
 不要把 token 寫進任何檔案；`.env` 已列在 `.gitignore`。
+
+## 美股財報（SEC EDGAR）User-Agent
+
+美國證管會要求程式存取時在 User-Agent 註明「名稱 + 聯絡 email」，否則回 HTTP 403（美股頁的財報、本益比會是 N/A）。
+
+1. repo → **Settings** → **Secrets and variables** → **Actions** → **Variables** 分頁 → **New repository variable**
+2. Name：`SEC_USER_AGENT`
+3. Value：`TW Stock Dashboard 你的email@example.com`（換成你的 email；SEC 只用來在流量異常時聯絡你）
+4. 下一次更新（或手動 Run workflow，mode 選 full）就會抓到財報
+
+這是「Variable」不是「Secret」：內容會出現在執行紀錄裡，不要放密碼或 token。

@@ -180,6 +180,9 @@ def fetch_us(tx, report, out: Path, symbols: list[str], full: bool, write_json: 
         tick = report.run("sec_tickers", lambda: tx.get_json(SEC_TICKERS, kind="sec"),
                           count=lambda r: len(r) if isinstance(r, dict) else 0) or {}
         cik = {str(v.get("ticker", "")).upper(): int(v["cik_str"]) for v in tick.values() if v.get("cik_str")}
+        st = report.items.get("sec_tickers", {})
+        if "403" in st.get("note", ""):
+            st["note"] += "：SEC 拒絕此 User-Agent，請在 GitHub 設定變數 SEC_USER_AGENT（見 docs/SETUP.md）"
 
     ok_px = ok_sec = 0
     sizes = {}
