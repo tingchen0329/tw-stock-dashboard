@@ -19,7 +19,7 @@ import { buildPrompt } from './prompt.js';
 import { marketStatus, marketNotice } from './market.js';
 import { renderOverview } from './overview.js';
 import { renderScreen } from './screen.js';
-import { renderAiPanel } from './ai.js';
+import { renderAiPanel, triggerAi } from './ai.js';
 import { toCSV, toXLSX, download } from './export.js';
 import * as F from './format.js';
 
@@ -185,6 +185,7 @@ async function showStock(code) {
       fetchedAt: meta.fetchedAt,
       onRange: (r) => { state.range = r; draw(cur.tables, meta); },
       onPrompt: openPrompt,
+      onAi: () => (meta.done ? triggerAi(code) : toast('資料載入中，完成後再產生 AI 報告')),
       onCSV: () => exportFile('csv'),
       onXLSX: () => exportFile('xlsx'),
     });
@@ -299,6 +300,7 @@ async function showUsStock(sym) {
       range: state.range, pending: false, errors: detail.errors, source: 'us', fetchedAt: detail.fetchedAt,
       onRange: (r) => { state.range = r; draw(); },
       onPrompt: openPrompt, onCSV: () => exportFile('csv'), onXLSX: () => exportFile('xlsx'),
+      onAi: () => triggerAi(`US:${sym}`),
     });
     appendAi(`US:${sym}`, mkt?.date ?? '', () => buildPrompt(cur.summary, state.boot.meta, state.boot.macro?.items));
   };

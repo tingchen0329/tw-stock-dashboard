@@ -19,7 +19,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write             # 部署後自動把 Worker 網址寫進 assets/ai.json
+  actions: write              # 再觸發一次網站部署，讓網頁拿到新網址
 
 concurrency:
   group: ai-worker
@@ -75,6 +76,7 @@ jobs:
           rm -f "$f"
 
       - name: Health check
+        id: health
         if: steps.chk.outputs.ready == 'true'
         run: |
           url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/deploy.log" | head -1)
@@ -82,3 +84,21 @@ jobs:
           sleep 5
           health=$(curl -fsS "$url/health" || echo '{"ok":false}')
           echo "::notice title=AI Worker 網址::$url  health=$health"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Publish worker URL to the site
+        # 網址寫進 assets/ai.json 並 commit，再觸發網站部署（不用手動改檔）。網址沒變就什麼都不做
+        if: steps.health.outputs.url != ''
+        env:
+          URL: ${{ steps.health.outputs.url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          want=$(printf '{"url": "%s"}' "$URL")
+          if [ "$(cat assets/ai.json)" = "$want" ]; then echo "assets/ai.json 已是最新"; exit 0; fi
+          echo "$want" > assets/ai.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: 設定 AI Worker 網址"
+          git push
+          gh workflow run deploy.yml --ref main -f mode=auto
+          echo "::notice title=AI 報告已啟用::已寫入 assets/ai.json 並重新部署網站"

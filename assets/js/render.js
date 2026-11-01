@@ -125,6 +125,7 @@ export function renderStock(host, s, state) {
         h('span', { class: 'muted' }, srcText),
       )),
     h('div', { class: 'actions' },
+      state.onAi ? h('button', { class: 'btn ai', type: 'button', on: { click: state.onAi } }, '產生 AI 報告（Gemini）') : null,
       h('button', { class: 'btn primary', type: 'button', on: { click: state.onPrompt } }, '產生分析指令'),
       h('button', { class: 'btn', type: 'button', on: { click: state.onCSV } }, '下載 CSV'),
       h('button', { class: 'btn', type: 'button', on: { click: state.onXLSX } }, '下載 Excel'),

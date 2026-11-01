@@ -226,6 +226,8 @@ body.us-mode #watchlist, body.us-mode .search { display: none; }
 }
 .btn:hover { border-color: var(--ink-2); }
 .btn.primary { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.btn.ai { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.btn.ai:hover { background: var(--accent-wash); }
 
 .quote { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin: 12px 0 4px; }
 .quote .price { font-size: 52px; font-weight: 650; line-height: 1; letter-spacing: -.01em; }

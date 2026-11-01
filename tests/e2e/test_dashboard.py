@@ -249,7 +249,8 @@ class Dashboard(unittest.TestCase):
         self.page.goto(self.base)
         self.page.get_by_role("link", name="美股").click()
         rows = self.page.locator(".ov tbody tr")
-        rows.nth(2).wait_for()
+        # 等美股表格出現（點下去的瞬間畫面上還是台股總覽，nth(2) 會被台股的列滿足 → 競態）
+        self.page.locator('.ov tbody tr[data-code="NVDA"]').wait_for()
         self.assertEqual(rows.count(), 3)
         self.assertEqual(self.page.locator("#sw-us").get_attribute("aria-current"), "true")
         self.assertFalse(self.page.locator("#watchlist").is_visible())          # 美股頁隱藏台股追蹤列
@@ -287,10 +288,10 @@ class Dashboard(unittest.TestCase):
         panel = self.page.locator(".ai-panel")
         panel.wait_for()
         panel.locator("input").fill("wrong")
-        panel.get_by_role("button", name="儲存並分析").click()
+        panel.get_by_role("button", name="儲存並產生報告").click()
         panel.locator(".banner").filter(has_text="通關密碼錯誤").wait_for()
         panel.locator("input").fill("pw-ok")                                    # 錯誤後會重新要求輸入
-        panel.get_by_role("button", name="儲存並分析").click()
+        panel.get_by_role("button", name="儲存並產生報告").click()
         panel.locator(".ai-result table").wait_for()
         self.assertIn("破線停損價", panel.inner_text())
         self.assertEqual(panel.locator(".ai-result img").count(), 0)          # 回覆裡的 HTML 只當文字
@@ -299,6 +300,28 @@ class Dashboard(unittest.TestCase):
         self.assertEqual(body["code"], "2330")
         self.assertIn("2330 台積電", body["prompt"])
         self.assertNotIn(SECRET, json.dumps(body))
+
+    def test_header_ai_button_generates_report_at_bottom(self):
+        calls = []
+        def fake(route):
+            calls.append(json.loads(route.request.post_data))
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "text": "## 結論\n中性", "model": "gemini-test", "createdAt": "2026-11-02T01:00:00Z", "cached": False}))
+        self.page.route(AI_URL, fake)
+        self.page.add_init_script("localStorage.setItem('ai:access-code', 'pw-ok')")
+        self.open("#2330")
+        self.page.locator(".ai-panel").wait_for()
+        # 按鈕在「產生分析指令」左邊
+        labels = self.page.locator(".stock-head .actions > *").all_inner_texts()
+        self.assertEqual(labels.index("產生 AI 報告（Gemini）") + 1, labels.index("產生分析指令"))
+        self.page.get_by_role("button", name="產生 AI 報告（Gemini）").click()
+        self.page.locator(".ai-result").filter(has_text="中性").wait_for()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["code"], "2330")
+        # 已有報告：再按只捲到報告，不重複呼叫
+        self.page.get_by_role("button", name="產生 AI 報告（Gemini）").click()
+        self.page.wait_for_timeout(300)
+        self.assertEqual(len(calls), 1)
 
     def test_market_closed_banner_uses_holiday_schedule(self):
         # 週六上午：下次開盤要跳過 10/26（fixture 的證交所休市表）→ 10/27

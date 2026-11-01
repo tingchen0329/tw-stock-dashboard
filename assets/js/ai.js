@@ -1,7 +1,7 @@
 /**
  * Gemini AI 分析區塊（個股頁最下方）
  *
- * 流程：按「用 Gemini 分析」→ 把「產生分析指令」同一份提示詞 POST 到 Cloudflare Worker（worker/ai.js）
+ * 流程：按標題列的「產生 AI 報告（Gemini）」或區塊內的按鈕 → 把「產生分析指令」同一份提示詞 POST 到 Cloudflare Worker（worker/ai.js）
  *       → Worker 用自己保管的 GEMINI_API_KEY 呼叫 Gemini → 回傳文字 → 這裡轉成畫面。
  * Gemini 金鑰永遠不會出現在網頁；網頁只需要「通關密碼」（AI_ACCESS_CODE，存在這台瀏覽器），
  * 避免公開網站被陌生人拿來耗用你的免費額度。
@@ -20,6 +20,22 @@ const results = new Map();
 // 同一檔可能因重畫而有新舊兩個區塊：分析完成時通知所有仍在畫面上的區塊
 const views = new Map();
 const notify = (key) => (views.get(key) || new Set()).forEach((v) => (v.section.isConnected ? v.show() : views.get(key).delete(v)));
+
+/**
+ * 標題列「產生 AI 報告（Gemini）」：捲到個股頁最下方的 AI 區塊並開始產生。
+ * 已有報告就只捲過去；還沒輸入通關密碼就把游標放到密碼欄。
+ */
+export function triggerAi(code) {
+  for (const [key, set] of views) {
+    if (!key.startsWith(`${code}|`)) continue;
+    const v = [...set].reverse().find((x) => x.section.isConnected);
+    if (!v) continue;
+    v.section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    v.start();
+    return true;
+  }
+  return false;
+}
 
 /* ───────── Markdown → 區塊（純函式，可測試）───────── */
 
@@ -105,19 +121,19 @@ export function renderMarkdown(md) {
 export function renderAiPanel({ url, code, dataDay, getPrompt }) {
   const key = `${code}|${dataDay}`;
   const body = h('div', { class: 'ai-body' });
-  const section = h('section', { class: 'panel ai-panel' },
-    h('h3', {}, 'Gemini AI 分析'),
+  const section = h('section', { class: 'panel ai-panel', id: 'ai-report' },
+    h('h3', {}, 'AI 報告（Gemini）'),
     h('p', { class: 'note' }, '把「產生分析指令」的內容交給 Google Gemini 分析。AI 產生的內容可能有誤，僅供參考，非投資建議。'),
     body);
 
   const show = () => {
     const r = results.get(key);
     if (!url) {
-      body.replaceChildren(h('p', { class: 'note' }, 'AI 分析服務尚未設定（需要部署 Cloudflare Worker，見 docs/AI.md）。'));
+      body.replaceChildren(h('p', { class: 'note' }, 'AI 報告服務尚未設定：需要 Gemini 金鑰與 Cloudflare Worker，設定步驟見 docs/AI.md。'));
       return;
     }
     if (r?.loading) {
-      body.replaceChildren(h('p', { class: 'ai-loading', role: 'status' }, 'Gemini 分析中，約 10–40 秒…'));
+      body.replaceChildren(h('p', { class: 'ai-loading', role: 'status' }, 'Gemini 正在產生報告，約 10–40 秒…'));
       return;
     }
     const actions = h('div', { class: 'ai-actions' });
@@ -125,10 +141,10 @@ export function renderAiPanel({ url, code, dataDay, getPrompt }) {
       const input = h('input', { type: 'password', autocomplete: 'off', placeholder: '通關密碼', 'aria-label': 'AI 分析通關密碼' });
       const save = () => { if (input.value.trim()) { setCode(input.value.trim()); run(false); } };
       input.addEventListener('keydown', (e) => { if (e.key === 'Enter') save(); });
-      actions.append(input, h('button', { type: 'button', class: 'btn primary', on: { click: save } }, '儲存並分析'));
+      actions.append(input, h('button', { type: 'button', class: 'btn primary', on: { click: save } }, '儲存並產生報告'));
       actions.append(h('span', { class: 'note' }, '第一次使用請輸入 AI_ACCESS_CODE（只存在這台瀏覽器）'));
     } else {
-      actions.append(h('button', { type: 'button', class: 'btn primary', on: { click: () => run(!!r?.text) } }, r?.text ? '重新分析' : '用 Gemini 分析'));
+      actions.append(h('button', { type: 'button', class: 'btn primary', on: { click: () => run(!!r?.text) } }, r?.text ? '重新產生報告' : '產生 AI 報告'));
       actions.append(h('button', { type: 'button', class: 'btn', on: { click: () => { setCode(''); show(); } } }, '更換通關密碼'));
     }
     const parts = [actions];
@@ -161,7 +177,11 @@ export function renderAiPanel({ url, code, dataDay, getPrompt }) {
   }
 
   if (!views.has(key)) views.set(key, new Set());
-  views.get(key).add({ section, show });
+  views.get(key).add({ section, show, start: () => {
+    const r = results.get(key);
+    if (url && getCode() && !r?.loading && !r?.text) run(false);
+    else section.querySelector('input')?.focus({ preventScroll: true });
+  } });
   show();
   return section;
 }

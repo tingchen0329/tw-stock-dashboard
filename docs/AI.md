@@ -1,6 +1,7 @@
-# Gemini AI 分析（Cloudflare Worker）
+# AI 報告（Gemini，經 Cloudflare Worker）
 
-個股頁最下方的「Gemini AI 分析」：按下按鈕後，把「產生分析指令」的內容交給 Google Gemini，結論顯示在同一區塊。
+個股頁標題列「產生分析指令」左邊的 **產生 AI 報告（Gemini）**：按下後把「產生分析指令」的內容交給 Google Gemini，
+報告顯示在個股頁最下方的「AI 報告（Gemini）」區塊。台股、美股都可以用。
 
 ```
 網頁（GitHub Pages，公開）
@@ -42,8 +43,12 @@ Settings → Secrets and variables → Actions → **New repository secret**，�
 | `AI_ACCESS_CODE` | 自訂通關密碼（12 字以上） |
 
 ### 4. 部署
-Actions → **Deploy AI worker** → **Run workflow**。完成後執行頁面上方會顯示 Worker 網址，
-把它填進 `assets/ai.json` 的 `url`（例如 `{"url": "https://tw-stock-ai.xxx.workers.dev"}`）並 push。
+Actions → **Deploy AI worker** → **Run workflow**。約 1 分鐘完成，workflow 會自動：
+把 Worker 網址寫進 `assets/ai.json` → commit → 重新部署網站。再過 2–3 分鐘重新整理網頁即可使用。
+
+### 5. 第一次使用
+打開任一檔個股 → 按 **產生 AI 報告（Gemini）** → 頁面捲到最下方 → 輸入步驟 3 的 `AI_ACCESS_CODE`
+→ **儲存並產生報告**。通關密碼只存在這台瀏覽器，之後按按鈕就直接產生。
 
 ## 調整
 - **換模型**：`worker/wrangler.toml` 的 `GEMINI_MODEL`（模型名稱見 https://ai.google.dev/gemini-api/docs/models ），push 後自動重新部署

@@ -43,7 +43,7 @@ flowchart LR
 |---|---|---|
 | 總覽（首頁） | 追蹤清單每檔一列：股價、60 日走勢、本益比、河流圖位階、營收 / EPS 年增、ROE、法人 20 日、均線、KD、RSI；可排序、篩選個股 / ETF | 同下 |
 | 美股 | 標題旁切換「台股｜美股」：美股追蹤清單總覽與個股頁（技術指標、近四季 EPS、毛利率、ROE、季營收年增），可開 TradingView 看線圖 | Yahoo Finance、美國證管會 SEC EDGAR |
-| Gemini AI 分析 | 個股頁最下方按鈕，把分析指令交給 Gemini，結論顯示在頁面上（[設定](docs/AI.md)） | Google Gemini（經 Cloudflare Worker） |
+| AI 報告（Gemini） | 個股頁「產生 AI 報告（Gemini）」按鈕，把分析指令交給 Gemini，報告顯示在頁面最下方（[設定](docs/AI.md)） | Google Gemini（經 Cloudflare Worker） |
 | 選股 | 全市場上市櫃個股：成長型（營收、獲利成長）、殖利率型（高殖利率、低本益比）兩組條件，門檻可自訂 | 證交所、櫃買開放資料（月營收、損益表、本益比） |
 | 搜尋 | 代號、名稱、部分名稱、全形數字、臺/台、產業別；`/` 快速聚焦、↑↓ Enter | FinMind TaiwanStockInfo |
 | 報價與估值 | 收盤 / 盤中價、本益比、股價淨值比、殖利率、三大法人 | 證交所、櫃買、Yahoo |
