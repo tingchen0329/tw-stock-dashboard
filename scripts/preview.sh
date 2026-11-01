@@ -15,7 +15,7 @@ else
   FX="$(mktemp -d)"
   python3 tests/fixtures/make_fixtures.py "$FX" --today "${PREVIEW_TODAY:-2026-10-19}" >/dev/null
   python3 scripts/fetch_data.py --fixtures "$FX" --out _site/data --today "${PREVIEW_TODAY:-2026-10-19}" \
-    --watchlist tests/fixtures/watchlist.json
+    --watchlist tests/fixtures/watchlist.json --us-watchlist tests/fixtures/us_watchlist.csv
   rm -rf "$FX"
 fi
 node scripts/build_overview.mjs _site/data

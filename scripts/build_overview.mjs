@@ -10,7 +10,7 @@
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { summarize, marketRow, overviewRow } from '../assets/js/analytics.js';
+import { summarize, marketRow, overviewRow, usMarketRow } from '../assets/js/analytics.js';
 
 const dir = resolve(process.argv[2] || '_site/data');
 const read = (name) => {
@@ -49,6 +49,30 @@ const body = JSON.stringify({ generatedAt: meta.generatedAt, dataDay: meta.marke
 writeFileSync(resolve(dir, 'overview.json'), body);
 // 記進 meta.bytes：夜間 / 增量模式取回上一份資料時會一起取回
 meta.bytes = { ...(meta.bytes || {}), 'overview.json': Buffer.byteLength(body) };
+
+// ── 美股總覽（us/overview.json）──
+const usRows = [];
+let usDay = null;
+for (const code of meta.usWatchlist ?? []) {
+  const detail = read(`us/stock/${code}.json`);
+  const hasFin = (detail?.tables?.income?.rows ?? []).length > 0;
+  const info = { code, name: detail?.name ?? '', market: 'us', industry: detail?.exchange ?? '',
+    etf: !hasFin && /ETF|Trust|Fund|Index/i.test(detail?.name ?? '') };
+  try {
+    const mkt = usMarketRow(detail);
+    if (mkt?.date && (!usDay || mkt.date > usDay)) usDay = mkt.date;
+    usRows.push(overviewRow(summarize({ info, mkt, quote: null, tables: detail?.tables ?? {}, asOf: { twse: mkt?.date } })));
+  } catch (e) {
+    console.warn(`::warning title=美股總覽::${code} 計算失敗：${e.message}`);
+    usRows.push(overviewRow({ info }));
+  }
+}
+if (usRows.length) {
+  const usBody = JSON.stringify({ generatedAt: meta.usAt ?? meta.generatedAt, dataDay: usDay, rows: usRows });
+  writeFileSync(resolve(dir, 'us/overview.json'), usBody);
+  meta.bytes['us/overview.json'] = Buffer.byteLength(usBody);
+  console.log(`us/overview.json: ${usRows.length} 檔`);
+}
 writeFileSync(resolve(dir, 'meta.json'), JSON.stringify(meta));
 console.log(`overview.json: ${rows.length} 檔，${(Buffer.byteLength(body) / 1024).toFixed(0)} KB`
   + (missing.length ? `；缺個股資料：${missing.join(', ')}` : ''));

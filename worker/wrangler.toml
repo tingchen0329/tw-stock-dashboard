@@ -1,0 +1,9 @@
+# Cloudflare Worker 設定：由 .github/workflows/ai-worker.yml 部署（金鑰另以 Secret 寫入，不在這裡）
+name = "tw-stock-ai"
+main = "ai.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[vars]
+GEMINI_MODEL = "gemini-3.8-flash"
+ALLOWED_ORIGINS = "https://tingchen0329.github.io,http://localhost:8000"

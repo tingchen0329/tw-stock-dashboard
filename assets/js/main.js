@@ -11,14 +11,15 @@
  *       c. 使用者若在途中改查別檔，前一個請求以 AbortController 取消 → 不會出現「資料錯置」
  */
 
-import { loadBootstrap, loadStock, loadScreen } from './data.js';
+import { loadBootstrap, loadStock, loadScreen, loadUsOverview, loadUsStock, loadAiConfig } from './data.js';
 import { buildIndex, search, resolveExact, highlightParts, marketLabel } from './search.js';
-import { summarize, marketRow } from './analytics.js';
+import { summarize, marketRow, usMarketRow } from './analytics.js';
 import { renderFreshness, renderWatchlist, renderMacro, renderStock, renderSetup, h } from './render.js';
 import { buildPrompt } from './prompt.js';
 import { marketStatus, marketNotice } from './market.js';
 import { renderOverview } from './overview.js';
 import { renderScreen } from './screen.js';
+import { renderAiPanel } from './ai.js';
 import { toCSV, toXLSX, download } from './export.js';
 import * as F from './format.js';
 
@@ -29,7 +30,20 @@ const state = {
   byCode: new Map(),
   current: null,      // { code, summary, ctrl, cleanup, range, tables, meta }
   range: '1Y',
+  aiUrl: null,        // Gemini 分析 Worker 網址（assets/ai.json）
 };
+
+/** 標題旁「台股｜美股」切換：依目前頁面標示 */
+function markMarket(us) {
+  $('sw-tw')?.setAttribute('aria-current', String(!us));
+  $('sw-us')?.setAttribute('aria-current', String(us));
+  document.body.classList.toggle('us-mode', us);
+}
+
+/** 個股頁最下方的 Gemini 區塊（每次重畫後補上；分析結果保留在 ai.js 的記憶體中） */
+function appendAi(code, dataDay, getPrompt) {
+  $('stock').append(renderAiPanel({ url: state.aiUrl, code, dataDay, getPrompt }));
+}
 
 /* ───────── 小工具 ───────── */
 
@@ -155,6 +169,7 @@ async function showStock(code) {
   state.current = cur;
   markCurrentChip(code);
   document.title = `${code} ${info.name}｜台股研究台`;
+  markMarket(false);
 
   const draw = (tables, meta) => {
     if (state.current !== cur) return;     // 已經換股票了，丟棄舊結果
@@ -174,6 +189,7 @@ async function showStock(code) {
       onXLSX: () => exportFile('xlsx'),
     });
     if (meta.done) {
+      appendAi(code, cur.summary.tech?.date ?? '', () => buildPrompt(cur.summary, boot.meta, boot.macro?.items));
       performance.mark(`stock:${code}:done`);
       performance.measure(`stock:${code}`, `stock:${code}:start`, `stock:${code}:done`);
     }
@@ -205,6 +221,7 @@ function showOverview() {
   state.current = { code: 'overview', ctrl: new AbortController(), cleanup: null, summary: null };
   markCurrentChip('overview');
   document.title = '追蹤清單總覽｜台股研究台';
+  markMarket(false);
   renderOverview($('stock'), boot.overview, { onPick: pick });
 }
 
@@ -219,6 +236,7 @@ async function showScreen() {
   state.current = cur;
   markCurrentChip('screen');
   document.title = '全市場選股｜台股研究台';
+  markMarket(false);
   $('stock').replaceChildren(h('p', { class: 'note' }, '載入全市場資料中…'));
   let data = null;
   try { data = await loadScreen(); } catch { /* 顯示「尚未產生」 */ }
@@ -226,9 +244,72 @@ async function showScreen() {
   renderScreen($('stock'), data, { watchlist: boot.meta.watchlist, onPick: pick });
 }
 
+/* ───────── 美股 ───────── */
+
+const usPick = (sym) => { location.hash = `us/${sym}`; };
+
+async function showUsOverview() {
+  if (!state.boot?.meta) return;
+  state.current?.ctrl.abort();
+  state.current?.cleanup?.();
+  const cur = { code: 'us', ctrl: new AbortController(), cleanup: null, summary: null };
+  state.current = cur;
+  markCurrentChip('');
+  markMarket(true);
+  document.title = '美股總覽｜台股研究台';
+  $('stock').replaceChildren(h('p', { class: 'note' }, '載入美股資料中…'));
+  let data = null;
+  try { data = await loadUsOverview(); } catch { /* 顯示「尚未產生」 */ }
+  if (state.current !== cur) return;
+  renderOverview($('stock'), data, {
+    onPick: usPick, title: '美股追蹤清單總覽', hide: ['riverPct', 'f20', 't20'], dayNote: '美東收盤',
+    note: '資料來源：Yahoo Finance（日線）、美國證管會 SEC EDGAR（財報）。本益比 = 收盤 ÷ 近四季 EPS；營收年增為最新一季與去年同季比較。'
+      + 'ETF、外國公司（例如台積電 ADR）沒有 SEC 財報，顯示 N/A。清單在 config/us_watchlist.csv。',
+  });
+}
+
+async function showUsStock(sym) {
+  if (!state.boot?.meta) return;
+  state.current?.ctrl.abort();
+  state.current?.cleanup?.();
+  const cur = { code: sym, ctrl: new AbortController(), cleanup: null, summary: null, tables: {} };
+  state.current = cur;
+  markCurrentChip('');
+  markMarket(true);
+  document.title = `${sym}｜美股｜台股研究台`;
+  $('stock').replaceChildren(h('p', { class: 'note' }, `載入 ${sym}…`));
+  let detail;
+  try {
+    detail = await loadUsStock(sym, cur.ctrl.signal);
+  } catch (e) {
+    if (e.name === 'AbortError' || state.current !== cur) return;
+    $('stock').replaceChildren(h('p', { class: 'banner warn' }, `${sym} 不在美股追蹤清單（config/us_watchlist.csv），或資料尚未產生。`),
+      h('p', {}, h('a', { href: '#us' }, '← 回美股總覽')));
+    return;
+  }
+  if (state.current !== cur) return;
+  const mkt = usMarketRow(detail);
+  const hasFin = (detail.tables?.income?.rows ?? []).length > 0;
+  const info = { code: sym, name: detail.name || sym, market: 'us', industry: detail.exchange || '', etf: !hasFin };
+  const draw = () => {
+    cur.tables = detail.tables || {};
+    cur.summary = summarize({ info, mkt, quote: null, tables: cur.tables, asOf: { twse: mkt?.date } });
+    cur.cleanup?.();
+    cur.cleanup = renderStock($('stock'), cur.summary, {
+      range: state.range, pending: false, errors: detail.errors, source: 'us', fetchedAt: detail.fetchedAt,
+      onRange: (r) => { state.range = r; draw(); },
+      onPrompt: openPrompt, onCSV: () => exportFile('csv'), onXLSX: () => exportFile('xlsx'),
+    });
+    appendAi(`US:${sym}`, mkt?.date ?? '', () => buildPrompt(cur.summary, state.boot.meta, state.boot.macro?.items));
+  };
+  draw();
+}
+
 const route = () => {
   const c = decodeURIComponent(location.hash.slice(1));
-  if (c === 'overview') showOverview();
+  if (c === 'us') showUsOverview();
+  else if (c.startsWith('us/')) showUsStock(c.slice(3).toUpperCase());
+  else if (c === 'overview') showOverview();
   else if (c === 'screen') showScreen();
   else if (c) showStock(c);
 };
@@ -310,8 +391,9 @@ async function boot() {
     $('freshness').setAttribute('aria-expanded', String(!p.hidden));
   });
 
-  const b = await loadBootstrap();
+  const [b, aiUrl] = await Promise.all([loadBootstrap(), loadAiConfig()]);
   state.boot = b;
+  state.aiUrl = aiUrl;
   if (!b.meta) {
     renderSetup($('stock'), location.protocol === 'file:');
     $('search').disabled = true;

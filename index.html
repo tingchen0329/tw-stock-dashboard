@@ -10,7 +10,7 @@
   即使未來有人塞入惡意的股票名稱，也無法執行外部或行內腳本。
 -->
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://api.finmindtrade.com; base-uri 'none'; form-action 'none'; object-src 'none'">
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://api.finmindtrade.com https://*.workers.dev; base-uri 'none'; form-action 'none'; object-src 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="stylesheet" href="assets/css/app.css">
 <!-- modulepreload：讓瀏覽器一開始就平行下載所有模組，不必等 main.js 解析完才發現依賴 -->
@@ -26,13 +26,20 @@
 <link rel="modulepreload" href="assets/js/market.js">
 <link rel="modulepreload" href="assets/js/overview.js">
 <link rel="modulepreload" href="assets/js/screen.js">
+<link rel="modulepreload" href="assets/js/ai.js">
 <link rel="modulepreload" href="assets/js/export.js">
 <script type="module" src="assets/js/main.js"></script>
 </head>
 <body>
 <div class="shell">
   <header class="masthead">
-    <h1>台股研究台</h1>
+    <div class="brand">
+      <h1>台股研究台</h1>
+      <nav class="mkt-switch" aria-label="市場">
+        <a href="#overview" id="sw-tw">台股</a>
+        <a href="#us" id="sw-us">美股</a>
+      </nav>
+    </div>
     <button id="freshness" class="freshness" type="button" aria-expanded="false" aria-controls="sources">載入資料中…</button>
   </header>
   <div id="sources" class="sources" hidden></div>
@@ -53,7 +60,7 @@
   <main id="stock" class="stock" aria-live="polite"></main>
 
   <footer class="foot">
-    資料來源：臺灣證券交易所、證券櫃檯買賣中心 OpenAPI，FinMind，Yahoo Finance。僅供研究參考，非投資建議。
+    資料來源：臺灣證券交易所、證券櫃檯買賣中心 OpenAPI，FinMind，Yahoo Finance，美國證管會 SEC EDGAR；AI 分析由 Google Gemini 產生。僅供研究參考，非投資建議。
   </footer>
 </div>
 

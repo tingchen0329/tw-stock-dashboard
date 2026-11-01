@@ -23,8 +23,10 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 import fetch_data as fd  # noqa: E402
+import us_data  # noqa: E402
 
-WATCH = str(ROOT / "tests/fixtures/watchlist.json")   # 測試用清單（正式清單 config/watchlist.csv 沒有 fixture）
+WATCH = str(ROOT / "tests/fixtures/watchlist.json")
+US_WATCH = str(ROOT / "tests/fixtures/us_watchlist.csv")   # 測試用清單（正式清單 config/watchlist.csv 沒有 fixture）
 
 T86_FIELDS = ["證券代號", "證券名稱", "外陸資買進股數(不含外資自營商)", "外陸資賣出股數(不含外資自營商)",
               "外陸資買賣超股數(不含外資自營商)", "外資自營商買進股數", "外資自營商賣出股數", "外資自營商買賣超股數",
@@ -305,6 +307,31 @@ class Screener(unittest.TestCase):
         self.assertIn("欄位不符", rep.items["x"]["note"])
 
 
+class USData(unittest.TestCase):
+    def test_q4_derived_from_annual_and_frames_aligned(self):
+        g = {"Revenues": {"units": {"USD": [
+                {"frame": "CY2025Q1", "val": 10}, {"frame": "CY2025Q2", "val": 20}, {"frame": "CY2025Q3", "val": 30},
+                {"frame": "CY2025", "val": 100}, {"val": 999}]}},
+             "EarningsPerShareDiluted": {"units": {"USD/shares": [{"frame": "CY2025Q3", "val": 1.5}]}},
+             "Assets": {"units": {"USD": [{"frame": "CY2025Q3I", "val": 500}]}},
+             "StockholdersEquity": {"units": {"USD": [{"frame": "CY2025Q3I", "val": 300}]}}}
+        fin = us_data.parse_companyfacts({"facts": {"us-gaap": g, "dei": {"EntityCommonStockSharesOutstanding": {
+            "units": {"shares": [{"end": "2025-01-01", "val": 1}, {"end": "2025-10-20", "val": 7}]}}}}})
+        inc = {(r[0], r[1]): r[2] for r in fin["income"]["rows"]}
+        self.assertEqual(inc[("2025-12-31", "Revenue")], 40)                  # 100 − 10 − 20 − 30
+        self.assertEqual(inc[("2025-09-30", "EPS")], 1.5)
+        bal = {(r[0], r[1]): r[2] for r in fin["balance"]["rows"]}
+        self.assertEqual(bal[("2025-09-30", "Liabilities")], 200)             # 總資產 − 權益
+        self.assertEqual(fin["shares"], 7)
+
+    def test_us_watchlist_csv(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "us.csv"
+            f.write_text("Symbol,Name\nnvda,NVIDIA\nBRK.B,Berkshire\nNVDA,dup\n2330,台股不收\n", "utf-8")
+            self.assertEqual(us_data.load_us_watchlist(f), ["NVDA", "BRK.B"])
+        self.assertGreater(len(us_data.load_us_watchlist(ROOT / "config/us_watchlist.csv")), 0)
+
+
 class Watchlist(unittest.TestCase):
     def load(self, text: str, suffix: str = ".csv") -> list[str]:
         with tempfile.TemporaryDirectory() as d:
@@ -380,7 +407,7 @@ class EndToEnd(unittest.TestCase):
         cls.fx = make_fixtures(Path(cls.tmp.name))
         cls.out = Path(cls.tmp.name) / "site" / "data"
         with mock.patch.dict(os.environ, {"FINMIND_TOKEN": "SECRET-TOKEN-123"}):
-            cls.rc = fd.main(["--watchlist", WATCH, "--fixtures", str(cls.fx), "--out", str(cls.out), "--today", "2026-10-19"])
+            cls.rc = fd.main(["--watchlist", WATCH, "--us-watchlist", US_WATCH, "--fixtures", str(cls.fx), "--out", str(cls.out), "--today", "2026-10-19"])
 
     @classmethod
     def tearDownClass(cls):
@@ -406,7 +433,7 @@ class EndToEnd(unittest.TestCase):
             fx = make_fixtures(Path(d))
             (fx / "taifex_quotes_1.json").unlink()           # 期交所 API 失敗
             out = Path(d) / "out"
-            fd.main(["--watchlist", WATCH, "--fixtures", str(fx), "--out", str(out), "--today", "2026-10-19"])
+            fd.main(["--watchlist", WATCH, "--us-watchlist", US_WATCH, "--fixtures", str(fx), "--out", str(out), "--today", "2026-10-19"])
             night = {m["key"]: m for m in json.loads((out / "macro.json").read_text())["items"]}["txf_night"]
             meta = json.loads((out / "meta.json").read_text())
         # 近月（成交量最大的單一月份 202611），排除價差 202611/202612
@@ -444,7 +471,7 @@ class EndToEnd(unittest.TestCase):
             fx = make_fixtures(Path(d))
             (fx / "openapi_v1_tpex_mainboard_quotes.json").unlink()
             out = Path(d) / "out"
-            rc = fd.main(["--watchlist", WATCH, "--fixtures", str(fx), "--out", str(out), "--today", "2026-10-19"])
+            rc = fd.main(["--watchlist", WATCH, "--us-watchlist", US_WATCH, "--fixtures", str(fx), "--out", str(out), "--today", "2026-10-19"])
             meta = json.loads((out / "meta.json").read_text())
             self.assertEqual(rc, 0)
             self.assertFalse(meta["sources"]["tpex_quotes"]["ok"])
@@ -472,6 +499,15 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(sc["asOf"]["revenue"], "2026-09")
         meta = json.loads((self.out / "meta.json").read_text())
         self.assertEqual(meta["fullAt"], meta["generatedAt"])
+
+    def test_us_stock_files(self):
+        meta = json.loads((self.out / "meta.json").read_text())
+        self.assertEqual(meta["usWatchlist"], ["NVDA", "AAPL", "SPY"])
+        nvda = json.loads((self.out / "us/stock/NVDA.json").read_text())
+        self.assertEqual(nvda["tables"]["price"]["cols"][:2], ["date", "open"])
+        self.assertTrue(nvda["secAt"])
+        self.assertIn("us/stock/NVDA.json", meta["bytes"])
+        self.assertTrue(meta["sources"]["us_prices"]["ok"])
 
     def test_t86_falls_back_to_previous_trading_day(self):
         tx = fd.FixtureTransport(self.fx)
@@ -506,7 +542,7 @@ class MacroOnly(unittest.TestCase):
         root = Path(cls.tmp.name)
         cls.fx = make_fixtures(root)
         cls.site = root / "site"
-        fd.main(["--watchlist", WATCH, "--fixtures", str(cls.fx), "--out", str(cls.site / "data"), "--today", "2026-10-19"])
+        fd.main(["--watchlist", WATCH, "--us-watchlist", US_WATCH, "--fixtures", str(cls.fx), "--out", str(cls.site / "data"), "--today", "2026-10-19"])
         cls.srv = serve(cls.site)
         cls.url = f"http://127.0.0.1:{cls.srv.server_address[1]}/"
 
@@ -516,7 +552,7 @@ class MacroOnly(unittest.TestCase):
         cls.tmp.cleanup()
 
     def run_macro(self, url: str, out: Path) -> int:
-        return fd.main(["--watchlist", WATCH, "--fixtures", str(self.fx), "--out", str(out), "--today", "2026-10-19",
+        return fd.main(["--watchlist", WATCH, "--us-watchlist", US_WATCH, "--fixtures", str(self.fx), "--out", str(out), "--today", "2026-10-19",
                         "--macro-only", "--base-url", url])
 
     def test_keeps_previous_data_and_refreshes_macro(self):
@@ -538,7 +574,7 @@ class MacroOnly(unittest.TestCase):
 
     def run_mode(self, mode: str, out: Path, watch: list[str] | None = None, url: str | None = None) -> dict:
         args = ["--fixtures", str(self.fx), "--out", str(out), "--today", "2026-10-19", "--mode", mode,
-                "--base-url", url or self.url]
+                "--base-url", url or self.url, "--us-watchlist", US_WATCH]
         if watch is not None:
             out.parent.mkdir(parents=True, exist_ok=True)
             wl = out.parent / "wl.json"

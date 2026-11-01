@@ -104,6 +104,10 @@ jobs:
                   print(f"::notice title=資料更新（{m.get('mode', 'full')}）{m['generatedAt']}::{ok}/{len(m['sources'])} 個來源正常，FinMind 請求 {m['finmindRequests']} 次。追蹤清單 {len(m['watchlist'])} 檔：{wl}")
               for b in bad:
                   print(f"::warning title=資料來源失敗::{b}")
+              us = m["sources"].get("us_prices")
+              if us:
+                  fin = m["sources"].get("us_financials", {})
+                  print(f"::notice title=美股 {len(m.get('usWatchlist', []))} 檔::股價 {us['rows']} 檔、SEC 財報 {fin.get('rows', 0)} 檔{('；' + fin['note']) if fin.get('note') else ''}")
               sp = pathlib.Path("_site/data/screen.json")
               if sp.exists():
                   sc = json.loads(sp.read_text())

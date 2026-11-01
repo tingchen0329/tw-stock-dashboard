@@ -42,6 +42,8 @@ flowchart LR
 | 區塊 | 內容 | 資料來源 |
 |---|---|---|
 | 總覽（首頁） | 追蹤清單每檔一列：股價、60 日走勢、本益比、河流圖位階、營收 / EPS 年增、ROE、法人 20 日、均線、KD、RSI；可排序、篩選個股 / ETF | 同下 |
+| 美股 | 標題旁切換「台股｜美股」：美股追蹤清單總覽與個股頁（技術指標、近四季 EPS、毛利率、ROE、季營收年增），可開 TradingView 看線圖 | Yahoo Finance、美國證管會 SEC EDGAR |
+| Gemini AI 分析 | 個股頁最下方按鈕，把分析指令交給 Gemini，結論顯示在頁面上（[設定](docs/AI.md)） | Google Gemini（經 Cloudflare Worker） |
 | 選股 | 全市場上市櫃個股：成長型（營收、獲利成長）、殖利率型（高殖利率、低本益比）兩組條件，門檻可自訂 | 證交所、櫃買開放資料（月營收、損益表、本益比） |
 | 搜尋 | 代號、名稱、部分名稱、全形數字、臺/台、產業別；`/` 快速聚焦、↑↓ Enter | FinMind TaiwanStockInfo |
 | 報價與估值 | 收盤 / 盤中價、本益比、股價淨值比、殖利率、三大法人 | 證交所、櫃買、Yahoo |
@@ -81,6 +83,8 @@ Skill 檔案取自 FinMind 官方 repo（Apache-2.0，見 `.claude/commands/finm
 | Claude | 你現有的方案 | 不增加 | 貼上「分析指令」或在 Claude Code 使用 skill |
 | *選用* FinMind Backer | 付費 | NT$699/月 | 單日全市場批次下載（可做全市場篩選）、股權分散表（千張大戶）、還原股價 |
 | *選用* FinMind Sponsor | 付費 | NT$999/月 | 盤中即時快照、分點進出、八大行庫 |
+| Google Gemini API | 免費方案 | NT$0 | 按需分析，額度以 Google AI Studio 為準 |
+| Cloudflare Workers | Free | NT$0 | 保管 Gemini 金鑰的代理（每天 10 萬次請求額度） |
 | cron-job.org | Free | NT$0 | 外部排程，準時觸發更新（[設定](docs/SCHEDULER.md)） |
 | *選用* 自訂網域 | 網域商 | 約 NT$400–1,000/年 | 例如 stock.你的網域.tw |
 
@@ -124,10 +128,14 @@ assets/
   js/market.js                開休市狀態（純函式）
   js/overview.js              追蹤清單總覽表
   js/screen.js                全市場選股
+  js/ai.js                    Gemini AI 分析區塊
   js/export.js                CSV / XLSX
   js/format.js                數字與日期格式
 config/watchlist.csv          追蹤清單（Yahoo 自選股 CSV）
+config/us_watchlist.csv       美股追蹤清單
+worker/                       Gemini 代理（Cloudflare Worker）
 scripts/fetch_data.py         資料管線（GitHub Actions 執行）
+scripts/us_data.py            美股資料（Yahoo + SEC EDGAR）
 scripts/build_overview.mjs    總覽表資料（Actions 執行，與網頁同一套計算）
 scripts/summarize.mjs         終端機版個股摘要
 scripts/preview.sh            本機預覽

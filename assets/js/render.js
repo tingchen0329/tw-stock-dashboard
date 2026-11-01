@@ -109,7 +109,10 @@ export function renderStock(host, s, state) {
   const charts = [];
   const { info, price: px, valuation: v, tech: t, river: rv, revenue: rev, inst, instToday: it, margin: mg, holding: hd, fundamentals: f } = s;
   const c = completeness(s);
-  const srcText = state.source === 'prefetched'
+  const us = info.market === 'us';
+  // TradingView：只開新分頁看線圖（不嵌入網頁，維持 CSP 與資料一致性）
+  const tvSymbol = us ? info.code : `${info.market === 'tpex' ? 'TPEX' : 'TWSE'}:${info.code}`;
+  const srcText = us ? `Yahoo 日線 + SEC 財報，抓取於 ${F.when(state.fetchedAt)}` : state.source === 'prefetched'
     ? `追蹤清單資料，抓取於 ${F.when(state.fetchedAt)}`
     : state.source === 'live' ? 'FinMind 即時查詢（免 token）' : '全市場行情';
 
@@ -117,7 +120,7 @@ export function renderStock(host, s, state) {
     h('div', {},
       h('h2', {}, `${info.code} ${info.name}`),
       h('div', { class: 'sub' },
-        h('span', { class: 'badge' }, marketLabel(info.market)),
+        h('span', { class: 'badge' }, us ? '美股' : marketLabel(info.market)),
         info.industry ? h('span', {}, info.industry) : null,
         h('span', { class: 'muted' }, srcText),
       )),
@@ -125,6 +128,7 @@ export function renderStock(host, s, state) {
       h('button', { class: 'btn primary', type: 'button', on: { click: state.onPrompt } }, '產生分析指令'),
       h('button', { class: 'btn', type: 'button', on: { click: state.onCSV } }, '下載 CSV'),
       h('button', { class: 'btn', type: 'button', on: { click: state.onXLSX } }, '下載 Excel'),
+      h('a', { class: 'btn', href: `https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSymbol)}`, target: '_blank', rel: 'noopener noreferrer' }, 'TradingView ↗'),
     ));
 
   const quote = h('div', { class: 'quote' },
@@ -141,7 +145,14 @@ export function renderStock(host, s, state) {
 
   const tile = (l, val, sub, cls = '') => h('div', { class: 'tile' }, h('div', { class: 'l' }, l), h('div', { class: `v num ${cls}` }, val), h('div', { class: 's' }, sub));
   const instSub = it ? `${it.source}，${F.when(it.date)}，張` : '無資料';
-  const tiles = h('div', { class: 'tiles' },
+  const tiles = us ? h('div', { class: 'tiles' },
+    tile('本益比', F.num(v.pe), '收盤 ÷ 近四季 EPS'),
+    tile('股價淨值比', F.num(v.pb), '收盤 ÷ 每股淨值'),
+    tile('近四季 EPS', F.num(f?.eps4), f?.latestQuarter ? `美元，至 ${f.latestQuarter}` : '無資料'),
+    tile('季營收年增', F.pct(f?.revYoY, 1, true), '最新一季', F.dir(f?.revYoY)),
+    tile('毛利率', F.pct(f?.margins?.gross, 1), '最新一季'),
+    tile('ROE', F.pct(f?.roe, 1), '近四季'),
+  ) : h('div', { class: 'tiles' },
     tile('本益比', F.num(v.pe), v.source ? `${v.source}，${F.when(v.asOf)}` : '無資料'),
     tile('股價淨值比', F.num(v.pb), v.source ? '倍' : ''),
     tile('殖利率', F.pct(v.yield), v.source ? '近四季現金股利' : ''),
@@ -254,7 +265,8 @@ export function renderStock(host, s, state) {
 
   /* 基本面 */
   const fundPanel = panel('基本面', f ? `財報至 ${f.latestQuarter ?? 'N/A'}（單季）` : null, f ? [kv([
-    ['近四季 EPS', `${F.num(f.eps4)} 元`],
+    ['近四季 EPS', `${F.num(f.eps4)} ${us ? '美元' : '元'}`],
+    us && ['季營收年增', signedSpan(F.pct(f.revYoY, 1, true), f.revYoY)],
     ['EPS 年增', signedSpan(F.pct(f.eps4YoY, 1, true), f.eps4YoY)],
     ['毛利率', `${F.pct(f.margins?.gross, 1)}（去年同期 ${F.pct(f.marginsLastYear?.gross, 1)}）`],
     ['營益率', `${F.pct(f.margins?.op, 1)}（去年同期 ${F.pct(f.marginsLastYear?.op, 1)}）`],
@@ -267,8 +279,8 @@ export function renderStock(host, s, state) {
   host.replaceChildren(
     head, quote, comp, tiles,
     h('div', { class: 'grid' }, pricePanel, techPanel),
-    h('div', { class: 'grid even' }, riverPanel, revPanel),
-    h('div', { class: 'grid even' }, chipPanel, fundPanel),
+    // 美股沒有本益比歷史、月營收、法人籌碼 → 只顯示財報
+    ...(us ? [fundPanel] : [h('div', { class: 'grid even' }, riverPanel, revPanel), h('div', { class: 'grid even' }, chipPanel, fundPanel)]),
   );
   return () => charts.forEach((ch) => ch.destroy());
 }

@@ -299,6 +299,57 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
         yahoo(sym, base)
     for c, (n, m, _, base) in WATCH.items():
         yahoo(f"{c}.{'TWO' if m == 'tpex' else 'TW'}", closes[c][-1] if c in closes else base)
+    # ── 美股：Yahoo 3 年日線 + SEC companyfacts（NVDA、AAPL 有財報；SPY 是 ETF，SEC 查無）──
+    us = {"NVDA": ("NVIDIA Corporation", 180.0, 1045810), "AAPL": ("Apple Inc.", 260.0, 320193), "SPY": ("SPDR S&P 500 ETF Trust", 680.0, None)}
+    for sym, (name, base, _) in us.items():
+        ser = walk(random.Random(sym), base, 760, 0.0006, 0.017)
+        ts = [int(dt.datetime.combine(d, dt.time(20, 0)).timestamp()) for d in days[-760:]]
+        w(f"yahoo_{sym}.json", {"chart": {"result": [{
+            "meta": {"longName": name, "fullExchangeName": "NasdaqGS", "currency": "USD", "gmtoffset": -18000,
+                     "regularMarketPrice": ser[-1], "regularMarketTime": ts[-1], "chartPreviousClose": ser[-2]},
+            "timestamp": ts, "indicators": {"quote": [{"open": ser, "high": [round(x * 1.01, 2) for x in ser],
+                                                        "low": [round(x * 0.99, 2) for x in ser], "close": ser,
+                                                        "volume": [rng.randint(10**6, 10**8) for _ in ser]}]}}], "error": None}})
+    w("files_company_tickers.json.json", {str(i): {"cik_str": c, "ticker": t, "title": n.upper()}
+                                          for i, (t, (n, _, c)) in enumerate(us.items()) if c})
+    for sym, (name, base, cik) in us.items():
+        if not cik:
+            continue
+        rr2 = random.Random(cik)
+        dur = {k: [] for k in ("RevenueFromContractWithCustomerExcludingAssessedTax", "GrossProfit", "OperatingIncomeLoss", "NetIncomeLoss")}
+        eps, inst = [], {k: [] for k in ("Assets", "Liabilities", "StockholdersEquity", "AssetsCurrent", "LiabilitiesCurrent")}
+        rev0 = rr2.uniform(2e10, 6e10)
+        for y in (2023, 2024, 2025, 2026):
+            yearly = {k: 0.0 for k in dur}
+            yeps = 0.0
+            for q in (1, 2, 3, 4):
+                if (y, q) > (2026, 2):
+                    break
+                rv = rev0 * (1 + 0.05 * ((y - 2023) * 4 + q)) * rr2.uniform(0.95, 1.05)
+                vals = {"RevenueFromContractWithCustomerExcludingAssessedTax": rv, "GrossProfit": rv * 0.6,
+                        "OperatingIncomeLoss": rv * 0.35, "NetIncomeLoss": rv * 0.3}
+                e = round(rv * 0.3 / 2.4e10, 2)
+                end = f"{y}-{['03-31', '06-30', '09-30', '12-31'][q - 1]}"
+                for k, v in vals.items():
+                    yearly[k] += v
+                    if q < 4:                               # 第四季只有全年數字（測試推算）
+                        dur[k].append({"end": end, "val": round(v), "frame": f"CY{y}Q{q}", "form": "10-Q"})
+                yeps += e
+                if q < 4:
+                    eps.append({"end": end, "val": e, "frame": f"CY{y}Q{q}", "form": "10-Q"})
+                ta = rv * 5
+                for k, v in {"Assets": ta, "Liabilities": ta * 0.45, "StockholdersEquity": ta * 0.55,
+                             "AssetsCurrent": ta * 0.4, "LiabilitiesCurrent": ta * 0.2}.items():
+                    inst[k].append({"end": end, "val": round(v), "frame": f"CY{y}Q{q}I", "form": "10-Q"})
+                if q == 4:
+                    for k in dur:
+                        dur[k].append({"end": end, "val": round(yearly[k]), "frame": f"CY{y}", "form": "10-K"})
+                    eps.append({"end": end, "val": round(yeps, 2), "frame": f"CY{y}", "form": "10-K"})
+        g = {k: {"units": {"USD": v}} for k, v in {**dur, **inst}.items()}
+        g["EarningsPerShareDiluted"] = {"units": {"USD/shares": eps}}
+        w(f"api_xbrl_companyfacts_CIK{cik:010d}.json.json", {"cik": cik, "entityName": name, "facts": {
+            "us-gaap": g, "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [{"end": "2026-07-20", "val": 24_000_000_000}]}}}}})
+
     (out / "README.txt").write_text("合成測試資料（非真實行情）。由 tests/fixtures/make_fixtures.py 產生。\n", "utf-8")
 
 

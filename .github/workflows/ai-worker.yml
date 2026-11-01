@@ -1,0 +1,84 @@
+# ─────────────────────────────────────────────────────────────────────
+# 部署「Gemini AI 分析」用的 Cloudflare Worker（worker/）
+#
+# 金鑰流向：GitHub Secrets → 本 workflow 執行期間的環境變數 → Cloudflare Worker 加密 Secret
+#   網頁只拿得到 Worker 網址（assets/ai.json），拿不到任何金鑰。
+#
+# 需要的 GitHub Secrets（設定步驟見 docs/AI.md）：
+#   GEMINI_API_KEY         Google AI Studio 金鑰
+#   CLOUDFLARE_API_TOKEN   Cloudflare「Edit Cloudflare Workers」權杖
+#   CLOUDFLARE_ACCOUNT_ID  Cloudflare 帳號 ID
+#   AI_ACCESS_CODE         自訂通關密碼（網頁第一次使用時輸入）
+# ─────────────────────────────────────────────────────────────────────
+name: Deploy AI worker
+
+on:
+  push:
+    branches: [main]
+    paths: ["worker/**", ".github/workflows/ai-worker.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Check secrets
+        id: chk
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AI_ACCESS_CODE: ${{ secrets.AI_ACCESS_CODE }}
+        run: |
+          missing=""
+          for n in GEMINI_API_KEY CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID AI_ACCESS_CODE; do
+            [ -z "${!n}" ] && missing="$missing $n"
+          done
+          if [ -n "$missing" ]; then
+            echo "::warning title=AI Worker 未部署::缺少 GitHub Secrets：$missing（設定方式見 docs/AI.md）"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy worker
+        if: steps.chk.outputs.ready == 'true'
+        working-directory: worker
+        run: npx --yes wrangler@4 deploy 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+
+      - name: Store secrets in Cloudflare
+        if: steps.chk.outputs.ready == 'true'
+        working-directory: worker
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          AI_ACCESS_CODE: ${{ secrets.AI_ACCESS_CODE }}
+        run: |
+          umask 077
+          f="$RUNNER_TEMP/secrets.json"
+          python3 -c 'import json, os; print(json.dumps({k: os.environ[k] for k in ("GEMINI_API_KEY", "AI_ACCESS_CODE")}))' > "$f"
+          npx --yes wrangler@4 secret bulk "$f"
+          rm -f "$f"
+
+      - name: Health check
+        if: steps.chk.outputs.ready == 'true'
+        run: |
+          url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/deploy.log" | head -1)
+          if [ -z "$url" ]; then echo "::error title=AI Worker::部署輸出中找不到 workers.dev 網址"; exit 1; fi
+          sleep 5
+          health=$(curl -fsS "$url/health" || echo '{"ok":false}')
+          echo "::notice title=AI Worker 網址::$url  health=$health"

@@ -22,7 +22,8 @@ const DAY = 24 * 3600 * 1000;
 
 let version = '';          // 以 meta.generatedAt 當版本號：資料更新時網址改變 → 瀏覽器自動抓新的
 const v = (path, ver = version) => `${DATA}${path}${ver ? `?v=${encodeURIComponent(ver)}` : ''}`;
-let macroVersion = '';     // 夜間只更新總經：macro.json 用 meta.macroAt，其餘檔案沿用 generatedAt
+let macroVersion = '';
+let usVersion = '';         // 美股檔案：夜間也會更新（美股收盤在台北凌晨），用 meta.usAt     // 夜間只更新總經：macro.json 用 meta.macroAt，其餘檔案沿用 generatedAt
 
 /**
  * 首次載入：meta 先抓（不走瀏覽器快取），其餘 5 個檔案平行抓。
@@ -34,6 +35,7 @@ export async function loadBootstrap() {
     meta = await fetchJSON(DATA + 'meta.json', { cache: 'no-cache', timeout: 8000 });
     version = meta.generatedAt || '';
     macroVersion = meta.macroAt || version;
+    usVersion = meta.usAt || version;
   } catch {
     return { meta: null };          // 還沒部署過資料（或本機直接開檔案）→ 顯示設定說明
   }
@@ -49,6 +51,13 @@ export async function loadBootstrap() {
   ]);
   return { meta, stocks, market, macro, quotes, spec: stripComments(spec), overview };
 }
+
+const OPT = { ttl: 10 * 60 * 1000, persist: true, timeout: 20000 };
+/** 美股總覽（us/overview.json）與個股（us/stock/<代號>.json） */
+export const loadUsOverview = () => fetchJSON(v('us/overview.json', usVersion), OPT);
+export const loadUsStock = (sym, signal) => fetchJSON(v(`us/stock/${encodeURIComponent(sym)}.json`, usVersion), { ...OPT, signal });
+/** Gemini AI 分析的 Worker 網址（assets/ai.json，部署 Worker 後填入）；沒有就回傳 null */
+export const loadAiConfig = () => fetchJSON('./assets/ai.json', { ttl: DAY, timeout: 8000 }).then((c) => c?.url || null, () => null);
 
 /** 全市場選股資料（約 300 KB，壓縮後約 80 KB）：第一次打開選股頁才下載 */
 export const loadScreen = () => fetchJSON(v('screen.json'), { ttl: 10 * 60 * 1000, persist: true, timeout: 20000 });

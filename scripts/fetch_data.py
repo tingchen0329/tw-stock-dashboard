@@ -60,6 +60,9 @@ from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import us_data  # noqa: E402  美股（Yahoo + SEC EDGAR）
+
 # ──────────────────────────────────────────────────────────────────────
 # 常數設定
 # ──────────────────────────────────────────────────────────────────────
@@ -81,6 +84,8 @@ HTTP_TIMEOUT = 25           # 秒；GitHub runner 連台灣站台偶爾較慢
 FINMIND_WORKERS = 4         # FinMind 同時連線數。太高會被限流，4 是保守值
 TWSE_GAP_SEC = 1.2          # 證交所 www 站有防爬（短時間大量請求會封 IP），每次請求間隔
 USER_AGENT = "tw-stock-dashboard/6 (+https://github.com/tingchen0329/tw-stock-dashboard)"
+# SEC EDGAR 規定 User-Agent 要有聯絡方式（https://www.sec.gov/os/accessing-edgar-data）
+SEC_USER_AGENT = "tw-stock-dashboard tingchen0329@users.noreply.github.com"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -197,6 +202,8 @@ class HttpTransport:
             self.finmind_requests += 1
             if self._token:
                 headers["Authorization"] = f"Bearer {self._token}"
+        elif kind == "sec":
+            headers["User-Agent"] = SEC_USER_AGENT
         elif kind == "twse_www":
             # 證交所 www 站限流：同一時間只允許一個請求，且與上次間隔 TWSE_GAP_SEC
             with self._twse_lock:
@@ -1056,6 +1063,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", default="_site/data", help="輸出目錄")
     ap.add_argument("--watchlist", default=str(REPO_ROOT / "config" / "watchlist.csv"),
                     help="追蹤清單 CSV（Yahoo 自選股匯出）或 JSON")
+    ap.add_argument("--us-watchlist", default=str(REPO_ROOT / "config" / "us_watchlist.csv"), help="美股追蹤清單 CSV")
     ap.add_argument("--fixtures", help="離線模式：從此資料夾讀 fixture，不連網")
     ap.add_argument("--today", help="覆寫今天日期 YYYY-MM-DD（測試用）")
     ap.add_argument("--mode", choices=["full", "auto", "macro", "smart"], default="full", help=(
@@ -1077,6 +1085,7 @@ def main(argv: list[str] | None = None) -> int:
     out.mkdir(parents=True)
 
     watchlist = load_watchlist(Path(args.watchlist))
+    us_watchlist = us_data.load_us_watchlist(Path(args.us_watchlist))
     spec = load_spec()
     prev = restore_previous(args.base_url, out) if args.base_url else None
     if prev is None:
@@ -1087,7 +1096,7 @@ def main(argv: list[str] | None = None) -> int:
         mode = decide_mode(clock(today), prev)
         log(f"smart → {mode}（上次完整更新 {prev.get('fullAt')}）")
     if mode == "macro":
-        return run_macro_only(tx, out, prev, today, token, watchlist, spec)
+        return run_macro_only(tx, out, prev, today, token, watchlist, spec, us_watchlist)
 
     report = SourceReport()
     log(f"start: mode={mode} today={today} watchlist={len(watchlist)} "
@@ -1169,6 +1178,10 @@ def main(argv: list[str] | None = None) -> int:
                           {"twse": twse_date, "tpex": tpex_date, "inst": t86_date}, out / "screen.json")
     sizes["screen.json"] = write_json(out / "screen.json", screen)
 
+    # 美股：股價每次更新，SEC 財報只在 full 時重抓
+    sizes.update(us_data.fetch_us(tx, report, out, us_watchlist, mode == "full", write_json,
+                                  now_tpe().isoformat(timespec="seconds"), SEC_USER_AGENT))
+
     # 3) 共用規格 + meta
     shutil.copy(REPO_ROOT / "assets" / "datasets.json", out / "datasets.json")
     meta = {
@@ -1178,6 +1191,7 @@ def main(argv: list[str] | None = None) -> int:
         "tokenUsed": bool(token),          # 只記錄「有沒有用 token」，不記錄 token 本身
         "demo": bool(args.fixtures),       # 離線假資料 → 網頁顯示「示範資料」橫幅
         "watchlist": watchlist,
+        "usWatchlist": us_watchlist,
         "mode": mode,
         "finmindRequests": tx.finmind_requests,
         "sources": report.items,
@@ -1185,6 +1199,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     meta["market"] = market_block(tx, report, today, clock(today), twse_date or tpex_date, macro)
     meta["macroAt"] = meta["generatedAt"]
+    meta["usAt"] = meta["generatedAt"]           # 美股檔案的快取版本（夜間只更新美股與總經時，generatedAt 不變）
     # 上次完整更新時間（smart 模式據此判斷）；額度用完沒抓齊不算完成，下次會再做一次
     meta["fullAt"] = meta["generatedAt"] if mode == "full" and not quota_hit else (prev or {}).get("fullAt")
     write_json(out / "meta.json", meta)
@@ -1198,7 +1213,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def run_macro_only(tx, out: Path, prev: dict, today: dt.date, token: str | None,
-                   watchlist: list[str], spec: dict) -> int:
+                   watchlist: list[str], spec: dict, us_watchlist: list[str] | None = None) -> int:
     """
     夜間輕量模式：沿用上一份完整資料，只更新 macro.json 與開休市狀態（約 2–4 次 FinMind 請求）。
     順便補抓清單上還沒有資料的個股（上次額度用完時沒抓到的）。
@@ -1210,9 +1225,13 @@ def run_macro_only(tx, out: Path, prev: dict, today: dt.date, token: str | None,
         macro = json.loads((out / "macro.json").read_text("utf-8"))["items"]    # 額度用完：保留舊總經
     missing = [c for c in watchlist if not (out / "stock" / f"{c}.json").exists()]
     fetched, quota = fetch_details(tx, missing, spec, today, out) if missing else (0, False)
-    sizes = {k: v for k, v in prev["bytes"].items() if not k.startswith("stock/")}
+    sizes = {k: v for k, v in prev["bytes"].items() if not k.startswith(("stock/", "us/stock/"))}
     files = stock_files(out, watchlist)
     sizes.update(files)
+    # 美股收盤在台北凌晨（冬令 05:00、夏令 04:00）→ 夜間也更新美股股價
+    us_watchlist = us_watchlist or []
+    sizes.update(us_data.fetch_us(tx, report, out, us_watchlist, False, write_json,
+                                  now_tpe().isoformat(timespec="seconds"), SEC_USER_AGENT))
     report.items["finmind_watchlist"] = {   # 取代上一份的狀態（否則會一直顯示上次的「缺 N 檔」）
         "ok": len(files) == len(watchlist), "rows": len(files), "ms": 0,
         "note": "；".join(x for x in (
@@ -1229,6 +1248,8 @@ def run_macro_only(tx, out: Path, prev: dict, today: dt.date, token: str | None,
             # generatedAt 不變（個股資料仍是上一份）；有補抓個股時才更新，讓瀏覽器重新讀取
             "generatedAt": now if fetched else prev["generatedAt"],
             "watchlist": watchlist,
+            "usWatchlist": us_watchlist,
+            "usAt": now,
             "mode": "macro",
             "sources": {**prev.get("sources", {}), **report.items},
             "macroFinmindRequests": tx.finmind_requests,

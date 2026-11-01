@@ -77,6 +77,17 @@ button, input { font: inherit; color: inherit; }
   padding: 18px 0 10px; flex-wrap: wrap;
 }
 .masthead h1 { font-size: 19px; font-weight: 650; margin: 0; letter-spacing: .02em; }
+.brand { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+/* 台股｜美股 切換：分段按鈕樣式，目前市場以 aria-current 標示 */
+.mkt-switch { display: inline-flex; border: 1px solid var(--axis); border-radius: 8px; overflow: hidden; }
+.mkt-switch a {
+  padding: 4px 14px; font-size: 14px; color: var(--ink-2); text-decoration: none; background: var(--surface);
+}
+.mkt-switch a + a { border-left: 1px solid var(--axis); }
+.mkt-switch a:hover { color: var(--ink); background: var(--surface-2); }
+.mkt-switch a[aria-current="true"] { background: var(--accent); color: var(--surface); font-weight: 600; }
+/* 美股頁：台股專用的追蹤列與搜尋框不適用 */
+body.us-mode #watchlist, body.us-mode .search { display: none; }
 .freshness {
   border: 0; background: none; padding: 4px 0; cursor: pointer;
   font-size: 13px; color: var(--ink-2); display: inline-flex; align-items: center; gap: 8px;
@@ -321,3 +332,23 @@ footer.foot { margin-top: 40px; font-size: 12px; color: var(--muted); }
   .completeness ul { columns: 1; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+/* ── Gemini AI 分析 ─────────────────────────────────────────── */
+.ai-panel { margin-top: 16px; }
+.ai-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.ai-actions input {
+  height: 36px; padding: 0 10px; font: inherit; color: var(--ink); background: var(--surface-2);
+  border: 1px solid var(--axis); border-radius: 8px; min-width: 200px;
+}
+.ai-loading { color: var(--muted); }
+.ai-result { line-height: 1.7; font-size: 15px; }
+.ai-result h3, .ai-result h4, .ai-result h5, .ai-result h6 { margin: 18px 0 6px; font-size: 16px; }
+.ai-result p { margin: 6px 0; }
+.ai-result ul, .ai-result ol { margin: 6px 0; padding-left: 22px; }
+.ai-result code { font-size: 13px; background: var(--surface-2); padding: 1px 4px; border-radius: 4px; }
+.ai-result hr { border: 0; border-top: 1px solid var(--hair); margin: 14px 0; }
+.ai-table { overflow-x: auto; margin: 8px 0; }
+.ai-table table { border-collapse: collapse; font-size: 14px; min-width: 100%; }
+.ai-table th, .ai-table td { border: 1px solid var(--hair); padding: 6px 10px; text-align: left; vertical-align: top; }
+.ai-table th { background: var(--surface-2); }
+a.btn { display: inline-flex; align-items: center; text-decoration: none; color: var(--ink); }

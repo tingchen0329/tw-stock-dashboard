@@ -420,6 +420,8 @@ export function fundamentals(incomeTable, balanceTable) {
     eps4YoY: isNum(eps4) && isNum(epsPrev4) && epsPrev4 !== 0 ? ((eps4 - epsPrev4) / Math.abs(epsPrev4)) * 100 : null,
     margins: margins(lastQ),
     marginsLastYear: margins(sameQLastYear),
+    revYoY: lastQ && sameQLastYear && isNum(lastQ.revenue) && isNum(sameQLastYear.revenue) && sameQLastYear.revenue
+      ? ((lastQ.revenue - sameQLastYear.revenue) / Math.abs(sameQLastYear.revenue)) * 100 : null,
     roe: ratio(ni4, avg('equity')),
     roa: ratio(ni4, avg('assets')),
     debtRatio: lastB ? ratio(lastB.liab, lastB.assets) : null,
@@ -449,6 +451,8 @@ export function marketRow(market, code) {
  * @param {object} p.tables       FinMind 個股資料表
  * @param {object} p.asOf         market.json 的 asOf
  */
+const SOURCE = { twse: '證交所', tpex: '櫃買中心', us: 'Yahoo + SEC 推算' };
+
 export function summarize({ info, mkt, quote, tables = {}, asOf = {} }) {
   const ps = priceSeries(tables.price);
   const tech = technicals(ps);
@@ -461,7 +465,7 @@ export function summarize({ info, mkt, quote, tables = {}, asOf = {} }) {
   let px = null;
   if (mkt && isNum(mkt.close)) {
     const chg = isNum(mkt.change) ? mkt.change : null;
-    px = { price: mkt.close, change: chg, changePct: isNum(chg) && mkt.close - chg ? (chg / (mkt.close - chg)) * 100 : null, asOf: officialDate, source: info.market === 'tpex' ? '櫃買中心' : '證交所', kind: '收盤' };
+    px = { price: mkt.close, change: chg, changePct: isNum(chg) && mkt.close - chg ? (chg / (mkt.close - chg)) * 100 : null, asOf: officialDate, source: info.market === 'us' ? 'Yahoo' : SOURCE[info.market] ?? '證交所', kind: '收盤' };
   } else if (fmLast) {
     const chg = isNum(fmLast.prev) ? fmLast.close - fmLast.prev : null;
     px = { price: fmLast.close, change: chg, changePct: isNum(chg) ? (chg / fmLast.prev) * 100 : null, asOf: fmLast.date, source: 'FinMind', kind: '收盤' };
@@ -475,7 +479,7 @@ export function summarize({ info, mkt, quote, tables = {}, asOf = {} }) {
     pe: pos(mkt?.pe) ?? pos(toNum(perLast?.PER)),
     pb: pos(mkt?.pb) ?? pos(toNum(perLast?.PBR)),
     yield: mkt?.yield ?? toNum(perLast?.dividend_yield),
-    source: isNum(mkt?.pe) || isNum(mkt?.pb) ? (info.market === 'tpex' ? '櫃買中心' : '證交所') : perLast ? 'FinMind' : null,
+    source: isNum(mkt?.pe) || isNum(mkt?.pb) ? (SOURCE[info.market] ?? '證交所') : perLast ? 'FinMind' : null,
     asOf: isNum(mkt?.pe) || isNum(mkt?.pb) ? officialDate : perLast?.date ?? null,
   };
 
@@ -506,26 +510,28 @@ export function summarize({ info, mkt, quote, tables = {}, asOf = {} }) {
 /** 資料完整度：對照「七段分析」需要的欄位，列出缺哪些 */
 export function completeness(s) {
   const f = s.fundamentals;
-  const etf = String(s.info?.code ?? '').startsWith('00');   // ETF 沒有本益比、營收、財報：不列入完整度
+  const us = s.info?.market === 'us';
+  // ETF 沒有本益比、營收、財報；美股沒有殖利率、法人、融資券、月營收、本益比歷史 → 不列入完整度
+  const etf = us ? !!s.info?.etf : String(s.info?.code ?? '').startsWith('00');
   const checks = [
     ['股價', isNum(s.price?.price)],
     ['本益比', isNum(s.valuation?.pe), 'stock'],
     ['股價淨值比', isNum(s.valuation?.pb), 'stock'],
-    ['殖利率', isNum(s.valuation?.yield), 'stock'],
-    ['三大法人（當日）', isNum(s.instToday?.foreign)],
-    ['三大法人（20 日）', !!s.inst],
-    ['外資持股比例', isNum(s.holding?.ratio)],
-    ['融資融券', isNum(s.margin?.margin)],
-    ['月營收年增率', isNum(s.revenue?.latest?.yoy), 'stock'],
+    ['殖利率', isNum(s.valuation?.yield), 'stock', 'tw'],
+    ['三大法人（當日）', isNum(s.instToday?.foreign), 'tw'],
+    ['三大法人（20 日）', !!s.inst, 'tw'],
+    ['外資持股比例', isNum(s.holding?.ratio), 'tw'],
+    ['融資融券', isNum(s.margin?.margin), 'tw'],
+    ['月營收年增率', isNum(s.revenue?.latest?.yoy), 'stock', 'tw'],
     ['近四季 EPS', isNum(f?.eps4), 'stock'],
     ['毛利率 / 營益率', isNum(f?.margins?.gross), 'stock'],
     ['ROE', isNum(f?.roe), 'stock'],
     ['負債比', isNum(f?.debtRatio), 'stock'],
     ['均線', isNum(s.tech?.ma?.[60])],
     ['KD / RSI / MACD', isNum(s.tech?.k) && isNum(s.tech?.rsi) && isNum(s.tech?.dif)],
-    ['本益比河流圖', !!s.river, 'stock'],
+    ['本益比河流圖', !!s.river, 'stock', 'tw'],
     ['一年價格位階', isNum(s.tech?.pct1y)],
-  ].filter(([, , only]) => !(etf && only === 'stock'));
+  ].filter(([, , only, tw]) => !(etf && only === 'stock') && !(us && (only === 'tw' || tw === 'tw')));
   const ok = checks.filter(([, v]) => v).length;
   return { pct: Math.round((ok / checks.length) * 100), missing: checks.filter(([, v]) => !v).map(([k]) => k), total: checks.length, ok };
 }
@@ -543,7 +549,7 @@ export function overviewRow(s) {
     code: s.info.code,
     name: s.info.name,
     industry: s.info.industry || '',
-    etf: s.info.code.startsWith('00'),
+    etf: s.info.market === 'us' ? !!s.info.etf : s.info.code.startsWith('00'),
     price: r2(s.price?.price),
     chgPct: r2(s.price?.changePct),
     priceKind: s.price?.kind ?? null,
@@ -552,7 +558,7 @@ export function overviewRow(s) {
     pe: r2(s.valuation?.pe),
     riverPct: r2(s.river?.percentile),
     zone: s.river?.zone ?? null,
-    revYoY: r2(s.revenue?.latest?.yoy),
+    revYoY: r2(s.revenue?.latest?.yoy ?? f?.revYoY),   // 台股：月營收；美股：最新一季營收
     epsYoY: r2(f?.eps4YoY),
     roe: r2(f?.roe),
     f20: s.inst?.sum20?.foreign ?? null,
@@ -560,5 +566,29 @@ export function overviewRow(s) {
     trend: align.startsWith('多頭') ? 1 : align.startsWith('空頭') ? -1 : align === '均線糾結' ? 0 : null,
     k: r2(t?.k),
     rsi: r2(t?.rsi),
+  };
+}
+
+/**
+ * 美股：用 Yahoo 日線與 SEC 財報組出與台股 market.json 列相同形狀的資料（收盤、漲跌、本益比、股價淨值比），
+ * 讓 summarize() 不用分辨台美股。本益比 = 收盤 ÷ 近四季 EPS；股價淨值比 = 收盤 ÷（權益 ÷ 流通股數）。
+ * @param {object} detail  us/stock/<代號>.json
+ */
+export function usMarketRow(detail) {
+  const ps = priceSeries(detail?.tables?.price);
+  const n = ps.close.length;
+  if (!n) return null;
+  const close = ps.close[n - 1];
+  const prev = n > 1 ? ps.close[n - 2] : null;
+  const f = fundamentals(detail.tables.income, detail.tables.balance);
+  const lastEquity = [...rows(detail.tables.balance)].reverse().find((r) => r.type === 'Equity');
+  const bvps = lastEquity && isNum(detail.shares) && detail.shares > 0 ? toNum(lastEquity.value) / detail.shares : null;
+  return {
+    close,
+    change: isNum(prev) ? close - prev : null,
+    pe: isNum(f?.eps4) && f.eps4 > 0 ? close / f.eps4 : null,
+    pb: isNum(bvps) && bvps > 0 ? close / bvps : null,
+    yield: null, volume: ps.volume?.[n - 1] ?? null,
+    date: ps.dates[n - 1],
   };
 }

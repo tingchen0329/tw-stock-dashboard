@@ -31,6 +31,7 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 SECRET = "E2E-SECRET-TOKEN-xyz"
+AI_URL = "https://tw-stock-ai.test.workers.dev"
 
 
 def build_site(tmp: Path) -> tuple[Path, Path]:
@@ -40,9 +41,11 @@ def build_site(tmp: Path) -> tuple[Path, Path]:
     site.mkdir()
     shutil.copy(ROOT / "index.html", site)
     shutil.copytree(ROOT / "assets", site / "assets")
+    (site / "assets" / "ai.json").write_text(json.dumps({"url": AI_URL}))     # 測試用 Worker（以攔截模擬）
     env = {**os.environ, "FINMIND_TOKEN": SECRET}
     subprocess.run([sys.executable, ROOT / "scripts/fetch_data.py", "--fixtures", fx, "--out", site / "data",
-                    "--today", "2026-10-19", "--watchlist", ROOT / "tests/fixtures/watchlist.json"],
+                    "--today", "2026-10-19", "--watchlist", ROOT / "tests/fixtures/watchlist.json",
+                    "--us-watchlist", ROOT / "tests/fixtures/us_watchlist.csv"],
                    check=True, capture_output=True, env=env)
     subprocess.run(["node", ROOT / "scripts/build_overview.mjs", site / "data"], check=True, capture_output=True)
     return site, fx
@@ -241,6 +244,61 @@ class Dashboard(unittest.TestCase):
         row.click()
         self.wait_stock(code)
         self.assertEqual(self.errors, [])
+
+    def test_us_overview_and_stock_page(self):
+        self.page.goto(self.base)
+        self.page.get_by_role("link", name="美股").click()
+        rows = self.page.locator(".ov tbody tr")
+        rows.nth(2).wait_for()
+        self.assertEqual(rows.count(), 3)
+        self.assertEqual(self.page.locator("#sw-us").get_attribute("aria-current"), "true")
+        self.assertFalse(self.page.locator("#watchlist").is_visible())          # 美股頁隱藏台股追蹤列
+        heads = self.page.locator(".ov thead").inner_text()
+        self.assertNotIn("外資", heads)
+        self.assertNotIn("河流圖", heads)
+        rows.first.click()
+        self.page.locator(".stock-head h2").filter(has_text="NVDA").wait_for()
+        self.assertIn("#us/NVDA", self.page.url)
+        self.assertEqual(self.page.locator(".chart svg").count(), 1)           # 只有股價圖（沒有河流圖、月營收）
+        self.assertIn("100%", self.page.locator(".completeness summary").inner_text())
+        tv = self.page.get_by_role("link", name="TradingView ↗")
+        self.assertIn("symbol=NVDA", tv.get_attribute("href"))
+        self.page.get_by_role("button", name="產生分析指令").click()
+        self.assertIn("你是美股分析師", self.page.locator("#prompt-text").input_value())
+        self.page.locator("#prompt-close").click()
+        # 回台股
+        self.page.get_by_role("link", name="台股").click()
+        self.page.locator(".ov tbody tr").nth(19).wait_for()
+        self.assertEqual(self.errors, [])
+
+    def test_gemini_panel_sends_prompt_with_access_code_and_renders_safely(self):
+        sent = []
+        def fake(route):
+            sent.append((route.request.headers.get("x-access-code"), json.loads(route.request.post_data)))
+            if route.request.headers.get("x-access-code") != "pw-ok":
+                route.fulfill(status=401, content_type="application/json", body=json.dumps({"error": "通關密碼錯誤，請重新輸入"}))
+                return
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "text": "## 結論\n**中性偏多**\n\n| 項目 | 價位 | 依據 |\n|---|---|---|\n| 破線停損價 | 900 | MA60 |\n\n<img src=x onerror=\"window.__xss=1\">",
+                "model": "gemini-test", "createdAt": "2026-11-02T01:00:00Z", "cached": False}))
+        self.page.route(AI_URL + "/**", fake)
+        self.page.route(AI_URL, fake)
+        self.open("#2330")
+        panel = self.page.locator(".ai-panel")
+        panel.wait_for()
+        panel.locator("input").fill("wrong")
+        panel.get_by_role("button", name="儲存並分析").click()
+        panel.locator(".banner").filter(has_text="通關密碼錯誤").wait_for()
+        panel.locator("input").fill("pw-ok")                                    # 錯誤後會重新要求輸入
+        panel.get_by_role("button", name="儲存並分析").click()
+        panel.locator(".ai-result table").wait_for()
+        self.assertIn("破線停損價", panel.inner_text())
+        self.assertEqual(panel.locator(".ai-result img").count(), 0)          # 回覆裡的 HTML 只當文字
+        self.assertIsNone(self.page.evaluate("window.__xss"))
+        code, body = sent[-1]
+        self.assertEqual(body["code"], "2330")
+        self.assertIn("2330 台積電", body["prompt"])
+        self.assertNotIn(SECRET, json.dumps(body))
 
     def test_market_closed_banner_uses_holiday_schedule(self):
         # 週六上午：下次開盤要跳過 10/26（fixture 的證交所休市表）→ 10/27

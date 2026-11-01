@@ -54,7 +54,8 @@ def build(tmp: Path) -> tuple[Path, Path]:
     shutil.copytree(ROOT / "assets", site / "assets")
     shutil.copy(ROOT / "tests/bench/legacy/index.html", site / "legacy/index.html")
     subprocess.run([sys.executable, ROOT / "scripts/fetch_data.py", "--fixtures", fx, "--out", site / "data",
-                    "--today", "2026-10-19", "--watchlist", ROOT / "tests/fixtures/watchlist.json"],
+                    "--today", "2026-10-19", "--watchlist", ROOT / "tests/fixtures/watchlist.json",
+                    "--us-watchlist", ROOT / "tests/fixtures/us_watchlist.csv"],
                    check=True, capture_output=True)
     subprocess.run(["node", ROOT / "scripts/build_overview.mjs", site / "data"], check=True, capture_output=True)
     return site, fx

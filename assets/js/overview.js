@@ -90,8 +90,17 @@ export const FILTERS = [
 // 排序與篩選在切換到個股再回來時保留（只存在記憶體，重新整理頁面會回到預設）
 const view = { sort: { key: null, dir: 1 }, filter: 'all' };
 
-export function renderOverview(host, data, { onPick }) {
+/**
+ * @param {object} opts
+ * @param {(code:string)=>void} opts.onPick
+ * @param {string} [opts.title]      標題（美股：美股追蹤清單總覽）
+ * @param {string[]} [opts.hide]     不顯示的欄位 key（美股沒有法人、河流圖）
+ * @param {string} [opts.note]       表格下方說明
+ * @param {string} [opts.dayNote]    資料日說明的後綴
+ */
+export function renderOverview(host, data, { onPick, title = '追蹤清單總覽', hide = [], note, dayNote = '收盤資料' }) {
   const all = data?.rows ?? [];
+  const cols = COLUMNS.filter((c) => !hide.includes(c.key));
   const table = h('table', { class: 'ov' });
   const tabs = h('div', { class: 'ov-tabs', role: 'group', 'aria-label': '篩選' });
   const draw = () => {
@@ -102,7 +111,7 @@ export function renderOverview(host, data, { onPick }) {
       on: { click: () => { view.filter = k; draw(); } },
     }, `${label} ${all.filter(fn).length}`)));
     table.replaceChildren(
-      h('thead', {}, h('tr', {}, COLUMNS.map((c) => h('th', {
+      h('thead', {}, h('tr', {}, cols.map((c) => h('th', {
         scope: 'col',
         title: c.tip,
         class: c.sort === false ? 'nosort' : '',
@@ -121,17 +130,17 @@ export function renderOverview(host, data, { onPick }) {
         dataset: { code: r.code },
         title: `${r.code} ${r.name}${r.industry ? `｜${r.industry}` : ''}`,
         on: { click: () => onPick(r.code) },
-      }, COLUMNS.map((c) => h('td', {}, c.cell(r)))))),
+      }, cols.map((c) => h('td', {}, c.cell(r)))))),
     );
   };
   draw();
   host.replaceChildren(h('section', { class: 'overview' },
     h('div', { class: 'overview-head' },
-      h('h2', {}, `追蹤清單總覽（${all.length} 檔）`),
-      h('p', { class: 'note' }, `${data?.dataDay ? `${F.dayLabel(data.dataDay)}收盤資料；` : ''}點欄位標題排序，點一列開啟個股`)),
+      h('h2', {}, `${title}（${all.length} 檔）`),
+      h('p', { class: 'note' }, `${data?.dataDay ? `${F.dayLabel(data.dataDay)}${dayNote}；` : ''}點欄位標題排序，點一列開啟個股`)),
     tabs,
     all.length
       ? h('div', { class: 'ov-wrap' }, table)
       : h('p', { class: 'note' }, '總覽資料尚未產生：下一次 GitHub Actions 更新後就會出現。'),
-    h('p', { class: 'note' }, '河流圖位階 = 目前本益比在近三年的百分位（0 最便宜、100 最貴）。K ≥ 80 / RSI ≥ 70 標示為過熱，K ≤ 20 / RSI ≤ 30 為超賣。ETF 沒有本益比、營收與財報，顯示 N/A。')));
+    h('p', { class: 'note' }, note ?? '河流圖位階 = 目前本益比在近三年的百分位（0 最便宜、100 最貴）。K ≥ 80 / RSI ≥ 70 標示為過熱，K ≤ 20 / RSI ≤ 30 為超賣。ETF 沒有本益比、營收與財報，顯示 N/A。')));
 }

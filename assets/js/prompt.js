@@ -28,7 +28,66 @@ function macroLine(macro) {
   }));
 }
 
+function techLines(t) {
+  if (!t) return ['【技術】N/A（股價資料不足）'];
+  const cross = (x) => (x ? (x === 'golden' ? ' 黃金交叉' : ' 死亡交叉') : '');
+  const lv = t.levels;
+  return [
+    `【技術】${join([
+      `MA5 ${F.price(t.ma[5])}、MA20 ${F.price(t.ma[20])}、MA60 ${F.price(t.ma[60])}、MA240 ${F.price(t.ma[240])}，${t.alignment}`,
+      `K ${F.num(t.k, 1)} D ${F.num(t.d, 1)}${cross(t.kdCross)}`,
+      `RSI14 ${F.num(t.rsi, 1)}`,
+      `MACD 柱 ${F.signed(t.osc)}${cross(t.macdCross)}`,
+      `量比 ${F.num(t.volRatio, 2)}`,
+    ])}`,
+    `【高/低點】20日 ${F.price(lv.high20)} / ${F.price(lv.low20)}｜60日 ${F.price(lv.high60)} / ${F.price(lv.low60)}｜52週 ${F.price(lv.high250)} / ${F.price(lv.low250)}`,
+  ];
+}
+
+const instructions = (aspects, index) => `請用繁體中文輸出，先結論後理由，每個判斷都引用上方數字：
+1. 結論：評級（偏多／中性偏多／中性／中性偏空／偏空）、操作週期、一句理由
+2. 價位表（Markdown 表格，欄位：項目｜價位｜依據）：買進區間、加碼點、賣出區間、支撐 1、支撐 2、壓力 1、壓力 2、破線停損價、合理價（本益比 × EPS）
+3. ${aspects}，各 2–3 句
+4. 三大優勢、三大風險；壓力測試：${index}回檔 10% 時可能價位
+5. 操作前要再確認的 3 個數字
+規則：只用上方數據，N/A 照寫不推測；推估值標「推估」；不用 emoji；結尾註明「非投資建議」。`;
+
+/** 美股版：資料來自 Yahoo 日線與 SEC 財報（沒有月營收、法人籌碼、本益比歷史） */
+function buildPromptUS(s, macro) {
+  const { info, price: px, valuation: v, tech: t, fundamentals: f } = s;
+  const dataDay = t?.date || null;
+  const etf = !f;
+  const r = t?.returns;
+  const L = [];
+  L.push(`你是美股分析師，依下列數據分析 ${info.code} ${info.name}（${info.industry || '交易所 N/A'}${etf ? '｜無 SEC 財報，可能為 ETF 或外國公司' : ''}）。`);
+  L.push(`資料日：${dataDay ? `${dataDay} 美東收盤` : 'N/A'}｜財報至 ${f?.latestQuarter ? quarter(f.latestQuarter) : 'N/A'}（SEC，日曆季）｜單位：美元`);
+  L.push('來源：Yahoo Finance、美國證管會 SEC EDGAR；分析師預估、機構持股、選擇權、前瞻財測無資料');
+  L.push('');
+  L.push(`【總經】${macroLine(macro)}`);
+  L.push(`【股價】${join([
+    px ? `${F.price(px.price)}（${pct(px.changePct, 2)}）` : 'N/A',
+    r && `5日 ${pct(r.d5)}、20日 ${pct(r.d20)}、60日 ${pct(r.d60)}、YTD ${pct(r.ytd)}、1年 ${pct(r.y1)}`,
+    t && `位階 1年 ${F.num(t.pct1y, 0)}%、3年 ${F.num(t.pct3y, 0)}%`,
+  ])}`);
+  L.push(`【估值】${join([`本益比（近四季）${F.num(v.pe)}`, `股價淨值比 ${F.num(v.pb)}`])}（推估：收盤 ÷ SEC 財報）`);
+  L.push(f
+    ? `【財報】${join([
+      `近四季 EPS ${F.num(f.eps4)}（年增 ${pct(f.eps4YoY)}）`,
+      `最新一季營收年增 ${pct(f.revYoY)}`,
+      `單季 EPS ${quarter(f.quarters.slice(-8)[0]?.date)} 起：${f.quarters.slice(-8).map((q) => F.num(q.eps)).join(', ') || 'N/A'}`,
+    ])}\n　${join([
+      `毛利/營益/淨利率 ${F.pct(f.margins?.gross, 1)} / ${F.pct(f.margins?.op, 1)} / ${F.pct(f.margins?.net, 1)}（去年同期 ${F.pct(f.marginsLastYear?.gross, 1)} / ${F.pct(f.marginsLastYear?.op, 1)} / ${F.pct(f.marginsLastYear?.net, 1)}）`,
+      `ROE ${F.pct(f.roe, 1)}`, `ROA ${F.pct(f.roa, 1)}`, `負債比 ${F.pct(f.debtRatio, 1)}`, `流動比 ${F.pct(f.currentRatio, 0)}`,
+    ])}`
+    : '【財報】不適用（無 SEC us-gaap 財報）');
+  L.push(...techLines(t));
+  L.push('');
+  L.push(instructions(etf ? '總經、股價、技術、估值' : '總經、股價、基本面、技術、估值', 'S&P 500 / 那斯達克'));
+  return L.join('\n');
+}
+
 export function buildPrompt(s, meta, macro = []) {
+  if (s.info.market === 'us') return buildPromptUS(s, macro);
   const { info, price: px, valuation: v, tech: t, river: rv, revenue: rev, inst, instToday, margin, holding, fundamentals: f } = s;
   const c = completeness(s);
   const dataDay = meta?.market?.lastTradingDay || t?.date || null;
@@ -78,18 +137,7 @@ export function buildPrompt(s, meta, macro = []) {
     margin ? `融資 ${F.num(margin.margin, 0)}（20日 ${F.signed(margin.marginChg20, 0)}）、融券 ${F.num(margin.short, 0)}（20日 ${F.signed(margin.shortChg20, 0)}）、券資比 ${F.pct(margin.shortRatio)}` : '融資券 N/A',
   ])}`);
 
-  if (t) {
-    const cross = (x) => (x ? (x === 'golden' ? ' 黃金交叉' : ' 死亡交叉') : '');
-    const lv = t.levels;
-    L.push(`【技術】${join([
-      `MA5 ${F.price(t.ma[5])}、MA20 ${F.price(t.ma[20])}、MA60 ${F.price(t.ma[60])}、MA240 ${F.price(t.ma[240])}，${t.alignment}`,
-      `K ${F.num(t.k, 1)} D ${F.num(t.d, 1)}${cross(t.kdCross)}`,
-      `RSI14 ${F.num(t.rsi, 1)}`,
-      `MACD 柱 ${F.signed(t.osc)}${cross(t.macdCross)}`,
-      `量比 ${F.num(t.volRatio, 2)}`,
-    ])}`);
-    L.push(`【高/低點】20日 ${F.price(lv.high20)} / ${F.price(lv.low20)}｜60日 ${F.price(lv.high60)} / ${F.price(lv.low60)}｜52週 ${F.price(lv.high250)} / ${F.price(lv.low250)}`);
-  } else L.push('【技術】N/A（股價資料不足）');
+  L.push(...techLines(t));
 
   L.push(rv
     ? `【本益比河流圖】${join([
@@ -101,12 +149,6 @@ export function buildPrompt(s, meta, macro = []) {
     : `【本益比河流圖】${na === 'N/A' ? 'N/A（虧損或資料不足，改用股價淨值比）' : na}`);
   L.push('');
 
-  L.push(`請用繁體中文輸出，先結論後理由，每個判斷都引用上方數字：
-1. 結論：評級（偏多／中性偏多／中性／中性偏空／偏空）、操作週期、一句理由
-2. 價位表（Markdown 表格，欄位：項目｜價位｜依據）：買進區間、加碼點、賣出區間、支撐 1、支撐 2、壓力 1、壓力 2、破線停損價、合理價（本益比 × EPS）
-3. 總經、股價、基本面、籌碼、技術、估值，各 2–3 句
-4. 三大優勢、三大風險；壓力測試：加權指數回檔 10% 時可能價位
-5. 操作前要再確認的 3 個數字
-規則：只用上方數據，N/A 照寫不推測；推估值標「推估」；不用 emoji；結尾註明「非投資建議」。`);
+  L.push(instructions('總經、股價、基本面、籌碼、技術、估值', '加權指數'));
   return L.join('\n');
 }
