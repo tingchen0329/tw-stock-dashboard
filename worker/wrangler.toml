@@ -10,6 +10,6 @@ workers_dev = true
 region = "gcp:us-central1"
 
 [vars]
-# 依序嘗試：第一個額度用完、免費方案不提供或已停用時，自動改用下一個
-GEMINI_MODELS = "gemini-4-argon,gemini-3.8-flash"
+# 依序嘗試（逗號分隔）。gemini-4-argon 免費方案額度為 0（HTTP 429），需開啟 Google 付費方案才能用
+GEMINI_MODELS = "gemini-3.8-flash"
 ALLOWED_ORIGINS = "https://tingchen0329.github.io,http://localhost:8000"

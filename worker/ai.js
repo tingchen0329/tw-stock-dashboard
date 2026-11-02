@@ -36,6 +36,15 @@ function safeEqual(a, b) {
   return diff === 0;
 }
 
+/** Worker 實際執行（對外連線）的位置：Cloudflare trace 的 loc（國家）與 colo（機房） */
+async function egress() {
+  try {
+    const t = await (await fetch('https://www.cloudflare.com/cdn-cgi/trace')).text();
+    const get = (k) => (t.match(new RegExp(`^${k}=(.*)$`, 'm')) || [])[1] || '?';
+    return `${get('loc')}/${get('colo')}`;
+  } catch { return '?'; }
+}
+
 async function sha256(text) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -58,7 +67,7 @@ export default {
 
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method === 'GET' && url.pathname === '/health') {
-      return json({ ok: true, models, colo: req.cf?.colo, keyConfigured: !!env.GEMINI_API_KEY, accessCodeConfigured: !!env.AI_ACCESS_CODE }, 200, cors);
+      return json({ ok: true, models, colo: req.cf?.colo, placement: req.headers.get('cf-placement'), egress: await egress(), keyConfigured: !!env.GEMINI_API_KEY, accessCodeConfigured: !!env.AI_ACCESS_CODE }, 200, cors);
     }
     if (req.method !== 'POST') return json({ error: '只接受 POST' }, 405, cors);
     if (!allowed.includes(origin)) return json({ error: '不允許的來源網站' }, 403, cors);
@@ -111,7 +120,7 @@ export default {
       const hint = /location is not supported/i.test(all) ? 'Gemini 不接受這個地區的請求（Worker 所在機房），請重新部署 Worker'
         : /429|RESOURCE_EXHAUSTED/.test(all) ? 'Gemini 免費額度暫時用完，請稍後再試'
           : /API key/i.test(all) ? 'GEMINI_API_KEY 無效，請重新設定' : 'Gemini 拒絕請求';
-      return json({ error: `${hint}（${all}）` }, 502, cors);
+      return json({ error: `${hint}（${all}）｜執行位置 ${await egress()}，placement ${req.headers.get('cf-placement') || '未啟用'}` }, 502, cors);
     }
     const model2 = used;
     const result = { text, model: model2, createdAt: new Date().toISOString() };
