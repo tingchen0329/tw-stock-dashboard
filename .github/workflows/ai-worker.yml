@@ -89,7 +89,12 @@ jobs:
           url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/deploy.log" | head -1)
           if [ -z "$url" ]; then echo "::error title=AI Worker::部署輸出中找不到 workers.dev 網址"; exit 1; fi
           sleep 15
-          health=$(curl -fsS "$url/health" || echo '{"ok":false}')
+          # 新建的 Worker 網址可能要 1–2 分鐘才生效：最多重試 6 次；印出 HTTP 狀態碼方便判斷
+          for i in 1 2 3 4 5 6; do
+            health=$(curl -sS -m 20 -w ' HTTP %{http_code}' "$url/health" 2>&1 || true)
+            case "$health" in *'"ok":true'*) break;; esac
+            sleep 15
+          done
           echo "::notice title=AI Worker 網址::$url  health=$health"
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
