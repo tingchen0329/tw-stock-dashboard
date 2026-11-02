@@ -60,7 +60,7 @@ jobs:
       - name: Deploy worker
         if: steps.chk.outputs.ready == 'true'
         working-directory: worker
-        run: npx --yes wrangler@4 deploy 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+        run: npx --yes wrangler@4 deploy --var "BUILD:${GITHUB_SHA::7}" 2>&1 | tee "$RUNNER_TEMP/deploy.log"
 
       - name: Store secrets in Cloudflare
         if: steps.chk.outputs.ready == 'true'
@@ -80,7 +80,7 @@ jobs:
         # 最後再部署一次，確保線上是這次的程式碼（已存的 Secret 會保留）
         if: steps.chk.outputs.ready == 'true'
         working-directory: worker
-        run: npx --yes wrangler@4 deploy 2>&1 | tee -a "$RUNNER_TEMP/deploy.log"
+        run: npx --yes wrangler@4 deploy --var "BUILD:${GITHUB_SHA::7}" 2>&1 | tee -a "$RUNNER_TEMP/deploy.log"
 
       - name: Health check
         id: health

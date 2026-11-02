@@ -1,5 +1,6 @@
 # Cloudflare Worker 設定：由 .github/workflows/ai-worker.yml 部署（金鑰另以 Secret 寫入，不在這裡）
-name = "tw-stock-ai"
+# 2026-11-02 改名：舊的 tw-stock-ai 在開啟 placement 後一直執行舊版程式碼，改用新名稱重新建立
+name = "tw-stock-gemini"
 main = "ai.js"
 compatibility_date = "2026-10-01"
 workers_dev = true

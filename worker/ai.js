@@ -67,7 +67,7 @@ export default {
 
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method === 'GET' && url.pathname === '/health') {
-      return json({ ok: true, models, colo: req.cf?.colo, placement: req.headers.get('cf-placement'), egress: await egress(), keyConfigured: !!env.GEMINI_API_KEY, accessCodeConfigured: !!env.AI_ACCESS_CODE }, 200, cors);
+      return json({ ok: true, build: env.BUILD || '?', models, colo: req.cf?.colo, placement: req.headers.get('cf-placement'), egress: await egress(), keyConfigured: !!env.GEMINI_API_KEY, accessCodeConfigured: !!env.AI_ACCESS_CODE }, 200, cors);
     }
     if (req.method !== 'POST') return json({ error: '只接受 POST' }, 405, cors);
     if (!allowed.includes(origin)) return json({ error: '不允許的來源網站' }, 403, cors);
