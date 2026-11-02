@@ -1,43 +1,398 @@
-# 台股研究台 (tw-stock-dashboard) v6
+# 台股研究台 (tw-stock-dashboard)
 
-個人台股研究儀表板：追蹤清單總覽、全市場搜尋、技術指標、本益比河流圖、月營收、籌碼與財報，
-一鍵產生可貼到任何 AI 的分析指令，可匯出 CSV / Excel。
+個人台股 / 美股研究儀表板。打開網頁就能看到追蹤清單總覽、技術指標、本益比河流圖、月營收、籌碼、財報、全市場選股，
+還能一鍵產生 AI 分析報告（Gemini）或可貼到任何 AI 的分析指令，並匯出 CSV / Excel。
 
 **網站**：https://tingchen0329.github.io/tw-stock-dashboard/
 
 ![淺色模式（示範資料）](docs/screenshot-light.webp)
 
-## 架構
+> 這份 README 前半段是**給初學者的完整設定教學**：照著做就能從零架好整個網站，不需要寫程式。
+> 後半段是功能說明與開發者資訊。所有服務都有免費方案，預設 **每月 NT$0**。
 
-```mermaid
-flowchart LR
-  S[(GitHub Secrets<br/>FINMIND_TOKEN)] -. 環境變數 .-> A
-  subgraph GitHub Actions（排程 / push）
-    A[scripts/fetch_data.py] --> J[_site/data/*.json<br/>不含 token]
-  end
-  T[證交所 / 櫃買 OpenAPI] --> A
-  F[FinMind API] --> A
-  Y[Yahoo Finance] --> A
-  J --> P[GitHub Pages]
-  P --> B[瀏覽器]
-  B -. 清單外股票<br/>免 token 即時查詢 .-> F
+---
+
+## 目錄
+
+1. [它是怎麼運作的](#1-它是怎麼運作的)
+2. [先認識幾個名詞](#2-先認識幾個名詞)
+3. [需要哪些帳號](#3-需要哪些帳號)
+4. [設定總表（一張表看完）](#4-設定總表一張表看完)
+5. [逐步設定](#5-逐步設定)
+   - [步驟 1：FinMind token（必要）](#步驟-1finmind-token必要)
+   - [步驟 2：開啟 GitHub Pages（必要）](#步驟-2開啟-github-pages必要)
+   - [步驟 3：第一次更新資料（必要）](#步驟-3第一次更新資料必要)
+   - [步驟 4：外部排程 cron-job.org（建議）](#步驟-4外部排程-cron-joborg建議)
+   - [步驟 5：AI 報告 Gemini + Cloudflare（選用）](#步驟-5ai-報告-gemini--cloudflare選用)
+   - [步驟 6：美股財報 SEC 聯絡資訊（選用）](#步驟-6美股財報-sec-聯絡資訊選用)
+6. [日常使用](#6-日常使用)
+7. [修改追蹤清單](#7-修改追蹤清單)
+8. [金鑰與權杖管理](#8-金鑰與權杖管理)
+9. [常見問題](#9-常見問題)
+10. [費用](#10-費用)
+
+---
+
+## 1. 它是怎麼運作的
+
+```
+                    ┌──────────── GitHub（你的 repo）────────────┐
+cron-job.org ──觸發──▶ Actions：抓資料（證交所、櫃買、FinMind、Yahoo、SEC）│
+（準時排程）          │    └─ 用 Secrets 裡的 FinMind token（不公開）  │
+                    │    ▼                                       │
+                    │  Pages：公開網站（只有整理好的資料，沒有任何金鑰）│
+                    └────────────────────┬───────────────────────┘
+                                         ▼
+                                   你的瀏覽器
+                                         │ 按「產生 AI 報告」
+                                         ▼
+                    Cloudflare Worker（保管 Gemini 金鑰）──▶ Google Gemini
 ```
 
-- **token 永遠不進瀏覽器**：只存在 GitHub Secrets，由 Actions 在伺服器端使用（[原因與設定](docs/SETUP.md)）
-- **全市場資料**（證交所 + 櫃買）伺服器端抓好，不再依賴不穩定的公共 CORS proxy
-- **追蹤清單**（`config/watchlist.csv`，可直接用 Yahoo 自選股整理的 CSV）用 FinMind token 預抓 3 年完整資料；
-  收盤後完整更新，盤中與夜間只更新行情與總經（[更新時段](docs/SETUP.md)）
-- **清單外股票**仍可搜尋，網頁用 FinMind 免 token 額度即時查詢
+- **資料由 GitHub 幫你定時抓好**，網頁只讀整理好的檔案，所以打開很快
+- **所有金鑰都不會出現在網頁上**：網站是公開的，任何人按「檢視原始碼」都看得到網頁裡的東西，
+  所以金鑰只放在 GitHub Secrets 和 Cloudflare 這種「只有你看得到」的地方
 
-## 開始使用
+## 2. 先認識幾個名詞
 
-1. **Settings → Secrets and variables → Actions** 新增 `FINMIND_TOKEN`
-2. **Settings → Pages → Source** 選 **GitHub Actions**
-3. **Actions → Update data & deploy → Run workflow**
+| 名詞 | 白話解釋 |
+|---|---|
+| **repo**（儲存庫） | 放這個專案所有檔案的地方：https://github.com/tingchen0329/tw-stock-dashboard |
+| **GitHub Actions** | GitHub 提供的免費「自動執行程式」服務。本專案用它定時抓資料、部署網站。repo 上方的 **Actions** 分頁可以看每次執行結果 |
+| **workflow** | 一份 Actions 的工作清單。本專案有 3 個：**Update data & deploy**（抓資料＋更新網站）、**Deploy AI worker**（部署 AI 服務）、**CI**（測試） |
+| **Run workflow** | 在 Actions 頁面手動執行某個 workflow 的按鈕 |
+| **GitHub Pages** | GitHub 提供的免費網站空間，網址 `你的帳號.github.io/repo名稱` |
+| **Secret（機密）** | 存在 GitHub 的加密值，例如 API 金鑰。存進去之後連你自己都看不到內容，只有 Actions 執行時能用 |
+| **Variable（變數）** | 也存在 GitHub，但**不加密**、會出現在執行紀錄。只能放不機密的設定 |
+| **API 金鑰 / token / 權杖** | 證明「這個請求是你本人」的一串字，像密碼一樣不能外流 |
+| **commit** | 在 GitHub 網頁上改完檔案後按的「存檔」，存檔後網站會自動更新 |
 
-詳細步驟與疑難排解：[docs/SETUP.md](docs/SETUP.md)
+## 3. 需要哪些帳號
 
-## 功能
+| 服務 | 用途 | 必要性 | 註冊網址 |
+|---|---|---|---|
+| GitHub | 放程式、自動抓資料、架網站 | **必要** | https://github.com |
+| FinMind | 追蹤清單的個股完整資料（3 年日線、法人、財報） | **必要** | https://finmindtrade.com |
+| cron-job.org | 準時觸發更新（GitHub 內建排程常延遲數小時） | 建議 | https://cron-job.org |
+| Google AI Studio | Gemini API 金鑰（AI 報告） | 選用 | https://aistudio.google.com |
+| Cloudflare | 保管 Gemini 金鑰的小服務（Worker） | 選用（用 AI 報告才需要） | https://dash.cloudflare.com/sign-up |
+
+全部都有免費方案，**不需要綁信用卡**。
+
+## 4. 設定總表（一張表看完）
+
+GitHub 的設定位置都在：repo → **Settings** → 左側 **Secrets and variables** → **Actions**。
+上方有 **Secrets** 和 **Variables** 兩個分頁，注意放對地方。
+
+| 步驟 | 在哪個網站產生 | 產生什麼 | 放到哪裡 | 名稱（完全照打） |
+|---|---|---|---|---|
+| 1 | FinMind 會員中心 | API token | GitHub → **Secrets** | `FINMIND_TOKEN` |
+| 4 | GitHub → 頭像 → Settings → Developer settings | Fine-grained 權杖（`github_pat_…`） | **cron-job.org** 的 Header（不是 GitHub） | `Authorization: Bearer …` |
+| 5 | Google AI Studio | Gemini 金鑰（`AIza…`） | GitHub → **Secrets** | `GEMINI_API_KEY` |
+| 5 | Cloudflare → Workers & Pages 右側欄 | Account ID（32 碼） | GitHub → **Secrets** | `CLOUDFLARE_ACCOUNT_ID` |
+| 5 | Cloudflare → My Profile → API Tokens | API 權杖 | GitHub → **Secrets** | `CLOUDFLARE_API_TOKEN` |
+| 5 | 自己想 | 通關密碼（12 字以上） | GitHub → **Secrets** | `AI_ACCESS_CODE` |
+| 6 | 自己填 | 名稱 + email | GitHub → **Variables** | `SEC_USER_AGENT` |
+
+> 這些設定都**不需要改程式碼、也不需要 push**。存好之後到 Actions 按 Run workflow 即可。
+
+---
+
+## 5. 逐步設定
+
+### 步驟 1：FinMind token（必要）
+
+1. 到 https://finmindtrade.com 註冊並登入
+2. 進入 **會員中心**（或「使用者資訊」），找到 **API Token**，按複製
+3. 打開 repo → **Settings** → **Secrets and variables** → **Actions** → 確認在 **Secrets** 分頁
+4. 按綠色 **New repository secret**
+   - **Name**：`FINMIND_TOKEN`
+   - **Secret**：貼上 token
+5. 按 **Add secret**
+
+> ⚠️ 如果 token 曾經貼在對話、截圖或程式碼裡，請先在 FinMind 重新產生一組新的，舊的視同外洩。
+
+### 步驟 2：開啟 GitHub Pages（必要）
+
+1. repo → **Settings** → 左側 **Pages**
+2. **Build and deployment** → **Source** 選 **GitHub Actions**（不是 Deploy from a branch）
+3. 不用按其他按鈕，選好就自動儲存
+
+> repo 必須是 **Public（公開）**。免費帳號把 repo 改成 Private，Pages 會被自動關閉，網站變成 404；
+> 改回 Public 後要回到這一步重新選一次 **GitHub Actions**，再執行步驟 3。
+
+### 步驟 3：第一次更新資料（必要）
+
+1. repo 上方點 **Actions**
+2. 左側選 **Update data & deploy** → 右側 **Run workflow** → mode 選 **full** → 綠色 **Run workflow**
+3. 約 3–5 分鐘後出現綠色勾勾 ✅，點進去，頁面上方的 **Annotations** 會顯示「資料更新…個來源正常」
+4. 打開網站 https://tingchen0329.github.io/tw-stock-dashboard/ ，看到追蹤清單總覽就成功了
+
+### 步驟 4：外部排程 cron-job.org（建議）
+
+**為什麼需要**：GitHub 內建排程在尖峰時常延遲好幾個小時甚至略過（實測盤中一次都沒跑）。
+cron-job.org 會準時「按門鈴」叫 GitHub 開始更新。
+
+**原理**：cron-job.org 需要一把「只能觸發這個 repo 更新」的 GitHub 權杖。
+方向是單向的：GitHub 發鑰匙給 cron-job.org，cron-job.org 的資料不用放到 GitHub。
+
+#### 4-1. 建立 GitHub 權杖
+
+1. 直接打開 https://github.com/settings/personal-access-tokens/new
+   （或：GitHub 右上角**頭像** → **Settings** → 左側最下方 **Developer settings** → **Personal access tokens** →
+   **Fine-grained tokens** → **Generate new token**）
+   > 注意是**帳號**的 Settings（頭像選單），不是 repo 的 Settings；repo 的 Settings 裡沒有 Developer settings
+2. 填寫：
+   - **Token name**：`cron-job tw-stock-dashboard`
+   - **Expiration**：選最長期限，並在行事曆記下到期日
+   - **Repository access**：**Only select repositories** → 選 `tw-stock-dashboard`
+   - **Permissions** → 按 **Add permissions** → 搜尋框輸入 `Actions` → 勾選 **Actions**（不是 Actions variables）
+     → 把它的 Access 改成 **Read and write**（Metadata: Read-only 會自動出現，保留）
+3. 按 **Generate token**，複製 `github_pat_` 開頭的整串（**只會顯示一次**）
+
+#### 4-2. 在 cron-job.org 建立兩個排程
+
+註冊 https://cron-job.org → **Cronjobs** → **Create cronjob**。兩個排程除了名稱和時間，其他完全相同：
+
+**COMMON 分頁**
+
+| 欄位 | 填寫 |
+|---|---|
+| Title | `台股交易日`（第二個填 `台股凌晨總經`） |
+| URL | `https://api.github.com/repos/tingchen0329/tw-stock-dashboard/actions/workflows/deploy.yml/dispatches` |
+| Execution schedule | 選 **Custom**（時間見下表） |
+
+**排程時間**（Custom 清單可複選：按住 **Ctrl**（Mac 為 ⌘）點選多個；按住 **Shift** 選連續範圍）
+
+| 排程 | Days of week | Hours | Minutes | 完成後的 Crontab expression |
+|---|---|---|---|---|
+| 台股交易日 | Monday～Friday | 9～14、16、19、21、23 | 30 | `30 9-14,16,19,21,23 * * 1-5` |
+| 台股凌晨總經 | Tuesday～Saturday | 2、5 | 40 | `40 2,5 * * 2-6` |
+
+Days of month、Months 保持全選（整列反灰）。
+
+**ADVANCED 分頁**
+
+| 欄位 | 填寫 |
+|---|---|
+| Time zone | **Asia/Taipei** |
+| Request method | **POST**（預設是 GET，一定要改，否則會 404） |
+| Headers（按 **+ ADD** 新增，共 4 列） | 見下表 |
+| Request body | `{"ref":"main","inputs":{"mode":"smart"}}` |
+
+| Key | Value |
+|---|---|
+| `Authorization` | `Bearer github_pat_……`（`Bearer` 後面**空一格**再貼權杖） |
+| `Accept` | `application/vnd.github+json` |
+| `X-GitHub-Api-Version` | `2022-11-28` |
+| `Content-Type` | `application/json`（或按藍色提示框的 **ADD CONTENT-TYPE HEADER NOW**） |
+
+**NOTIFICATIONS**：勾選 **execution fails**（失敗時寄信給你）
+
+按 **SAVE**，再按 **TEST RUN**：
+
+| 結果 | 意思 |
+|---|---|
+| **204 No Content** | 成功 ✅ GitHub Actions 頁面會出現一筆 `workflow_dispatch` 執行 |
+| 401 Unauthorized | 權杖貼錯、少了 `Bearer ` 的空格，或 Key 拼錯（`Authorization`） |
+| 403 | 權杖權限不是 Actions: Read and write |
+| 404 Not Found | Request method 不是 POST，或網址打錯 |
+| 422 | Request body 格式錯誤 |
+
+> 程式會依時間自動判斷要做什麼（smart 模式）：盤中更新行情、16:15 / 19:30 後完整更新個股、夜間只更新總經。
+> 重複或延遲觸發都不會浪費 FinMind 額度。
+
+### 步驟 5：AI 報告 Gemini + Cloudflare（選用）
+
+**為什麼要 Cloudflare**：Gemini 金鑰不能放在公開網頁裡（任何人都能拿去用）。
+所以用 Cloudflare 免費的小服務（Worker）保管金鑰，網頁把分析指令交給它，它再去問 Gemini。
+
+#### 5-1. Gemini API 金鑰
+
+1. 打開 https://aistudio.google.com/apikey ，用 Google 帳號登入
+2. 按 **Create API key** → 選專案（沒有就讓它自動建立 Default Gemini Project）→ 建立
+3. 在 **API Keys** 列表中按該列的 **複製圖示 ⧉**，得到 `AIza` 開頭的金鑰
+4. Billing Tier 顯示 **Free tier** 即可，**不要按 Set up billing**（免費方案用完只會暫時無法產生，不會扣款）
+
+#### 5-2. Cloudflare：子網域與 Account ID
+
+1. 註冊 https://dash.cloudflare.com/sign-up 並登入
+2. 左側 **Compute** → **Workers & Pages**
+3. 第一次進入會請你設定 **workers.dev 子網域**，取一個名字即可
+4. 頁面右側 **Account details** 可看到：
+   - **Account ID**（32 碼英數字）→ 複製
+   - **Subdomain**（例如 `xxx.workers.dev`）
+5. ⚠️ **不需要**按 **Create application**，也不要連結 GitHub repo。Worker 會由 GitHub Actions 自動建立。
+   如果已經建了，到該應用程式 → **Settings** → 最下方 **Delete** 刪除即可
+
+#### 5-3. Cloudflare API 權杖
+
+1. 右上角**頭像** → **My Profile** → 左側 **API Tokens** → **Create Token**
+2. 在範本清單找到 **Edit Cloudflare Workers** → 按 **Use template**（不要用 Custom token）
+3. **Permissions**：範本已自動帶好，全部保留不要改
+4. **Account Resources**：`Include` → 選你的帳號（`xxx's Account`）
+5. **Zone Resources**：`Include` → **All zones from an account** → 選你的帳號
+   （沒有網域也沒關係，這欄是必填）
+6. **Token expiration**：選 **1 year**（記下到期日）
+7. **Client IP address filtering**：**保持空白**（GitHub 每次執行的 IP 不同，填了會部署失敗）
+8. **Continue to summary** → **Create Token** → 按 **Copy**（**只會顯示一次**）
+
+#### 5-4. 想一組通關密碼 AI_ACCESS_CODE
+
+網站是公開的，任何人都看得到「產生 AI 報告」按鈕。通關密碼的作用是：
+**沒有密碼的人按了也不會呼叫 Gemini**，避免陌生人用光你的免費額度。
+
+- 自己想一組 12 字以上的密碼，例如 `Ting-Stock-2026-ai!`，**自己記住**
+- 第一次在網頁使用時輸入一次，之後會記在那台瀏覽器
+
+| | Gemini 金鑰 | AI_ACCESS_CODE |
+|---|---|---|
+| 是什麼 | Google 發的 API 金鑰 | 你自己訂的密碼 |
+| 誰會輸入 | 沒有人（只存在 GitHub / Cloudflare） | 你第一次使用時在網頁輸入 |
+| 外洩的後果 | 別人可以直接用你的 Google 額度 | 別人可以按你網站的 AI 按鈕；換掉密碼即可 |
+
+#### 5-5. 把 4 個值放進 GitHub Secrets
+
+repo → **Settings** → **Secrets and variables** → **Actions** → **Secrets** 分頁 → **New repository secret**，逐一新增：
+
+| Name | Secret |
+|---|---|
+| `GEMINI_API_KEY` | 5-1 的 Gemini 金鑰（`AIza…`） |
+| `CLOUDFLARE_ACCOUNT_ID` | 5-2 的 Account ID |
+| `CLOUDFLARE_API_TOKEN` | 5-3 的 Cloudflare 權杖 |
+| `AI_ACCESS_CODE` | 5-4 的通關密碼 |
+
+完成後 Secrets 列表應該有 5 個（加上步驟 1 的 `FINMIND_TOKEN`）。
+
+#### 5-6. 部署 AI 服務
+
+1. repo → **Actions** → 左側 **Deploy AI worker** → **Run workflow** → 綠色 **Run workflow**
+2. 約 1 分鐘後 ✅，點進去看 **Annotations**：
+   - **AI Worker 網址**：`https://tw-stock-ai.xxx.workers.dev`，health 中 `"keyConfigured":true`
+   - **AI 報告已啟用**：網址已自動寫入 `assets/ai.json` 並重新部署網站（**不用手動改檔或 push**）
+3. 再等約 3 分鐘（Update data & deploy 跑完）
+
+#### 5-7. 第一次使用
+
+1. 打開網站，按 **Ctrl + F5** 強制重新整理
+2. 打開任一檔個股（例如 2330）→ 按標題列 **產生 AI 報告（Gemini）**
+3. 頁面捲到最下方 → 輸入 `AI_ACCESS_CODE` → **儲存並產生報告**
+4. 約 10–40 秒後報告出現。之後在同一台瀏覽器按按鈕就直接產生
+
+詳細說明與疑難排解：[docs/AI.md](docs/AI.md)
+
+### 步驟 6：美股財報 SEC 聯絡資訊（選用）
+
+美國證管會（SEC）要求程式存取時註明「名稱 + 聯絡 email」，沒有的話會被拒絕（美股的財報、本益比顯示 N/A）。
+
+1. repo → **Settings** → **Secrets and variables** → **Actions** → 切到 **Variables** 分頁（不是 Secrets）
+2. **New repository variable**
+   - **Name**：`SEC_USER_AGENT`
+   - **Value**：`TW Stock Dashboard 你的email@example.com`
+3. **Actions** → **Update data & deploy** → **Run workflow**，mode 選 **full**
+
+> Variable 不加密、會出現在執行紀錄，所以這裡只放 email，不要放任何密碼。
+
+---
+
+## 6. 日常使用
+
+| 位置 | 功能 |
+|---|---|
+| 標題旁 **台股｜美股** | 切換市場 |
+| 追蹤列 **總覽** | 首頁：追蹤清單每檔一列，點標題排序、可篩選個股 / ETF，點一列開啟個股 |
+| 追蹤列 **選股** | 全市場選股：成長型 / 殖利率型兩組條件，門檻可自行調整 |
+| 搜尋框 | 輸入代號或名稱（2330、台積、２３３０都可以），按 `/` 快速跳到搜尋框 |
+| 個股頁 **產生 AI 報告（Gemini）** | 報告顯示在個股頁最下方 |
+| 個股頁 **產生分析指令** | 自動複製精簡版提示詞，可貼到 Claude、ChatGPT、Gemini 網頁版 |
+| 個股頁 **下載 CSV / Excel** | 匯出股價、月營收、法人、財報 |
+| 個股頁 **TradingView ↗** | 在新分頁開啟 TradingView 線圖 |
+| 頁首 **資料更新 …** | 點開可看每個資料來源是否正常 |
+
+網頁長時間開著不會自動更新，看到資料時間不對時按 **F5** 重新整理。
+
+## 7. 修改追蹤清單
+
+**台股**：`config/watchlist.csv`（順序 = 網頁顯示順序）
+
+- **加減幾檔**：在 GitHub 打開 `config/watchlist.csv` → 右上角 **鉛筆圖示** → 新增或刪除一行 → 右上角 **Commit changes** → 再按一次 **Commit changes**
+- **整份換掉**：整理好 CSV（有「股票代號」或「Symbol」欄即可，`2330`、`2330.TW`、`5347.TWO` 都看得懂）→
+  打開 repo 的 `config` 資料夾 → **Add file** → **Upload files** → 檔名用 `watchlist.csv` 覆蓋 → **Commit changes**
+- 存檔後幾分鐘網站自動更新，新加入的股票會自動補抓資料
+- 上限約 **70 檔**（FinMind 免費額度每小時 600 次；個股每檔約 8 次、ETF 約 4 次）
+
+**美股**：`config/us_watchlist.csv`，格式 `Symbol,Name`（例如 `NVDA,NVIDIA 輝達`），修改方式同上。
+
+## 8. 金鑰與權杖管理
+
+| 名稱 | 存放位置 | 會過期嗎 | 到期或外洩時 |
+|---|---|---|---|
+| `FINMIND_TOKEN` | GitHub Secrets | 依 FinMind 設定 | FinMind 重新產生 → 更新 Secret |
+| GitHub Fine-grained 權杖 | cron-job.org 兩個排程的 Header | 是（建立時設定） | 重新建立（步驟 4-1）→ 更新兩個排程的 `Authorization` |
+| `GEMINI_API_KEY` | GitHub Secrets → Cloudflare | 否 | AI Studio 刪除舊的、建新的 → 更新 Secret → 重跑 **Deploy AI worker** |
+| `CLOUDFLARE_API_TOKEN` | GitHub Secrets | 是（1 year） | Cloudflare 重新建立 → 更新 Secret |
+| `CLOUDFLARE_ACCOUNT_ID` | GitHub Secrets | 否 | — |
+| `AI_ACCESS_CODE` | GitHub Secrets → Cloudflare、你的瀏覽器 | 否 | 更新 Secret → 重跑 **Deploy AI worker** → 網頁 AI 區塊按 **更換通關密碼** |
+| `SEC_USER_AGENT` | GitHub Variables | 否 | — |
+
+**安全原則**
+
+- 金鑰只貼在各服務的設定頁和 GitHub Secrets，**不要貼在對話、截圖、Email 或任何檔案裡**
+- 截圖前把金鑰欄位捲到看不到的位置
+- 懷疑外洩：到產生它的網站按 **Revoke / Delete** 作廢，再建一把新的
+
+## 9. 常見問題
+
+| 狀況 | 原因 / 解法 |
+|---|---|
+| 網站顯示 404 | Pages 被關閉（常見原因：repo 曾改成 Private）。回到步驟 2 重新選 GitHub Actions，再執行步驟 3 |
+| 網頁顯示「還沒有資料」 | 還沒跑過 Update data & deploy，或 Pages Source 不是 GitHub Actions |
+| 橫幅「FinMind token 尚未設定」 | Secret 名稱不是 `FINMIND_TOKEN`，或放到了 Variables 分頁 |
+| 資料時間很舊 | 網頁太久沒重新整理（按 F5）；或 cron-job.org 排程失效（看 cron-job.org 的 History） |
+| cron-job.org TEST RUN 不是 204 | 見步驟 4-2 的結果對照表 |
+| Actions 出現「資料來源失敗」黃色警告 | 該資料源暫時失敗，其他資料照常更新；連續失敗再處理 |
+| 總覽表某檔顯示 N/A | 剛加入清單或額度用完，下一次執行會補抓；ETF 沒有本益比、營收、財報屬正常 |
+| 選股頁 EPS 大多是 N/A | 新一季財報公布期間（季底後約 45 天），可先清空「EPS」「營業利益率」條件 |
+| Deploy AI worker 警告「缺少 GitHub Secrets」 | 步驟 5-5 的 Secret 名稱打錯或少放 |
+| Deploy AI worker 出現 Authentication error | Cloudflare 權杖或 Account ID 貼錯；權杖要用 Edit Cloudflare Workers 範本 |
+| AI 區塊「通關密碼錯誤」 | 輸入的和 `AI_ACCESS_CODE` 不同（大小寫、空白） |
+| AI 區塊「Gemini 拒絕請求」 | `GEMINI_API_KEY` 錯誤或不完整 |
+| AI 區塊「免費額度暫時用完」 | 稍後再試，AI Studio 左側 **Rate Limit** 可看用量 |
+| 美股財報 N/A、Actions 出現 sec_tickers 403 | 尚未設定步驟 6 的 `SEC_USER_AGENT` |
+| 排程突然都不跑 | 公開 repo 60 天沒有任何 commit，GitHub 會停用排程；到 Actions 頁面按 Enable，或修改任一檔案 commit |
+| 本機雙擊 index.html 是空白 | 瀏覽器禁止直接讀檔，請用 `./scripts/preview.sh` |
+
+更多說明：[docs/SETUP.md](docs/SETUP.md)（資料更新時段）、[docs/SCHEDULER.md](docs/SCHEDULER.md)（外部排程）、[docs/AI.md](docs/AI.md)（AI 報告）
+
+---
+
+## 10. 費用
+
+預設配置 **每月 NT$0**。
+
+| 項目 | 方案 | 費用 | 本專案用量 / 說明 |
+|---|---|---|---|
+| GitHub repo + Actions | Free（公開 repo） | NT$0 | 公開 repo 的標準 runner 不計分鐘數。每交易日 13 次，各約 0.5–3 分鐘。若改私有 repo，每月有 2,000 分鐘免費額度，本專案約用 500 分鐘 |
+| GitHub Pages | Free | NT$0 | 網站約 2 MB；軟上限 1 GB 容量、每月 100 GB 流量 |
+| 證交所 / 櫃買 OpenAPI | 政府開放資料 | NT$0 | 全市場行情、本益比、三大法人 |
+| Yahoo Finance chart API | 非官方、免費 | NT$0 | 指數、匯率、盤中價。無服務保證，偶爾限流 |
+| FinMind 註冊會員 | Free | NT$0 | 每小時 600 次；收盤後完整更新約 510 次（68 檔），其他時段約 3 次。清單上限約 70 檔 |
+| Claude | 你現有的方案 | 不增加 | 貼上「分析指令」或在 Claude Code 使用 skill |
+| *選用* FinMind Backer | 付費 | NT$699/月 | 單日全市場批次下載（可做全市場篩選）、股權分散表（千張大戶）、還原股價 |
+| *選用* FinMind Sponsor | 付費 | NT$999/月 | 盤中即時快照、分點進出、八大行庫 |
+| Google Gemini API | 免費方案 | NT$0 | 按需分析，額度以 Google AI Studio 為準 |
+| Cloudflare Workers | Free | NT$0 | 保管 Gemini 金鑰的代理（每天 10 萬次請求額度） |
+| cron-job.org | Free | NT$0 | 外部排程，準時觸發更新（[設定](docs/SCHEDULER.md)） |
+| *選用* 自訂網域 | 網域商 | 約 NT$400–1,000/年 | 例如 stock.你的網域.tw |
+
+FinMind 價格取自 https://finmind.github.io/Pricing/ （2026-10）。分析框架中「千張大戶、借券、景氣燈號」
+在免費方案沒有資料，網頁與分析指令都會明確標示 N/A。
+
+---
+
+# 開發者資訊
+
+## 功能一覽
 
 | 區塊 | 內容 | 資料來源 |
 |---|---|---|
@@ -68,28 +423,6 @@ flowchart LR
 
 `/finmind` 與網頁使用**同一套** `assets/js/analytics.js` 計算，終端機與網頁的 KD、河流圖數字會一致。
 Skill 檔案取自 FinMind 官方 repo（Apache-2.0，見 `.claude/commands/finmind-references/NOTICE.md`）。
-
-## 費用
-
-預設配置 **每月 NT$0**。
-
-| 項目 | 方案 | 費用 | 本專案用量 / 說明 |
-|---|---|---|---|
-| GitHub repo + Actions | Free（公開 repo） | NT$0 | 公開 repo 的標準 runner 不計分鐘數。每交易日 13 次，各約 0.5–3 分鐘。若改私有 repo，每月有 2,000 分鐘免費額度，本專案約用 500 分鐘 |
-| GitHub Pages | Free | NT$0 | 網站約 2 MB；軟上限 1 GB 容量、每月 100 GB 流量 |
-| 證交所 / 櫃買 OpenAPI | 政府開放資料 | NT$0 | 全市場行情、本益比、三大法人 |
-| Yahoo Finance chart API | 非官方、免費 | NT$0 | 指數、匯率、盤中價。無服務保證，偶爾限流 |
-| FinMind 註冊會員 | Free | NT$0 | 每小時 600 次；收盤後完整更新約 510 次（68 檔），其他時段約 3 次。清單上限約 70 檔 |
-| Claude | 你現有的方案 | 不增加 | 貼上「分析指令」或在 Claude Code 使用 skill |
-| *選用* FinMind Backer | 付費 | NT$699/月 | 單日全市場批次下載（可做全市場篩選）、股權分散表（千張大戶）、還原股價 |
-| *選用* FinMind Sponsor | 付費 | NT$999/月 | 盤中即時快照、分點進出、八大行庫 |
-| Google Gemini API | 免費方案 | NT$0 | 按需分析，額度以 Google AI Studio 為準 |
-| Cloudflare Workers | Free | NT$0 | 保管 Gemini 金鑰的代理（每天 10 萬次請求額度） |
-| cron-job.org | Free | NT$0 | 外部排程，準時觸發更新（[設定](docs/SCHEDULER.md)） |
-| *選用* 自訂網域 | 網域商 | 約 NT$400–1,000/年 | 例如 stock.你的網域.tw |
-
-FinMind 價格取自 https://finmind.github.io/Pricing/ （2026-10）。分析框架中「千張大戶、借券、景氣燈號」
-在免費方案沒有資料，網頁與分析指令都會明確標示 N/A。
 
 ## 本機開發
 
