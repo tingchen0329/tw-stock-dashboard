@@ -10,7 +10,7 @@
   即使未來有人塞入惡意的股票名稱，也無法執行外部或行內腳本。
 -->
 <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://api.finmindtrade.com https://*.workers.dev; base-uri 'none'; form-action 'none'; object-src 'none'">
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://api.finmindtrade.com https://*.vercel.app; base-uri 'none'; form-action 'none'; object-src 'none'">
 <meta name="color-scheme" content="light dark">
 <link rel="stylesheet" href="assets/css/app.css">
 <!-- modulepreload：讓瀏覽器一開始就平行下載所有模組，不必等 main.js 解析完才發現依賴 -->
@@ -60,7 +60,7 @@
   <main id="stock" class="stock" aria-live="polite"></main>
 
   <footer class="foot">
-    資料來源：臺灣證券交易所、證券櫃檯買賣中心 OpenAPI，FinMind，Yahoo Finance，美國證管會 SEC EDGAR；AI 分析由 Google Gemini 產生。僅供研究參考，非投資建議。
+    資料來源：臺灣證券交易所、證券櫃檯買賣中心 OpenAPI，FinMind，Yahoo Finance，美國證管會 SEC EDGAR；AI 報告由 Google Gemini / Anthropic Claude 產生。僅供研究參考，非投資建議。
   </footer>
 </div>
 

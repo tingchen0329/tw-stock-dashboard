@@ -1,0 +1,6 @@
+{
+  "name": "tw-stock-ai",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" }
+}

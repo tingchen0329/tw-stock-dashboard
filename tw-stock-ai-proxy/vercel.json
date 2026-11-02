@@ -1,0 +1,5 @@
+{
+  "$comment": "固定在美國東岸（iad1）執行：Gemini / Claude API 都不接受香港機房送出的請求",
+  "regions": ["iad1"],
+  "functions": { "api/ai.js": { "maxDuration": 120 } }
+}

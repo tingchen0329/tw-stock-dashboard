@@ -2,6 +2,14 @@
 
 格式：[語意化版本](https://semver.org/lang/zh-TW/)。每個版本都有 git tag，可用 `git checkout v5.1.0` 回到舊版。
 
+## v6.6.0 — 2026-11-03
+
+- **AI 報告改用 Vercel 代理，Gemini 優先、Claude 備援**：Cloudflare 免費方案從台灣連線走香港機房（實測 `TW/HKG`），
+  Gemini 回 `User location is not supported`；Vercel Function 固定在美國東岸（iad1）。
+  Gemini 額度用完或失敗時自動改用 Claude（需設定 `ANTHROPIC_API_KEY`），報告下方註明使用的供應商
+- 移除 Cloudflare Worker（`worker/`、`ai-worker.yml`），改為 `tw-stock-ai-proxy/` 與 `ai-proxy.yml`
+- 按鈕改名「產生 AI 報告」；README 步驟 5 改寫
+
 ## v6.5.2 — 2026-11-02
 
 - 修正 AI 報告 `FAILED_PRECONDITION`：Cloudflare Worker 預設在離使用者最近的機房（台灣常走香港）執行，Gemini API 不開放香港；

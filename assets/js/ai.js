@@ -1,9 +1,9 @@
 /**
- * Gemini AI 分析區塊（個股頁最下方）
+ * AI 報告區塊（個股頁最下方）
  *
- * 流程：按標題列的「產生 AI 報告（Gemini）」或區塊內的按鈕 → 把「產生分析指令」同一份提示詞 POST 到 Cloudflare Worker（worker/ai.js）
- *       → Worker 用自己保管的 GEMINI_API_KEY 呼叫 Gemini → 回傳文字 → 這裡轉成畫面。
- * Gemini 金鑰永遠不會出現在網頁；網頁只需要「通關密碼」（AI_ACCESS_CODE，存在這台瀏覽器），
+ * 流程：按標題列的「產生 AI 報告」或區塊內的按鈕 → 把「產生分析指令」同一份提示詞 POST 到 AI 代理（tw-stock-ai-proxy/，Vercel）
+ *       → 代理用自己保管的金鑰呼叫 Gemini（失敗時改用 Claude）→ 回傳文字 → 這裡轉成畫面。
+ * AI 金鑰永遠不會出現在網頁；網頁只需要「通關密碼」（AI_ACCESS_CODE，存在這台瀏覽器），
  * 避免公開網站被陌生人拿來耗用你的免費額度。
  *
  * AI 回覆是 Markdown；這裡自己解析成 DOM（只用 textContent），不使用 innerHTML，回覆內容無法注入 HTML。
@@ -122,18 +122,18 @@ export function renderAiPanel({ url, code, dataDay, getPrompt }) {
   const key = `${code}|${dataDay}`;
   const body = h('div', { class: 'ai-body' });
   const section = h('section', { class: 'panel ai-panel', id: 'ai-report' },
-    h('h3', {}, 'AI 報告（Gemini）'),
-    h('p', { class: 'note' }, '把「產生分析指令」的內容交給 Google Gemini 分析。AI 產生的內容可能有誤，僅供參考，非投資建議。'),
+    h('h3', {}, 'AI 報告'),
+    h('p', { class: 'note' }, '把「產生分析指令」的內容交給 AI 分析：先用 Google Gemini（免費），額度用完或失敗時改用 Claude。AI 產生的內容可能有誤，僅供參考，非投資建議。'),
     body);
 
   const show = () => {
     const r = results.get(key);
     if (!url) {
-      body.replaceChildren(h('p', { class: 'note' }, 'AI 報告服務尚未設定：需要 Gemini 金鑰與 Cloudflare Worker，設定步驟見 docs/AI.md。'));
+      body.replaceChildren(h('p', { class: 'note' }, 'AI 報告服務尚未設定：設定步驟見 README 步驟 5。'));
       return;
     }
     if (r?.loading) {
-      body.replaceChildren(h('p', { class: 'ai-loading', role: 'status' }, 'Gemini 正在產生報告，約 20–90 秒…'));
+      body.replaceChildren(h('p', { class: 'ai-loading', role: 'status' }, 'AI 正在產生報告，約 20–90 秒…'));
       return;
     }
     const actions = h('div', { class: 'ai-actions' });
@@ -151,7 +151,9 @@ export function renderAiPanel({ url, code, dataDay, getPrompt }) {
     if (r?.error) parts.push(h('p', { class: 'banner warn' }, r.error));
     if (r?.text) {
       parts.push(h('div', { class: 'ai-result' }, renderMarkdown(r.text)));
-      parts.push(h('p', { class: 'note' }, `模型 ${r.model}｜產生於 ${F.when(r.createdAt)}${r.cached ? '（快取）' : ''}｜資料日 ${dataDay || 'N/A'}`));
+      const who = r.provider === 'claude' ? 'Claude' : r.provider === 'gemini' ? 'Gemini' : '';
+      parts.push(h('p', { class: 'note' }, `${who} ${r.model}｜產生於 ${F.when(r.createdAt)}${r.cached ? '（快取）' : ''}｜資料日 ${dataDay || 'N/A'}`
+        + (r.fallback ? '｜Gemini 無法使用，已改用 Claude' : '')));
     }
     body.replaceChildren(...parts);
   };

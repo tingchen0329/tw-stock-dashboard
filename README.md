@@ -23,7 +23,7 @@
    - [步驟 2：開啟 GitHub Pages（必要）](#步驟-2開啟-github-pages必要)
    - [步驟 3：第一次更新資料（必要）](#步驟-3第一次更新資料必要)
    - [步驟 4：外部排程 cron-job.org（建議）](#步驟-4外部排程-cron-joborg建議)
-   - [步驟 5：AI 報告 Gemini + Cloudflare（選用）](#步驟-5ai-報告-gemini--cloudflare選用)
+   - [步驟 5：AI 報告 Gemini + Claude（選用）](#步驟-5ai-報告-gemini--claude選用)
    - [步驟 6：美股財報 SEC 聯絡資訊（選用）](#步驟-6美股財報-sec-聯絡資訊選用)
 6. [日常使用](#6-日常使用)
 7. [修改追蹤清單](#7-修改追蹤清單)
@@ -46,12 +46,12 @@ cron-job.org ──觸發──▶ Actions：抓資料（證交所、櫃買、Fi
                                    你的瀏覽器
                                          │ 按「產生 AI 報告」
                                          ▼
-                    Cloudflare Worker（保管 Gemini 金鑰）──▶ Google Gemini
+                    Vercel 代理（保管 AI 金鑰）──▶ Gemini（免費）→ 失敗改用 Claude
 ```
 
 - **資料由 GitHub 幫你定時抓好**，網頁只讀整理好的檔案，所以打開很快
 - **所有金鑰都不會出現在網頁上**：網站是公開的，任何人按「檢視原始碼」都看得到網頁裡的東西，
-  所以金鑰只放在 GitHub Secrets 和 Cloudflare 這種「只有你看得到」的地方
+  所以金鑰只放在 GitHub Secrets 和 Vercel 這種「只有你看得到」的地方
 
 ## 2. 先認識幾個名詞
 
@@ -59,7 +59,7 @@ cron-job.org ──觸發──▶ Actions：抓資料（證交所、櫃買、Fi
 |---|---|
 | **repo**（儲存庫） | 放這個專案所有檔案的地方：https://github.com/tingchen0329/tw-stock-dashboard |
 | **GitHub Actions** | GitHub 提供的免費「自動執行程式」服務。本專案用它定時抓資料、部署網站。repo 上方的 **Actions** 分頁可以看每次執行結果 |
-| **workflow** | 一份 Actions 的工作清單。本專案有 3 個：**Update data & deploy**（抓資料＋更新網站）、**Deploy AI worker**（部署 AI 服務）、**CI**（測試） |
+| **workflow** | 一份 Actions 的工作清單。本專案有 3 個：**Update data & deploy**（抓資料＋更新網站）、**Deploy AI proxy**（部署 AI 報告代理）、**CI**（測試） |
 | **Run workflow** | 在 Actions 頁面手動執行某個 workflow 的按鈕 |
 | **GitHub Pages** | GitHub 提供的免費網站空間，網址 `你的帳號.github.io/repo名稱` |
 | **Secret（機密）** | 存在 GitHub 的加密值，例如 API 金鑰。存進去之後連你自己都看不到內容，只有 Actions 執行時能用 |
@@ -75,9 +75,10 @@ cron-job.org ──觸發──▶ Actions：抓資料（證交所、櫃買、Fi
 | FinMind | 追蹤清單的個股完整資料（3 年日線、法人、財報） | **必要** | https://finmindtrade.com |
 | cron-job.org | 準時觸發更新（GitHub 內建排程常延遲數小時） | 建議 | https://cron-job.org |
 | Google AI Studio | Gemini API 金鑰（AI 報告） | 選用 | https://aistudio.google.com |
-| Cloudflare | 保管 Gemini 金鑰的小服務（Worker） | 選用（用 AI 報告才需要） | https://dash.cloudflare.com/sign-up |
+| Vercel | 保管 AI 金鑰的小服務（代理） | 選用（用 AI 報告才需要） | https://vercel.com/signup |
+| Anthropic Console | Claude API 金鑰（Gemini 的備援，需預付） | 選用 | https://console.anthropic.com |
 
-全部都有免費方案，**不需要綁信用卡**。
+除了 Claude（預付制，選用）之外都有免費方案，**不需要綁信用卡**。
 
 ## 4. 設定總表（一張表看完）
 
@@ -89,8 +90,8 @@ GitHub 的設定位置都在：repo → **Settings** → 左側 **Secrets and va
 | 1 | FinMind 會員中心 | API token | GitHub → **Secrets** | `FINMIND_TOKEN` |
 | 4 | GitHub → 頭像 → Settings → Developer settings | Fine-grained 權杖（`github_pat_…`） | **cron-job.org** 的 Header（不是 GitHub） | `Authorization: Bearer …` |
 | 5 | Google AI Studio | Gemini 金鑰（`AIza…`） | GitHub → **Secrets** | `GEMINI_API_KEY` |
-| 5 | Cloudflare → Workers & Pages 右側欄 | Account ID（32 碼） | GitHub → **Secrets** | `CLOUDFLARE_ACCOUNT_ID` |
-| 5 | Cloudflare → My Profile → API Tokens | API 權杖 | GitHub → **Secrets** | `CLOUDFLARE_API_TOKEN` |
+| 5 | Anthropic Console（選用） | Claude 金鑰（`sk-ant-…`） | GitHub → **Secrets** | `ANTHROPIC_API_KEY` |
+| 5 | Vercel → Account Settings → Tokens | Vercel 權杖 | GitHub → **Secrets** | `VERCEL_TOKEN` |
 | 5 | 自己想 | 通關密碼（12 字以上） | GitHub → **Secrets** | `AI_ACCESS_CODE` |
 | 6 | 自己填 | 名稱 + email | GitHub → **Variables** | `SEC_USER_AGENT` |
 
@@ -202,82 +203,89 @@ Days of month、Months 保持全選（整列反灰）。
 > 程式會依時間自動判斷要做什麼（smart 模式）：盤中更新行情、16:15 / 19:30 後完整更新個股、夜間只更新總經。
 > 重複或延遲觸發都不會浪費 FinMind 額度。
 
-### 步驟 5：AI 報告 Gemini + Cloudflare（選用）
+### 步驟 5：AI 報告 Gemini + Claude（選用）
 
-**為什麼要 Cloudflare**：Gemini 金鑰不能放在公開網頁裡（任何人都能拿去用）。
-所以用 Cloudflare 免費的小服務（Worker）保管金鑰，網頁把分析指令交給它，它再去問 Gemini。
+**運作方式**：AI 金鑰不能放在公開網頁裡，所以用 **Vercel** 免費的小服務（代理）保管金鑰。
+網頁把分析指令交給代理，代理**先問 Gemini（免費）**，Gemini 額度用完或失敗時**改問 Claude（預付）**。
 
-#### 5-1. Gemini API 金鑰
+> 為什麼不用 Cloudflare：Cloudflare 免費方案從台灣連線會走香港機房，Gemini、Claude 都不開放香港。
+> Vercel 可以固定在美國執行。之前若設定過 Cloudflare，相關 Secrets 與 Worker 都可以刪除（見 5-7）。
+
+#### 5-1. Gemini API 金鑰（免費）
 
 1. 打開 https://aistudio.google.com/apikey ，用 Google 帳號登入
 2. 按 **Create API key** → 選專案（沒有就讓它自動建立 Default Gemini Project）→ 建立
-3. 在 **API Keys** 列表中按該列的 **複製圖示 ⧉**，得到 `AIza` 開頭的金鑰
-4. Billing Tier 顯示 **Free tier** 即可，**不要按 Set up billing**（免費方案用完只會暫時無法產生，不會扣款）
+3. 在 **API Keys** 列表按該列的 **複製圖示 ⧉**，得到 `AIza` 開頭的金鑰
+4. Billing Tier 顯示 **Free tier** 即可，**不要按 Set up billing**
+   > Google AI Pro 等會員方案只適用 Gemini 網頁版 / App，**不會**增加 API 額度
 
-#### 5-2. Cloudflare：子網域與 Account ID
+#### 5-2. Claude API 金鑰（選用，Gemini 的備援，需預付）
 
-1. 註冊 https://dash.cloudflare.com/sign-up 並登入
-2. 左側 **Compute** → **Workers & Pages**
-3. 第一次進入會請你設定 **workers.dev 子網域**，取一個名字即可
-4. 頁面右側 **Account details** 可看到：
-   - **Account ID**（32 碼英數字）→ 複製
-   - **Subdomain**（例如 `xxx.workers.dev`）
-5. ⚠️ **不需要**按 **Create application**，也不要連結 GitHub repo。Worker 會由 GitHub Actions 自動建立。
-   如果已經建了，到該應用程式 → **Settings** → 最下方 **Delete** 刪除即可
+1. 打開 https://console.anthropic.com ，註冊並登入
+2. 左側 **Settings** → **Billing** → **Buy credits**，儲值最低金額（例如 US$5）
+   - 這是**預付**：用完就停止，不會超額扣款；不要開 Auto reload 就不會自動扣款
+   - 建議到 **Settings** → **Limits** 設定每月花費上限
+3. 左側 **API Keys** → **Create Key** → Name 填 `tw-stock-dashboard` → **Create Key**
+4. 複製 `sk-ant-` 開頭的金鑰（**只會顯示一次**）
+5. 費用：每產生一份報告依字數計費，實際用量可在 console 的 **Usage** 查看
 
-#### 5-3. Cloudflare API 權杖
+> 不想付費可以跳過 5-2，只用 Gemini；Gemini 額度用完時報告會顯示「額度暫時用完」，稍後再試即可。
 
-1. 右上角**頭像** → **My Profile** → 左側 **API Tokens** → **Create Token**
-2. 在範本清單找到 **Edit Cloudflare Workers** → 按 **Use template**（不要用 Custom token）
-3. **Permissions**：範本已自動帶好，全部保留不要改
-4. **Account Resources**：`Include` → 選你的帳號（`xxx's Account`）
-5. **Zone Resources**：`Include` → **All zones from an account** → 選你的帳號
-   （沒有網域也沒關係，這欄是必填）
-6. **Token expiration**：選 **1 year**（記下到期日）
-7. **Client IP address filtering**：**保持空白**（GitHub 每次執行的 IP 不同，填了會部署失敗）
-8. **Continue to summary** → **Create Token** → 按 **Copy**（**只會顯示一次**）
+#### 5-3. Vercel 帳號與權杖（免費）
+
+1. 打開 https://vercel.com/signup → 方案選 **Hobby**（免費）→ **Continue with GitHub** 登入
+2. 打開 https://vercel.com/account/settings/tokens
+   （或：右上角**頭像** → **Account Settings** → 左側 **Tokens**）
+3. **Create Token**：
+   - **Token Name**：`github-actions-tw-stock`
+   - **Scope**：選你的個人帳號（Hobby）
+   - **Expiration**：選 **1 Year**（記下到期日）
+4. **Create** → 複製權杖（**只會顯示一次**）
+5. ⚠️ **不需要**在 Vercel 按 Add New / Import Project，代理會由 GitHub Actions 自動建立
 
 #### 5-4. 想一組通關密碼 AI_ACCESS_CODE
 
 網站是公開的，任何人都看得到「產生 AI 報告」按鈕。通關密碼的作用是：
-**沒有密碼的人按了也不會呼叫 Gemini**，避免陌生人用光你的免費額度。
+**沒有密碼的人按了也不會呼叫 AI**，避免陌生人用光你的額度。
 
 - 自己想一組 12 字以上的密碼，例如 `Ting-Stock-2026-ai!`，**自己記住**
 - 第一次在網頁使用時輸入一次，之後會記在那台瀏覽器
 
-| | Gemini 金鑰 | AI_ACCESS_CODE |
+| | AI 金鑰（Gemini / Claude） | AI_ACCESS_CODE |
 |---|---|---|
-| 是什麼 | Google 發的 API 金鑰 | 你自己訂的密碼 |
-| 誰會輸入 | 沒有人（只存在 GitHub / Cloudflare） | 你第一次使用時在網頁輸入 |
-| 外洩的後果 | 別人可以直接用你的 Google 額度 | 別人可以按你網站的 AI 按鈕；換掉密碼即可 |
+| 是什麼 | Google / Anthropic 發的 API 金鑰 | 你自己訂的密碼 |
+| 誰會輸入 | 沒有人（只存在 GitHub / Vercel） | 你第一次使用時在網頁輸入 |
+| 外洩的後果 | 別人可以直接用你的額度 | 別人可以按你網站的 AI 按鈕；換掉密碼即可 |
 
-#### 5-5. 把 4 個值放進 GitHub Secrets
+#### 5-5. 放進 GitHub Secrets
 
 repo → **Settings** → **Secrets and variables** → **Actions** → **Secrets** 分頁 → **New repository secret**，逐一新增：
 
-| Name | Secret |
-|---|---|
-| `GEMINI_API_KEY` | 5-1 的 Gemini 金鑰（`AIza…`） |
-| `CLOUDFLARE_ACCOUNT_ID` | 5-2 的 Account ID |
-| `CLOUDFLARE_API_TOKEN` | 5-3 的 Cloudflare 權杖 |
-| `AI_ACCESS_CODE` | 5-4 的通關密碼 |
+| Name | Secret | 必要性 |
+|---|---|---|
+| `VERCEL_TOKEN` | 5-3 的 Vercel 權杖 | 必要 |
+| `AI_ACCESS_CODE` | 5-4 的通關密碼 | 必要 |
+| `GEMINI_API_KEY` | 5-1 的 Gemini 金鑰（`AIza…`） | 與下一個至少一個 |
+| `ANTHROPIC_API_KEY` | 5-2 的 Claude 金鑰（`sk-ant-…`） | 選用 |
 
-完成後 Secrets 列表應該有 5 個（加上步驟 1 的 `FINMIND_TOKEN`）。
+已經存在的 Secret（例如之前設定過的 `GEMINI_API_KEY`、`AI_ACCESS_CODE`）不用重設。
 
-#### 5-6. 部署 AI 服務
+#### 5-6. 部署 AI 代理
 
-1. repo → **Actions** → 左側 **Deploy AI worker** → **Run workflow** → 綠色 **Run workflow**
-2. 約 1 分鐘後 ✅，點進去看 **Annotations**：
-   - **AI Worker 網址**：`https://tw-stock-ai.xxx.workers.dev`，health 中 `"keyConfigured":true`
-   - **AI 報告已啟用**：網址已自動寫入 `assets/ai.json` 並重新部署網站（**不用手動改檔或 push**）
-3. 再等約 3 分鐘（Update data & deploy 跑完）
+1. repo → **Actions** → 左側 **Deploy AI proxy** → **Run workflow** → 綠色 **Run workflow**
+2. 約 1–2 分鐘後 ✅，點進去看 **Annotations**：
+   - **AI 供應商**：Gemini / Claude 是否已設定
+   - **AI 代理網址**：`https://….vercel.app/api/ai`，後面要有 `"ok":true` 與 `"region":"iad1"`
+   - **AI 報告已啟用**：網址已自動寫入網站並重新部署（**不用手動改檔或 push**）
+3. 再等約 3 分鐘（Update data & deploy 跑完），網站按 **Ctrl + F5** 重新整理
+4. 打開任一檔個股 → 按 **產生 AI 報告** → 頁面捲到最下方 → 輸入 `AI_ACCESS_CODE` → **儲存並產生報告**
+5. 約 20–90 秒後報告出現，下方會註明用的是 Gemini 還是 Claude
 
-#### 5-7. 第一次使用
+#### 5-7. 清除舊的 Cloudflare 設定（之前設定過才需要）
 
-1. 打開網站，按 **Ctrl + F5** 強制重新整理
-2. 打開任一檔個股（例如 2330）→ 按標題列 **產生 AI 報告（Gemini）**
-3. 頁面捲到最下方 → 輸入 `AI_ACCESS_CODE` → **儲存並產生報告**
-4. 約 10–40 秒後報告出現。之後在同一台瀏覽器按按鈕就直接產生
+- GitHub Secrets：刪除 `CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`（各列右邊的垃圾桶）
+- Cloudflare：**Compute → Workers & Pages** → 點 `tw-stock-ai`、`tw-stock-gemini` → **Settings** → 最下方 **Delete**
+- Cloudflare 權杖：**My Profile → API Tokens** → 該權杖右邊 **⋯ → Delete**
 
 詳細說明與疑難排解：[docs/AI.md](docs/AI.md)
 
@@ -303,7 +311,7 @@ repo → **Settings** → **Secrets and variables** → **Actions** → **Secret
 | 追蹤列 **總覽** | 首頁：追蹤清單每檔一列，點標題排序、可篩選個股 / ETF，點一列開啟個股 |
 | 追蹤列 **選股** | 全市場選股：成長型 / 殖利率型兩組條件，門檻可自行調整 |
 | 搜尋框 | 輸入代號或名稱（2330、台積、２３３０都可以），按 `/` 快速跳到搜尋框 |
-| 個股頁 **產生 AI 報告（Gemini）** | 報告顯示在個股頁最下方 |
+| 個股頁 **產生 AI 報告** | Gemini（失敗改用 Claude）產生的報告，顯示在個股頁最下方 |
 | 個股頁 **產生分析指令** | 自動複製精簡版提示詞，可貼到 Claude、ChatGPT、Gemini 網頁版 |
 | 個股頁 **下載 CSV / Excel** | 匯出股價、月營收、法人、財報 |
 | 個股頁 **TradingView ↗** | 在新分頁開啟 TradingView 線圖 |
@@ -329,10 +337,10 @@ repo → **Settings** → **Secrets and variables** → **Actions** → **Secret
 |---|---|---|---|
 | `FINMIND_TOKEN` | GitHub Secrets | 依 FinMind 設定 | FinMind 重新產生 → 更新 Secret |
 | GitHub Fine-grained 權杖 | cron-job.org 兩個排程的 Header | 是（建立時設定） | 重新建立（步驟 4-1）→ 更新兩個排程的 `Authorization` |
-| `GEMINI_API_KEY` | GitHub Secrets → Cloudflare | 否 | AI Studio 刪除舊的、建新的 → 更新 Secret → 重跑 **Deploy AI worker** |
-| `CLOUDFLARE_API_TOKEN` | GitHub Secrets | 是（1 year） | Cloudflare 重新建立 → 更新 Secret |
-| `CLOUDFLARE_ACCOUNT_ID` | GitHub Secrets | 否 | — |
-| `AI_ACCESS_CODE` | GitHub Secrets → Cloudflare、你的瀏覽器 | 否 | 更新 Secret → 重跑 **Deploy AI worker** → 網頁 AI 區塊按 **更換通關密碼** |
+| `GEMINI_API_KEY` | GitHub Secrets → Vercel | 否 | AI Studio 刪除舊的、建新的 → 更新 Secret → 重跑 **Deploy AI proxy** |
+| `ANTHROPIC_API_KEY` | GitHub Secrets → Vercel | 否 | console 刪除舊的、建新的 → 更新 Secret → 重跑 **Deploy AI proxy** |
+| `VERCEL_TOKEN` | GitHub Secrets | 是（1 Year） | Vercel 重新建立 → 更新 Secret → 重跑 **Deploy AI proxy** |
+| `AI_ACCESS_CODE` | GitHub Secrets → Vercel、你的瀏覽器 | 否 | 更新 Secret → 重跑 **Deploy AI proxy** → 網頁 AI 區塊按 **更換通關密碼** |
 | `SEC_USER_AGENT` | GitHub Variables | 否 | — |
 
 **安全原則**
@@ -353,11 +361,13 @@ repo → **Settings** → **Secrets and variables** → **Actions** → **Secret
 | Actions 出現「資料來源失敗」黃色警告 | 該資料源暫時失敗，其他資料照常更新；連續失敗再處理 |
 | 總覽表某檔顯示 N/A | 剛加入清單或額度用完，下一次執行會補抓；ETF 沒有本益比、營收、財報屬正常 |
 | 選股頁 EPS 大多是 N/A | 新一季財報公布期間（季底後約 45 天），可先清空「EPS」「營業利益率」條件 |
-| Deploy AI worker 警告「缺少 GitHub Secrets」 | 步驟 5-5 的 Secret 名稱打錯或少放 |
-| Deploy AI worker 出現 Authentication error | Cloudflare 權杖或 Account ID 貼錯；權杖要用 Edit Cloudflare Workers 範本 |
+| Deploy AI proxy 警告「缺少 GitHub Secrets」 | 步驟 5-5 的 Secret 名稱打錯或少放 |
+| Deploy AI proxy 健康檢查失敗 | `VERCEL_TOKEN` 貼錯或過期 |
+| AI 區塊「Claude 預付額度不足」 | console.anthropic.com → Billing 儲值 |
 | AI 區塊「通關密碼錯誤」 | 輸入的和 `AI_ACCESS_CODE` 不同（大小寫、空白） |
-| AI 區塊「Gemini 拒絕請求」 | `GEMINI_API_KEY` 錯誤或不完整 |
-| AI 區塊「免費額度暫時用完」 | 稍後再試，AI Studio 左側 **Rate Limit** 可看用量 |
+| AI 區塊「API 金鑰無效」 | `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` 錯誤或不完整 |
+| AI 區塊「免費額度暫時用完」 | Gemini 額度用完且沒有 Claude 備援；稍後再試，或設定 `ANTHROPIC_API_KEY` |
+| AI 區塊「不接受這個地區的請求」 | 確認 Deploy AI proxy 的健康檢查顯示 `"region":"iad1"` |
 | 美股財報 N/A、Actions 出現 sec_tickers 403 | 尚未設定步驟 6 的 `SEC_USER_AGENT` |
 | 排程突然都不跑 | 公開 repo 60 天沒有任何 commit，GitHub 會停用排程；到 Actions 頁面按 Enable，或修改任一檔案 commit |
 | 本機雙擊 index.html 是空白 | 瀏覽器禁止直接讀檔，請用 `./scripts/preview.sh` |
@@ -380,8 +390,9 @@ repo → **Settings** → **Secrets and variables** → **Actions** → **Secret
 | Claude | 你現有的方案 | 不增加 | 貼上「分析指令」或在 Claude Code 使用 skill |
 | *選用* FinMind Backer | 付費 | NT$699/月 | 單日全市場批次下載（可做全市場篩選）、股權分散表（千張大戶）、還原股價 |
 | *選用* FinMind Sponsor | 付費 | NT$999/月 | 盤中即時快照、分點進出、八大行庫 |
-| Google Gemini API | 免費方案 | NT$0 | 按需分析，額度以 Google AI Studio 為準 |
-| Cloudflare Workers | Free | NT$0 | 保管 Gemini 金鑰的代理（每天 10 萬次請求額度） |
+| Google Gemini API | 免費方案 | NT$0 | AI 報告優先使用，額度以 Google AI Studio 為準 |
+| *選用* Claude API | 預付 | 最低儲值約 US$5 | Gemini 失敗時的備援，依用量扣除預付額度 |
+| Vercel | Hobby（免費） | NT$0 | 保管 AI 金鑰的代理 |
 | cron-job.org | Free | NT$0 | 外部排程，準時觸發更新（[設定](docs/SCHEDULER.md)） |
 | *選用* 自訂網域 | 網域商 | 約 NT$400–1,000/年 | 例如 stock.你的網域.tw |
 
@@ -398,7 +409,7 @@ FinMind 價格取自 https://finmind.github.io/Pricing/ （2026-10）。分析�
 |---|---|---|
 | 總覽（首頁） | 追蹤清單每檔一列：股價、60 日走勢、本益比、河流圖位階、營收 / EPS 年增、ROE、法人 20 日、均線、KD、RSI；可排序、篩選個股 / ETF | 同下 |
 | 美股 | 標題旁切換「台股｜美股」：美股追蹤清單總覽與個股頁（技術指標、近四季 EPS、毛利率、ROE、季營收年增），可開 TradingView 看線圖 | Yahoo Finance、美國證管會 SEC EDGAR |
-| AI 報告（Gemini） | 個股頁「產生 AI 報告（Gemini）」按鈕，把分析指令交給 Gemini，報告顯示在頁面最下方（[設定](docs/AI.md)） | Google Gemini（經 Cloudflare Worker） |
+| AI 報告 | 個股頁「產生 AI 報告」按鈕，把分析指令交給 Gemini（失敗改用 Claude），報告顯示在頁面最下方（[設定](docs/AI.md)） | Google Gemini / Anthropic Claude（經 Vercel 代理） |
 | 選股 | 全市場上市櫃個股：成長型（營收、獲利成長）、殖利率型（高殖利率、低本益比）兩組條件，門檻可自訂 | 證交所、櫃買開放資料（月營收、損益表、本益比） |
 | 搜尋 | 代號、名稱、部分名稱、全形數字、臺/台、產業別；`/` 快速聚焦、↑↓ Enter | FinMind TaiwanStockInfo |
 | 報價與估值 | 收盤 / 盤中價、本益比、股價淨值比、殖利率、三大法人 | 證交所、櫃買、Yahoo |
@@ -466,7 +477,7 @@ assets/
   js/format.js                數字與日期格式
 config/watchlist.csv          追蹤清單（Yahoo 自選股 CSV）
 config/us_watchlist.csv       美股追蹤清單
-worker/                       Gemini 代理（Cloudflare Worker）
+tw-stock-ai-proxy/            AI 報告代理（Vercel Function：Gemini → Claude）
 scripts/fetch_data.py         資料管線（GitHub Actions 執行）
 scripts/us_data.py            美股資料（Yahoo + SEC EDGAR）
 scripts/build_overview.mjs    總覽表資料（Actions 執行，與網頁同一套計算）

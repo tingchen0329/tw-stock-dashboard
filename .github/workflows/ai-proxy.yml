@@ -1,0 +1,108 @@
+# ─────────────────────────────────────────────────────────────────────
+# 部署「AI 報告」代理（Vercel Function，tw-stock-ai-proxy/）
+#
+# 金鑰流向：GitHub Secrets → 本 workflow 執行期間的環境變數 → Vercel 部署的環境變數（加密保存）
+#   網頁只拿得到代理網址（assets/ai.json），拿不到任何金鑰。
+#
+# 需要的 GitHub Secrets（設定步驟見 README 步驟 5、docs/AI.md）：
+#   VERCEL_TOKEN        Vercel 權杖（Account Settings → Tokens）
+#   AI_ACCESS_CODE      自訂通關密碼（網頁第一次使用時輸入）
+#   GEMINI_API_KEY      Google AI Studio 金鑰（免費，優先使用）
+#   ANTHROPIC_API_KEY   Claude API 金鑰（選用；Gemini 額度用完或失敗時改用）
+# ─────────────────────────────────────────────────────────────────────
+name: Deploy AI proxy
+
+on:
+  push:
+    branches: [main]
+    paths: ["tw-stock-ai-proxy/**", ".github/workflows/ai-proxy.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write             # 部署後自動把代理網址寫進 assets/ai.json
+  actions: write              # 再觸發一次網站部署，讓網頁拿到新網址
+
+concurrency:
+  group: ai-proxy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Unit test
+        run: node --test tests/js/ai_proxy.test.mjs
+
+      - name: Check secrets
+        id: chk
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          AI_ACCESS_CODE: ${{ secrets.AI_ACCESS_CODE }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          missing=""
+          [ -z "$VERCEL_TOKEN" ] && missing="$missing VERCEL_TOKEN"
+          [ -z "$AI_ACCESS_CODE" ] && missing="$missing AI_ACCESS_CODE"
+          [ -z "$GEMINI_API_KEY$ANTHROPIC_API_KEY" ] && missing="$missing GEMINI_API_KEY或ANTHROPIC_API_KEY"
+          if [ -n "$missing" ]; then
+            echo "::warning title=AI 代理未部署::缺少 GitHub Secrets：$missing（設定方式見 README 步驟 5）"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=AI 供應商::Gemini $([ -n "$GEMINI_API_KEY" ] && echo 已設定 || echo 未設定)、Claude $([ -n "$ANTHROPIC_API_KEY" ] && echo 已設定 || echo 未設定)"
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Deploy to Vercel
+        if: steps.chk.outputs.ready == 'true'
+        working-directory: tw-stock-ai-proxy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          AI_ACCESS_CODE: ${{ secrets.AI_ACCESS_CODE }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          args=(deploy --prod --yes --token "$VERCEL_TOKEN"
+                --env "AI_ACCESS_CODE=$AI_ACCESS_CODE" --env "BUILD=${GITHUB_SHA::7}")
+          [ -n "$GEMINI_API_KEY" ] && args+=(--env "GEMINI_API_KEY=$GEMINI_API_KEY")
+          [ -n "$ANTHROPIC_API_KEY" ] && args+=(--env "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
+          npx --yes vercel@latest "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+
+      - name: Health check
+        id: health
+        if: steps.chk.outputs.ready == 'true'
+        run: |
+          # 正式網址（Aliased）不受 Vercel 部署保護；每次部署產生的唯一網址需要登入才能看
+          url=$(grep -oE 'Aliased:? *https://[a-z0-9.-]+\.vercel\.app' "$RUNNER_TEMP/deploy.log" | grep -oE 'https://[^ ]+' | head -1)
+          [ -z "$url" ] && url="https://tw-stock-ai-proxy.vercel.app"
+          for i in 1 2 3 4 5 6; do
+            health=$(curl -sS -m 20 -w ' HTTP %{http_code}' "$url/api/ai" 2>&1 || true)
+            case "$health" in *'"ok":true'*) break;; esac
+            sleep 10
+          done
+          echo "::notice title=AI 代理網址::$url/api/ai  $health"
+          case "$health" in *'"ok":true'*) echo "url=$url/api/ai" >> "$GITHUB_OUTPUT";;
+            *) echo "::error title=AI 代理::健康檢查失敗，請看上方部署紀錄"; exit 1;; esac
+
+      - name: Publish proxy URL to the site
+        if: steps.health.outputs.url != ''
+        env:
+          URL: ${{ steps.health.outputs.url }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          want=$(printf '{"url": "%s"}' "$URL")
+          if [ "$(cat assets/ai.json)" = "$want" ]; then echo "assets/ai.json 已是最新"; exit 0; fi
+          echo "$want" > assets/ai.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: 設定 AI 代理網址"
+          git push
+          gh workflow run deploy.yml --ref main -f mode=auto
+          echo "::notice title=AI 報告已啟用::已寫入 assets/ai.json 並重新部署網站"

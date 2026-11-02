@@ -30,7 +30,7 @@ const state = {
   byCode: new Map(),
   current: null,      // { code, summary, ctrl, cleanup, range, tables, meta }
   range: '1Y',
-  aiUrl: null,        // Gemini 分析 Worker 網址（assets/ai.json）
+  aiUrl: null,        // AI 報告代理網址（assets/ai.json）
 };
 
 /** 標題旁「台股｜美股」切換：依目前頁面標示 */
@@ -40,7 +40,7 @@ function markMarket(us) {
   document.body.classList.toggle('us-mode', us);
 }
 
-/** 個股頁最下方的 Gemini 區塊（每次重畫後補上；分析結果保留在 ai.js 的記憶體中） */
+/** 個股頁最下方的 AI 報告區塊（每次重畫後補上；分析結果保留在 ai.js 的記憶體中） */
 function appendAi(code, dataDay, getPrompt) {
   $('stock').append(renderAiPanel({ url: state.aiUrl, code, dataDay, getPrompt }));
 }

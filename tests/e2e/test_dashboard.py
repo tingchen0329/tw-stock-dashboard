@@ -31,7 +31,7 @@ from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 SECRET = "E2E-SECRET-TOKEN-xyz"
-AI_URL = "https://tw-stock-ai.test.workers.dev"
+AI_URL = "https://tw-stock-ai-proxy.vercel.app/api/ai"
 
 
 def build_site(tmp: Path) -> tuple[Path, Path]:
@@ -313,13 +313,13 @@ class Dashboard(unittest.TestCase):
         self.page.locator(".ai-panel").wait_for()
         # 按鈕在「產生分析指令」左邊
         labels = self.page.locator(".stock-head .actions > *").all_inner_texts()
-        self.assertEqual(labels.index("產生 AI 報告（Gemini）") + 1, labels.index("產生分析指令"))
-        self.page.get_by_role("button", name="產生 AI 報告（Gemini）").click()
+        self.assertEqual(labels.index("產生 AI 報告") + 1, labels.index("產生分析指令"))
+        self.page.locator(".stock-head").get_by_role("button", name="產生 AI 報告").click()
         self.page.locator(".ai-result").filter(has_text="中性").wait_for()
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["code"], "2330")
         # 已有報告：再按只捲到報告，不重複呼叫
-        self.page.get_by_role("button", name="產生 AI 報告（Gemini）").click()
+        self.page.locator(".stock-head").get_by_role("button", name="產生 AI 報告").click()
         self.page.wait_for_timeout(300)
         self.assertEqual(len(calls), 1)
 
