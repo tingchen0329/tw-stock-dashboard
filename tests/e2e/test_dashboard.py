@@ -256,11 +256,14 @@ class Dashboard(unittest.TestCase):
         self.assertFalse(self.page.locator("#watchlist").is_visible())          # 美股頁隱藏台股追蹤列
         heads = self.page.locator(".ov thead").inner_text()
         self.assertNotIn("外資", heads)
-        self.assertNotIn("河流圖", heads)
+        self.assertIn("河流圖", heads)                                         # 美股河流圖由 SEC 財報 + 股價推算
+        self.assertRegex(self.page.locator(".us-notice").inner_text(), "美股(休市|盤前|盤中|已收盤)")
+        self.assertFalse(self.page.locator(".tw-notice").first.is_visible())  # 台股開休市提示在美股頁隱藏
         rows.first.click()
         self.page.locator(".stock-head h2").filter(has_text="NVDA").wait_for()
         self.assertIn("#us/NVDA", self.page.url)
-        self.assertEqual(self.page.locator(".chart svg").count(), 1)           # 只有股價圖（沒有河流圖、月營收）
+        self.assertEqual(self.page.locator(".chart svg").count(), 2)           # 股價圖 + 本益比河流圖（沒有月營收）
+        self.assertTrue(self.page.locator(".us-notice").is_visible())
         self.assertIn("100%", self.page.locator(".completeness summary").inner_text())
         tv = self.page.get_by_role("link", name="TradingView ↗")
         self.assertIn("symbol=NVDA", tv.get_attribute("href"))
@@ -270,6 +273,26 @@ class Dashboard(unittest.TestCase):
         # 回台股
         self.page.get_by_role("link", name="台股").click()
         self.page.locator(".ov tbody tr").nth(19).wait_for()
+        self.assertEqual(self.errors, [])
+
+    def test_us_screen(self):
+        self.page.goto(self.base + "#us")
+        self.page.get_by_role("link", name="美股選股").click()
+        self.page.locator(".screen h2").filter(has_text="S&P 500").wait_for()
+        self.assertIn("#us-screen", self.page.url)
+        self.assertEqual(self.page.locator(".us-nav a[aria-current='true']").inner_text(), "美股選股")
+        rows = self.page.locator(".ov tbody tr")
+        self.page.get_by_role("button", name="殖利率型").click()
+        codes = rows.evaluate_all("rs => rs.map(r => r.dataset.code)")
+        self.assertIn("KO", codes)
+        self.assertNotIn("NVDA", codes)
+        self.page.get_by_role("button", name="成長型").click()
+        codes = rows.evaluate_all("rs => rs.map(r => r.dataset.code)")
+        self.assertIn("NVDA", codes)
+        self.assertNotIn("KO", codes)
+        rows.filter(has_text="NVDA").first.click()
+        self.page.locator(".stock-head h2").filter(has_text="NVDA").wait_for()
+        self.assertIn("#us/NVDA", self.page.url)
         self.assertEqual(self.errors, [])
 
     def test_gemini_panel_sends_prompt_with_access_code_and_renders_safely(self):

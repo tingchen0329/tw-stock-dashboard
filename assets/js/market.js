@@ -78,3 +78,95 @@ export function marketNotice(st) {
       return null;
   }
 }
+
+/* ───────── 美股（NYSE / NASDAQ）───────── */
+
+// 紐約證交所休市日（官方公布；每年底補下一年）與提早收盤（美東 13:00）
+const NYSE_HOLIDAYS = {
+  '2026-01-01': '元旦', '2026-01-19': '馬丁路德金恩紀念日', '2026-02-16': '總統日', '2026-04-03': '耶穌受難日',
+  '2026-05-25': '陣亡將士紀念日', '2026-06-19': '六月節', '2026-07-03': '獨立紀念日（補假）', '2026-09-07': '勞動節',
+  '2026-11-26': '感恩節', '2026-12-25': '聖誕節',
+  '2027-01-01': '元旦', '2027-01-18': '馬丁路德金恩紀念日', '2027-02-15': '總統日', '2027-03-26': '耶穌受難日',
+  '2027-05-31': '陣亡將士紀念日', '2027-06-18': '六月節（補假）', '2027-07-05': '獨立紀念日（補假）', '2027-09-06': '勞動節',
+  '2027-11-25': '感恩節', '2027-12-24': '聖誕節（補假）',
+};
+const NYSE_EARLY = { '2026-11-27': 13 * 60, '2026-12-24': 13 * 60, '2027-11-26': 13 * 60 };
+const ET = 'America/New_York';
+
+/** 任意時區的 Date → 指定時區的日期與分鐘數 */
+function zoned(now, timeZone) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(now).map((x) => [x.type, x.value]));
+  return { date: `${p.year}-${p.month}-${p.day}`, minutes: Number(p.hour) * 60 + Number(p.minute) };
+}
+
+/** 美東某日某時（分鐘）→ Date（自動處理夏令 / 冬令時間） */
+export function etToDate(iso, minutes) {
+  let t = Date.parse(`${iso}T00:00:00Z`) + (minutes + 5 * 60) * 60000;   // 先假設 UTC-5
+  for (let i = 0; i < 2; i++) {
+    const z = zoned(new Date(t), ET);
+    const diff = (Date.parse(`${iso}T00:00:00Z`) - Date.parse(`${z.date}T00:00:00Z`)) / 60000 + (minutes - z.minutes);
+    t += diff * 60000;
+  }
+  return new Date(t);
+}
+
+export function usClosedReason(iso) {
+  const wd = new Date(iso + 'T00:00:00Z').getUTCDay();
+  if (wd === 0 || wd === 6) return '週末';
+  return NYSE_HOLIDAYS[iso] || null;
+}
+
+function usNextOpen(iso) {
+  let d = iso;
+  for (let i = 0; i < 14; i++) {
+    d = F.daysBefore(d, -1);
+    if (!usClosedReason(d)) return etToDate(d, 9 * 60 + 30);
+  }
+  return null;
+}
+
+/**
+ * 美股現在的狀態（美東時間）：盤前 04:00–09:30、盤中 09:30–16:00（提早收盤日 13:00）、盤後 16:00–20:00
+ * @returns {{state:'closed'|'pre'|'open'|'after'|'night', reason, etDate, open:Date|null, close:Date|null, nextOpen:Date|null}}
+ */
+export function usMarketStatus(now) {
+  const { date, minutes } = zoned(now, ET);
+  const reason = usClosedReason(date);
+  const closeMin = NYSE_EARLY[date] ?? 16 * 60;
+  const open = etToDate(date, 9 * 60 + 30);
+  const close = etToDate(date, closeMin);
+  const base = { etDate: date, reason, early: date in NYSE_EARLY };
+  if (reason) return { ...base, state: 'closed', open: null, close: null, nextOpen: usNextOpen(date) };
+  if (minutes < 4 * 60) return { ...base, state: 'night', open, close, nextOpen: open };
+  if (minutes < 9 * 60 + 30) return { ...base, state: 'pre', open, close, nextOpen: open };
+  if (minutes < closeMin) return { ...base, state: 'open', open, close, nextOpen: null };
+  if (minutes < 20 * 60) return { ...base, state: 'after', open, close, nextOpen: usNextOpen(date) };
+  return { ...base, state: 'night', open, close, nextOpen: usNextOpen(date) };
+}
+
+/** 台北時間 '11/03（二）22:30' */
+export function tpeLabel(d) {
+  if (!d) return F.NA;
+  const { date, minutes } = tpeClock(d);
+  return `${F.dayLabel(date)} ${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+}
+
+/** 美股頁上方提示 {level, text}；dataDay = 資料的最新交易日（美東） */
+export function usMarketNotice(st, dataDay) {
+  const data = dataDay ? `下列為 ${F.dayLabel(dataDay)}（美東）的資料` : '下列為最近一次更新的資料';
+  const next = st.nextOpen ? `，下次開盤：台北 ${tpeLabel(st.nextOpen)}` : '';
+  switch (st.state) {
+    case 'closed':
+      return { level: st.reason === '週末' ? 'info' : 'warn', text: `美股休市（${st.reason}）。${data}${next}。` };
+    case 'pre':
+      return { level: 'info', text: `美股盤前：台北 ${tpeLabel(st.open)} 開盤。${data}。` };
+    case 'open':
+      return { level: 'info', text: `美股盤中：台北 ${tpeLabel(st.close)} 收盤${st.early ? '（今天提早收盤）' : ''}。${data}，盤中價約延遲 15 分鐘。` };
+    case 'after':
+      return { level: 'info', text: `美股已收盤（盤後交易進行中）。${data}${next}。` };
+    default:
+      return { level: 'info', text: `美股已收盤。${data}${next}。` };
+  }
+}

@@ -28,3 +28,16 @@ test('缺資料不會被選入；條件留空代表不使用', () => {
 test('「大於」不含等於', () => {
   assert.equal(applyScreen([{ eps: 0 }], [{ key: 'eps', op: '>', value: 0 }]).length, 0);
 });
+
+test('美股選股：成長型 / 殖利率型預設條件', async () => {
+  const { US_PRESETS } = await import('../../assets/js/screen.js');
+  const us = [
+    { code: 'NVDA', revYoY: 60, epsYoY: 70, netMargin: 50, roe: 90, pe: 38, yield: 0.03, epsTTM: 4 },
+    { code: 'KO', revYoY: 3, epsYoY: 5, netMargin: 25, roe: 40, pe: 19, yield: 3.1, epsTTM: 3 },
+    { code: 'XOM', revYoY: -12, epsYoY: -20, netMargin: 9, roe: 12, pe: 14, yield: 3.5, epsTTM: 7 },   // 營收衰退太多
+    { code: 'LOSS', revYoY: 30, epsYoY: null, netMargin: -5, roe: -3, pe: null, yield: 4, epsTTM: -1 },
+  ];
+  assert.deepEqual(applyScreen(us, US_PRESETS.growth.criteria).map((r) => r.code), ['NVDA']);
+  assert.deepEqual(applyScreen(us, US_PRESETS.yield.criteria).map((r) => r.code), ['KO']);
+  for (const p of Object.values(US_PRESETS)) for (const c of p.criteria) assert.ok(['>=', '<=', '>', '<'].includes(c.op), c.key);
+});

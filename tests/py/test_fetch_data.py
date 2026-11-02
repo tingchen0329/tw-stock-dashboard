@@ -328,7 +328,13 @@ class USData(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             f = Path(d) / "us.csv"
             f.write_text("Symbol,Name\nnvda,NVIDIA\nBRK.B,Berkshire\nNVDA,dup\n2330,台股不收\n", "utf-8")
-            self.assertEqual(us_data.load_us_watchlist(f), ["NVDA", "BRK.B"])
+            self.assertEqual(us_data.load_us_watchlist(f), ["NVDA", "BRK-B"])
+            # Yahoo Finance 投資組合匯出：多餘欄位、同檔多列、指數 / 外國掛牌略過
+            f.write_text("Symbol,Current Price,Date,Time,Change,Open,High,Low,Volume,Trade Date,Purchase Price,Quantity\n"
+                         "AAPL,270.1,2026/11/02,16:00 EST,1.2,,,,,,250,10\n"
+                         "AAPL,270.1,2026/11/02,16:00 EST,1.2,,,,,,200,5\n"
+                         "^GSPC,6800,,,,,,,,,,\n2330.TW,1500,,,,,,,,,,\nBRK-B,500,,,,,,,,,,\nmsft,510,,,,,,,,,,\n", "utf-8")
+            self.assertEqual(us_data.load_us_watchlist(f), ["AAPL", "BRK-B", "MSFT"])
         self.assertGreater(len(us_data.load_us_watchlist(ROOT / "config/us_watchlist.csv")), 0)
 
 

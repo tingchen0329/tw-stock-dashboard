@@ -11,12 +11,12 @@
  *       c. 使用者若在途中改查別檔，前一個請求以 AbortController 取消 → 不會出現「資料錯置」
  */
 
-import { loadBootstrap, loadStock, loadScreen, loadUsOverview, loadUsStock, loadAiConfig } from './data.js';
+import { loadBootstrap, loadStock, loadScreen, loadUsOverview, loadUsStock, loadUsScreen, loadAiConfig } from './data.js';
 import { buildIndex, search, resolveExact, highlightParts, marketLabel } from './search.js';
 import { summarize, marketRow, usMarketRow } from './analytics.js';
 import { renderFreshness, renderWatchlist, renderMacro, renderStock, renderSetup, h } from './render.js';
 import { buildPrompt } from './prompt.js';
-import { marketStatus, marketNotice } from './market.js';
+import { marketStatus, marketNotice, usMarketStatus, usMarketNotice } from './market.js';
 import { renderOverview } from './overview.js';
 import { renderScreen } from './screen.js';
 import { renderAiPanel, triggerAi } from './ai.js';
@@ -249,6 +249,32 @@ async function showScreen() {
 
 const usPick = (sym) => { location.hash = `us/${sym}`; };
 
+/** 美股頁上方：子選單（總覽 / 選股）＋ 開休市提示（台北時間） */
+function usTop(active, dataDay) {
+  const n = usMarketNotice(usMarketStatus(new Date()), dataDay);
+  const link = (href, key, label) => h('a', { href, 'aria-current': String(active === key) }, label);
+  return h('div', { class: 'us-top' },
+    h('nav', { class: 'us-nav', 'aria-label': '美股' }, link('#us', 'overview', '美股總覽'), link('#us-screen', 'screen', '美股選股')),
+    h('p', { class: `banner us-notice ${n.level === 'warn' ? 'warn' : 'info'}` }, n.text));
+}
+
+async function showUsScreen() {
+  if (!state.boot?.meta) return;
+  state.current?.ctrl.abort();
+  state.current?.cleanup?.();
+  const cur = { code: 'us-screen', ctrl: new AbortController(), cleanup: null, summary: null };
+  state.current = cur;
+  markCurrentChip('');
+  markMarket(true);
+  document.title = '美股選股｜台股研究台';
+  $('stock').replaceChildren(h('p', { class: 'note' }, '載入美股選股資料中…'));
+  let data = null;
+  try { data = await loadUsScreen(); } catch { /* 顯示「尚未產生」 */ }
+  if (state.current !== cur) return;
+  renderScreen($('stock'), data, { watchlist: state.boot.meta.usWatchlist ?? [], onPick: usPick, market: 'us' });
+  $('stock').prepend(usTop('screen', data?.asOf?.date));
+}
+
 async function showUsOverview() {
   if (!state.boot?.meta) return;
   state.current?.ctrl.abort();
@@ -263,10 +289,11 @@ async function showUsOverview() {
   try { data = await loadUsOverview(); } catch { /* 顯示「尚未產生」 */ }
   if (state.current !== cur) return;
   renderOverview($('stock'), data, {
-    onPick: usPick, title: '美股追蹤清單總覽', hide: ['riverPct', 'f20', 't20'], dayNote: '美東收盤',
-    note: '資料來源：Yahoo Finance（日線）、美國證管會 SEC EDGAR（財報）。本益比 = 收盤 ÷ 近四季 EPS；營收年增為最新一季與去年同季比較。'
+    onPick: usPick, title: '美股追蹤清單總覽', hide: ['f20', 't20'], dayNote: '美東收盤',
+    note: '資料來源：Yahoo Finance（日線、配息）、美國證管會 SEC EDGAR（財報）。本益比 = 收盤 ÷ 近四季 EPS；河流圖位階 = 目前本益比在近三年的百分位（由財報與股價推算）；營收年增為最新一季與去年同季比較。'
       + 'ETF、外國公司（例如台積電 ADR）沒有 SEC 財報，顯示 N/A。清單在 config/us_watchlist.csv。',
   });
+  $('stock').prepend(usTop('overview', data?.dataDay));
 }
 
 async function showUsStock(sym) {
@@ -284,8 +311,16 @@ async function showUsStock(sym) {
     detail = await loadUsStock(sym, cur.ctrl.signal);
   } catch (e) {
     if (e.name === 'AbortError' || state.current !== cur) return;
-    $('stock').replaceChildren(h('p', { class: 'banner warn' }, `${sym} 不在美股追蹤清單（config/us_watchlist.csv），或資料尚未產生。`),
-      h('p', {}, h('a', { href: '#us' }, '← 回美股總覽')));
+    const inList = (state.boot.meta.usWatchlist ?? []).includes(sym);
+    const ext = (href, label) => h('a', { href, target: '_blank', rel: 'noopener' }, label);
+    $('stock').replaceChildren(usTop('', null),
+      h('p', { class: 'banner warn' }, inList ? `${sym} 的資料尚未產生：下一次 GitHub Actions 更新後就會出現。`
+        : `${sym} 不在美股追蹤清單，所以沒有完整個股頁（股價圖、河流圖、財報）。想追蹤的話，把代號加進 config/us_watchlist.csv（可直接用 Yahoo Finance 匯出的 CSV），下次更新就會出現。`),
+      h('p', { class: 'ext-links' },
+        ext(`https://finance.yahoo.com/quote/${encodeURIComponent(sym)}`, 'Yahoo Finance ↗'), ' · ',
+        ext(`https://www.tradingview.com/chart/?symbol=${encodeURIComponent(sym)}`, 'TradingView ↗'), ' · ',
+        ext(`https://finviz.com/quote.ashx?t=${encodeURIComponent(sym)}`, 'Finviz ↗'), ' · ',
+        h('a', { href: '#us-screen' }, '← 回美股選股'), ' · ', h('a', { href: '#us' }, '美股總覽')));
     return;
   }
   if (state.current !== cur) return;
@@ -302,6 +337,7 @@ async function showUsStock(sym) {
       onPrompt: openPrompt, onCSV: () => exportFile('csv'), onXLSX: () => exportFile('xlsx'),
       onAi: () => triggerAi(`US:${sym}`),
     });
+    $('stock').prepend(usTop('', mkt?.date));
     appendAi(`US:${sym}`, mkt?.date ?? '', () => buildPrompt(cur.summary, state.boot.meta, state.boot.macro?.items));
   };
   draw();
@@ -310,6 +346,7 @@ async function showUsStock(sym) {
 const route = () => {
   const c = decodeURIComponent(location.hash.slice(1));
   if (c === 'us') showUsOverview();
+  else if (c === 'us-screen') showUsScreen();
   else if (c.startsWith('us/')) showUsStock(c.slice(3).toUpperCase());
   else if (c === 'overview') showOverview();
   else if (c === 'screen') showScreen();
@@ -403,7 +440,7 @@ async function boot() {
   }
   renderFreshness($('freshness'), $('sources'), b.meta);
   const notice = marketNotice(marketStatus(new Date(), b.meta.market));   // 休市 / 盤前 / 盤中 / 資料日期
-  if (notice) banner(notice.text, notice.level === 'warn' ? 'warn' : 'info');
+  if (notice) banner(notice.text, `tw-notice ${notice.level === 'warn' ? 'warn' : 'info'}`);
   if (b.meta.demo) banner('目前顯示的是示範資料（合成數字，非真實行情）。部署到 GitHub 並設定 FINMIND_TOKEN 後會換成真實資料。', 'warn');
   if (!b.meta.tokenUsed && !b.meta.demo) banner('FinMind token 尚未設定：追蹤清單以匿名額度抓取，可能缺資料。請在 GitHub Secrets 新增 FINMIND_TOKEN。');
 

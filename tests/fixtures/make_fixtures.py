@@ -350,6 +350,52 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
         w(f"api_xbrl_companyfacts_CIK{cik:010d}.json.json", {"cik": cik, "entityName": name, "facts": {
             "us-gaap": g, "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [{"end": "2026-07-20", "val": 24_000_000_000}]}}}}})
 
+    # ── 美股選股：S&P 500 成分股清單 + SEC frames（全部公司同一季一個檔）+ Yahoo 近一年日線與配息 ──
+    sp = {"NVDA": ("NVIDIA", "Information Technology", 1045810, 0.06, 0.30, 0.0),
+          "AAPL": ("Apple Inc.", "Information Technology", 320193, 0.03, 0.26, 0.0),
+          "KO": ("Coca-Cola Company (The)", "Consumer Staples", 21344, 0.008, 0.24, 0.60),
+          "XOM": ("ExxonMobil", "Energy", 34088, -0.005, 0.10, 1.0),
+          "JNJ": ("Johnson & Johnson", "Health Care", 200406, 0.01, 0.20, 1.3)}
+    (out / "datasets_s-and-p-500-companies_main_data_constituents.csv").write_text(
+        "Symbol,Security,GICS Sector,GICS Sub-Industry,Headquarters Location,Date added,CIK,Founded\n"
+        + "".join(f"{t},{n},{sec},x,x,2000-01-01,{c},1900\n" for t, (n, sec, c, *_r) in sp.items()), "utf-8")
+    frames: dict[str, list] = {}
+    def frame(tag, unit, period, cik, val):
+        frames.setdefault(f"api_xbrl_frames_us-gaap_{tag}_{unit}_{period}.json.json", []).append({"cik": cik, "val": val})
+    for t, (n, sec, cik, g, margin, div) in sp.items():
+        r3 = random.Random(cik)
+        base = r3.uniform(1e10, 5e10)
+        for y in (2024, 2025, 2026):
+            tot = {"rev": 0.0, "ni": 0.0, "eps": 0.0}
+            for q in (1, 2, 3, 4):
+                if (y, q) > (2026, 2):
+                    break
+                rv = base * (1 + g) ** ((y - 2024) * 4 + q)
+                ni, e = rv * margin, round(rv * margin / 4e9, 3)
+                for k, v in (("rev", rv), ("ni", ni), ("eps", e)):
+                    tot[k] += v
+                if q < 4:                                   # 第四季只有全年（測試推算）
+                    frame("RevenueFromContractWithCustomerExcludingAssessedTax", "USD", f"CY{y}Q{q}", cik, round(rv))
+                    frame("NetIncomeLoss", "USD", f"CY{y}Q{q}", cik, round(ni))
+                    frame("EarningsPerShareDiluted", "USD-per-shares", f"CY{y}Q{q}", cik, e)
+                frame("StockholdersEquity", "USD", f"CY{y}Q{q}I", cik, round(rv * margin * 4 / 0.25))
+            if y < 2026:
+                frame("RevenueFromContractWithCustomerExcludingAssessedTax", "USD", f"CY{y}", cik, round(tot["rev"]))
+                frame("NetIncomeLoss", "USD", f"CY{y}", cik, round(tot["ni"]))
+                frame("EarningsPerShareDiluted", "USD-per-shares", f"CY{y}", cik, round(tot["eps"], 3))
+        if t not in us:                                     # NVDA / AAPL 已有 3 年日線 fixture
+            px0 = {"KO": 70.0, "XOM": 110.0, "JNJ": 160.0}[t]
+            ser = walk(random.Random(t), px0, 252, 0.0002, 0.01)
+            ts = [int(dt.datetime.combine(d, dt.time(20, 0)).timestamp()) for d in days[-252:]]
+            events = {"dividends": {str(ts[i]): {"amount": div, "date": ts[i]} for i in (30, 93, 156, 219)}}
+            w(f"yahoo_{t}.json", {"chart": {"result": [{
+                "meta": {"longName": n, "fullExchangeName": "NYSE", "currency": "USD", "gmtoffset": -18000},
+                "timestamp": ts, "events": events,
+                "indicators": {"quote": [{"open": ser, "high": ser, "low": ser, "close": ser,
+                                          "volume": [10**6] * len(ser)}]}}], "error": None}})
+    for name, data in frames.items():
+        w(name, {"taxonomy": "us-gaap", "data": data})
+
     (out / "README.txt").write_text("合成測試資料（非真實行情）。由 tests/fixtures/make_fixtures.py 產生。\n", "utf-8")
 
 

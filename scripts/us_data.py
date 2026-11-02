@@ -49,8 +49,28 @@ QUARTERS = 12          # 保留 3 年（12 季）
 QEND = {1: "03-31", 2: "06-30", 3: "09-30", 4: "12-31"}
 
 
+# Yahoo 代號的非美國交易所後綴（2330.TW、0700.HK、SHOP.TO…）：美股清單不收
+FOREIGN_SUFFIX = {"TW", "TWO", "HK", "T", "L", "TO", "V", "NE", "AX", "NZ", "SS", "SZ", "KS", "KQ",
+                  "DE", "F", "PA", "AS", "BR", "MI", "MC", "SW", "ST", "OL", "CO", "HE", "NS", "BO", "SI", "SA", "MX"}
+
+
+def normalize_us_symbol(cell: str) -> str | None:
+    """BRK.B → BRK-B（Yahoo / SEC 都用連字號）；指數（^GSPC）、期貨（ES=F）、外國掛牌回傳 None"""
+    s = cell.strip().upper()
+    if "." in s:
+        base, _, suf = s.rpartition(".")
+        if suf in FOREIGN_SUFFIX:
+            return None
+        s = f"{base}-{suf}"
+    return s if US_SYMBOL.fullmatch(s) else None
+
+
 def load_us_watchlist(path: Path) -> list[str]:
-    """美股清單 CSV：取標題含 Symbol / 代號 的欄位（沒有標題就取第一欄），保留順序、去重複"""
+    """
+    美股清單 CSV：自製清單或 Yahoo Finance 投資組合匯出（Portfolio → Export，
+    同一檔買多次會有多列、還有 Current Price 等欄位）。
+    取標題含 Symbol / 代號 / Ticker 的欄位（沒有標題就取第一欄），保留順序、去重複。
+    """
     if not path.exists():
         return []
     rows = [r for r in csv.reader(io.StringIO(path.read_text("utf-8-sig"))) if any(c.strip() for c in r)]
@@ -60,9 +80,9 @@ def load_us_watchlist(path: Path) -> list[str]:
     col = next((i for i, c in enumerate(head) if any(k in c for k in ("symbol", "代號", "ticker"))), None)
     out: list[str] = []
     for r in rows[1:] if col is not None else rows:
-        cell = (r[col] if col is not None and col < len(r) else r[0]).strip().upper()
-        if US_SYMBOL.fullmatch(cell) and cell not in out:
-            out.append(cell)
+        sym = normalize_us_symbol(r[col] if col is not None and col < len(r) else r[0])
+        if sym and sym not in out:
+            out.append(sym)
     return out
 
 
@@ -84,7 +104,9 @@ def parse_chart(payload: dict) -> dict | None:
         rows.append([d, *[round(v, 4) if isinstance(v, float) else v for v in vals]])
     if not rows:
         return None
-    return {"table": {"cols": PRICE_COLS, "rows": rows},
+    divs = sorted((dt.datetime.fromtimestamp(int(d.get("date") or k), tz).date().isoformat(), float(d.get("amount") or 0))
+                  for k, d in ((r.get("events") or {}).get("dividends") or {}).items())
+    return {"table": {"cols": PRICE_COLS, "rows": rows}, "dividends": divs,
             "name": meta.get("longName") or meta.get("shortName") or "",
             "exchange": meta.get("fullExchangeName") or meta.get("exchangeName") or "",
             "currency": meta.get("currency") or "USD"}
@@ -156,6 +178,38 @@ def parse_companyfacts(facts: dict) -> dict:
     return {"income": table(income), "balance": table(balance), "shares": shares[1] if shares else None}
 
 
+PER_COLS = ["date", "PER", "PBR", "dividend_yield"]     # 與 FinMind TaiwanStockPER 相同 → 沿用本益比河流圖
+FILING_LAG = dt.timedelta(days=45)                       # 季底後約 45 天才有財報：避免用「未來」的 EPS 算歷史本益比
+
+
+def per_table(price: dict, income: dict | None, balance: dict | None, shares: float | None,
+              dividends: list[tuple[str, float]]) -> dict | None:
+    """
+    每日本益比 / 股價淨值比 / 殖利率（美股沒有官方數字，用財報與股價推算）：
+      本益比 = 收盤 ÷ 當時已公布的近四季 EPS；股價淨值比 = 收盤 ÷（當時權益 ÷ 最新流通股數）；
+      殖利率 = 近 365 天現金股利 ÷ 收盤
+    """
+    eps = sorted((r[0], r[2]) for r in (income or {}).get("rows", []) if r[1] == "EPS" and r[2] is not None)
+    eq = sorted((r[0], r[2]) for r in (balance or {}).get("rows", []) if r[1] == "Equity" and r[2] is not None)
+    if not price or not price.get("rows"):
+        return None
+    out = []
+    for row in price["rows"]:
+        d, close = row[0], row[4]
+        if not close:
+            continue
+        day = dt.date.fromisoformat(d)
+        known = [v for q, v in eps if dt.date.fromisoformat(q) + FILING_LAG <= day][-4:]
+        ttm = sum(known) if len(known) == 4 else None
+        e = [v for q, v in eq if dt.date.fromisoformat(q) + FILING_LAG <= day]
+        bvps = e[-1] / shares if e and shares else None
+        div = sum(a for dd, a in dividends if day - dt.timedelta(days=365) < dt.date.fromisoformat(dd) <= day)
+        out.append([d, round(close / ttm, 2) if ttm and ttm > 0 else None,
+                    round(close / bvps, 2) if bvps and bvps > 0 else None,
+                    round(div / close * 100, 2)])
+    return {"cols": PER_COLS, "rows": out} if any(r[1] or r[3] for r in out) else None
+
+
 def fetch_us(tx, report, out: Path, symbols: list[str], full: bool, write_json: Callable[[Path, Any], int],
              now_iso: str, sec_ua: str) -> dict[str, int]:
     """
@@ -190,7 +244,7 @@ def fetch_us(tx, report, out: Path, symbols: list[str], full: bool, write_json: 
         old = prev[s] or {}
         errors = {}
         try:
-            chart = parse_chart(tx.get_json(f"{YAHOO_CHART}{s}", {"range": "3y", "interval": "1d"}))
+            chart = parse_chart(tx.get_json(f"{YAHOO_CHART}{s}", {"range": "3y", "interval": "1d", "events": "div"}))
         except Exception as e:  # noqa: BLE001
             chart, errors["price"] = None, str(e)[:120]
         tables = dict(old.get("tables") or {})
@@ -214,7 +268,11 @@ def fetch_us(tx, report, out: Path, symbols: list[str], full: bool, write_json: 
                 errors["income"] = "SEC 查無此代號（ETF 或非美國公司）"
         elif tables.get("income"):
             ok_sec += 1
-        detail = {"code": s, "name": (chart or {}).get("name") or old.get("name", ""),
+        dividends = (chart or {}).get("dividends") if chart else old.get("dividends", [])
+        per = per_table(tables.get("price"), tables.get("income"), tables.get("balance"), shares, dividends or [])
+        if per:
+            tables["per"] = per
+        detail = {"code": s, "dividends": dividends or [], "name": (chart or {}).get("name") or old.get("name", ""),
                   "exchange": (chart or {}).get("exchange") or old.get("exchange", ""),
                   "currency": (chart or {}).get("currency") or old.get("currency", "USD"),
                   "fetchedAt": now_iso if chart else old.get("fetchedAt"), "secAt": sec_at, "shares": shares,

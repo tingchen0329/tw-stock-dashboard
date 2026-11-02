@@ -62,6 +62,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import us_data  # noqa: E402  美股（Yahoo + SEC EDGAR）
+import us_screen  # noqa: E402  美股選股（S&P 500）
 
 # ──────────────────────────────────────────────────────────────────────
 # 常數設定
@@ -196,6 +197,9 @@ class HttpTransport:
         # 錯誤訊息只含 URL 路徑，不含 header（header 裡才有 token）
         raise RuntimeError(f"{'POST' if data else 'GET'} failed: {urllib.parse.urlsplit(url).path} ({last_err})")
 
+    def get_text(self, url: str) -> str:
+        return self._get(url).decode("utf-8-sig")
+
     def get_json(self, url: str, params: dict | None = None, kind: str = "public") -> Any:
         if params:
             url = f"{url}?{urllib.parse.urlencode(params)}"
@@ -254,6 +258,12 @@ class FixtureTransport:
         if not f.exists():
             raise RuntimeError(f"no fixture: {f.name}")
         return json.loads(f.read_text("utf-8"))
+
+    def get_text(self, url: str) -> str:
+        f = self.dir / self.fixture_name(url, None).removesuffix(".json")
+        if not f.exists():
+            raise RuntimeError(f"no fixture: {f.name}")
+        return f.read_text("utf-8-sig")
 
     def post_json(self, url: str, body: dict) -> Any:
         f = self.dir / f"taifex_quotes_{body.get('MarketType', '')}.json"
@@ -1183,6 +1193,15 @@ def main(argv: list[str] | None = None) -> int:
     # 美股：股價每次更新，SEC 財報只在 full 時重抓
     sizes.update(us_data.fetch_us(tx, report, out, us_watchlist, mode == "full", write_json,
                                   now_tpe().isoformat(timespec="seconds"), SEC_USER_AGENT))
+
+    # 美股選股（S&P 500）：財報與股價每天更新一次（full）；其餘時間沿用網站上的上一份
+    us_sc = out / "us" / "screen.json"
+    if mode == "full" or not us_sc.exists():
+        sc = us_screen.build_us_screen(tx, report, today, us_watchlist)
+        if sc and sc["rows"]:
+            sizes["us/screen.json"] = write_json(us_sc, sc)
+    if us_sc.exists():
+        sizes.setdefault("us/screen.json", us_sc.stat().st_size)
 
     # 3) 共用規格 + meta
     shutil.copy(REPO_ROOT / "assets" / "datasets.json", out / "datasets.json")

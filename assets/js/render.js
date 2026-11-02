@@ -150,8 +150,8 @@ export function renderStock(host, s, state) {
     tile('本益比', F.num(v.pe), '收盤 ÷ 近四季 EPS'),
     tile('股價淨值比', F.num(v.pb), '收盤 ÷ 每股淨值'),
     tile('近四季 EPS', F.num(f?.eps4), f?.latestQuarter ? `美元，至 ${f.latestQuarter}` : '無資料'),
+    tile('殖利率', F.pct(v.yield), '近一年現金股利 ÷ 收盤'),
     tile('季營收年增', F.pct(f?.revYoY, 1, true), '最新一季', F.dir(f?.revYoY)),
-    tile('毛利率', F.pct(f?.margins?.gross, 1), '最新一季'),
     tile('ROE', F.pct(f?.roe, 1), '近四季'),
   ) : h('div', { class: 'tiles' },
     tile('本益比', F.num(v.pe), v.source ? `${v.source}，${F.when(v.asOf)}` : '無資料'),
@@ -280,8 +280,8 @@ export function renderStock(host, s, state) {
   host.replaceChildren(
     head, quote, comp, tiles,
     h('div', { class: 'grid' }, pricePanel, techPanel),
-    // 美股沒有本益比歷史、月營收、法人籌碼 → 只顯示財報
-    ...(us ? [fundPanel] : [h('div', { class: 'grid even' }, riverPanel, revPanel), h('div', { class: 'grid even' }, chipPanel, fundPanel)]),
+    // 美股沒有月營收、法人籌碼 → 河流圖（由 SEC EPS 與股價推算）+ 財報
+    ...(us ? [h('div', { class: 'grid even' }, riverPanel, fundPanel)] : [h('div', { class: 'grid even' }, riverPanel, revPanel), h('div', { class: 'grid even' }, chipPanel, fundPanel)]),
   );
   return () => charts.forEach((ch) => ch.destroy());
 }

@@ -2,6 +2,15 @@
 
 格式：[語意化版本](https://semver.org/lang/zh-TW/)。每個版本都有 git tag，可用 `git checkout v5.1.0` 回到舊版。
 
+## v6.7.0 — 2026-11-03
+
+- **美股選股**（`#us-screen`）：S&P 500 成分股 + 美股追蹤清單，成長型 / 殖利率型兩組條件，門檻可自訂。
+  財報用 SEC EDGAR frames API（每個指標一次取全市場，不用逐家下載），股價與配息用 Yahoo；完整更新時重算（`scripts/us_screen.py`）
+- **美股開休市提示**：休市（週末 / 美國假日）、盤前、盤中、盤後，並換算成台北時間的開收盤時刻（含提早收盤、夏令時間）
+- **美股總覽與個股頁補齊**：殖利率（近一年配息）、股價淨值比、本益比河流圖（用已公布 45 天以上的財報推算每日本益比，避免偷看未來）
+- **Yahoo Finance 自選清單 CSV 匯入**：投資組合匯出檔可直接當 `us_watchlist.csv`；`BRK.B` 轉 `BRK-B`，指數與外國掛牌略過
+- 不在清單的美股改顯示說明與 Yahoo Finance / TradingView / Finviz 連結
+
 ## v6.6.0 — 2026-11-03
 
 - **AI 報告改用 Vercel 代理，Gemini 優先、Claude 備援**：Cloudflare 免費方案從台灣連線走香港機房（實測 `TW/HKG`），

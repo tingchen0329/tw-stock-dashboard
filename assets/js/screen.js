@@ -12,7 +12,7 @@ import { h } from './render.js';
 import { sortRows } from './overview.js';
 
 /** 預設條件。op：'>=' 至少、'<=' 至多、'>' 大於。value 清空代表不使用該條件 */
-export const PRESETS = {
+export const TW_PRESETS = {
   growth: {
     label: '成長型',
     desc: '營收與獲利同步成長、本業賺錢，估值不過熱',
@@ -42,6 +42,34 @@ export const PRESETS = {
   },
 };
 
+/** 美股（S&P 500）：資料來自 SEC 財報與 Yahoo 股價，欄位與台股不同 */
+export const US_PRESETS = {
+  growth: {
+    label: '成長型',
+    desc: '最新一季營收與 EPS 雙位數成長、淨利率與 ROE 高，估值不過熱',
+    sort: { key: 'revYoY', dir: -1 },
+    criteria: [
+      { key: 'revYoY', op: '>=', value: 15, label: '季營收年增', unit: '%' },
+      { key: 'epsYoY', op: '>=', value: 15, label: '季 EPS 年增', unit: '%' },
+      { key: 'netMargin', op: '>=', value: 10, label: '淨利率', unit: '%' },
+      { key: 'roe', op: '>=', value: 15, label: 'ROE', unit: '%' },
+      { key: 'pe', op: '<=', value: 40, label: '本益比', unit: '倍' },
+    ],
+  },
+  yield: {
+    label: '殖利率型',
+    desc: '高殖利率、仍在獲利、營收沒有明顯衰退，估值偏低',
+    sort: { key: 'yield', dir: -1 },
+    criteria: [
+      { key: 'yield', op: '>=', value: 3, label: '殖利率', unit: '%' },
+      { key: 'epsTTM', op: '>', value: 0, label: '近四季 EPS', unit: '美元' },
+      { key: 'roe', op: '>=', value: 10, label: 'ROE', unit: '%' },
+      { key: 'pe', op: '<=', value: 20, label: '本益比', unit: '倍' },
+      { key: 'revYoY', op: '>=', value: -5, label: '季營收年增', unit: '%' },
+    ],
+  },
+};
+
 const OPS = { '>=': (a, b) => a >= b, '<=': (a, b) => a <= b, '>': (a, b) => a > b };
 const OP_TEXT = { '>=': '≥', '<=': '≤', '>': '>' };
 
@@ -56,9 +84,9 @@ export function applyScreen(rows, criteria) {
 
 /* ───────── 畫面 ───────── */
 
-const STORE = 'screen:v1';
-const load = () => { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch { return {}; } };
-const save = (o) => { try { localStorage.setItem(STORE, JSON.stringify(o)); } catch { /* 無痕模式等：不記也能用 */ } };
+const storeKey = (market) => (market === 'us' ? 'screen:us:v1' : 'screen:v1');
+const load = (market) => { try { return JSON.parse(localStorage.getItem(storeKey(market))) || {}; } catch { return {}; } };
+const save = (market, o) => { try { localStorage.setItem(storeKey(market), JSON.stringify(o)); } catch { /* 無痕模式等：不記也能用 */ } };
 
 const pctCell = (v) => (F.isNum(v) ? h('span', { class: `num ${F.dir(v)}` }, F.pct(v, 1, true)) : h('span', { class: 'muted' }, F.NA));
 const plain = (text) => h('span', { class: text === F.NA ? 'muted' : '' }, text);
@@ -83,13 +111,36 @@ function columns(watch) {
   ];
 }
 
+function usColumns(watch) {
+  return [
+    { key: 'code', label: '股票', cell: (r) => [h('b', {}, r.code), h('span', { class: 'name' }, r.name), watch.has(r.code) ? h('span', { class: 'star', title: '已在美股追蹤清單' }, '★') : null] },
+    { key: 'sector', label: '產業', cell: (r) => h('span', { class: 'muted' }, r.sector || F.NA) },
+    { key: 'chgPct', label: '收盤', cell: (r) => [h('span', { class: 'px' }, F.price(r.close)), h('span', { class: `num ${F.dir(r.chgPct)} sub` }, F.isNum(r.chgPct) ? F.pct(r.chgPct, 2, true) : F.NA)] },
+    { key: 'r20', label: '20日', cell: (r) => pctCell(r.r20) },
+    { key: 'pe', label: '本益比', tip: '收盤 ÷ 近四季 EPS', cell: (r) => plain(F.num(r.pe, 1)) },
+    { key: 'yield', label: '殖利率', tip: '近一年現金股利 ÷ 收盤', cell: (r) => plain(F.pct(r.yield, 2)) },
+    { key: 'roe', label: 'ROE', tip: '近四季淨利 ÷ 最新股東權益', cell: (r) => plain(F.pct(r.roe, 1)) },
+    { key: 'revYoY', label: '季營收年增', tip: '最新一季營收與去年同季比較', cell: (r) => pctCell(r.revYoY) },
+    { key: 'epsYoY', label: '季 EPS 年增', tip: '最新一季 EPS 與去年同季比較', cell: (r) => pctCell(r.epsYoY) },
+    { key: 'netMargin', label: '淨利率', tip: '最新一季', cell: (r) => plain(F.pct(r.netMargin, 1)) },
+    { key: 'epsTTM', label: '近四季 EPS', cell: (r) => h('span', { class: F.isNum(r.epsTTM) && r.epsTTM < 0 ? 'down' : '' }, F.num(r.epsTTM, 2)) },
+    { key: 'period', label: '財報季', cell: (r) => plain(r.period || F.NA) },
+  ];
+}
+
 const MAX_ROWS = 300;   // 條件全部清空時避免一次畫 2,000 列
 
-export function renderScreen(host, screen, { watchlist = [], onPick }) {
+/**
+ * @param {object} o
+ * @param {'tw'|'us'} [o.market]   us：S&P 500（us/screen.json）
+ */
+export function renderScreen(host, screen, { watchlist = [], onPick, market = 'tw', before = null }) {
+  const us = market === 'us';
+  const PRESETS = us ? US_PRESETS : TW_PRESETS;
   const all = toObjects(screen);
   const watch = new Set(watchlist);
-  const cols = columns(watch);
-  const saved = load();
+  const cols = us ? usColumns(watch) : columns(watch);
+  const saved = load(market);
   const state = { preset: saved.preset in PRESETS ? saved.preset : 'growth', values: saved.values || {}, sort: null };
 
   const criteriaOf = (p) => PRESETS[p].criteria.map((c) => ({ ...c, value: (state.values[p] ?? {})[c.key] !== undefined ? state.values[p][c.key] : c.value }));
@@ -99,19 +150,19 @@ export function renderScreen(host, screen, { watchlist = [], onPick }) {
   const desc = h('p', { class: 'note' });
   const table = h('table', { class: 'ov' });
 
-  const persist = () => save({ preset: state.preset, values: state.values });
+  const persist = () => save(market, { preset: state.preset, values: state.values });
 
   const drawTable = () => {
     const crit = criteriaOf(state.preset);
     const sort = state.sort ?? PRESETS[state.preset].sort;
     const hits = sortRows(applyScreen(all, crit), sort.key, sort.dir);
-    count.replaceChildren(`符合 ${hits.length.toLocaleString()} 檔（全市場 ${all.length.toLocaleString()} 檔）`,
+    count.replaceChildren(`符合 ${hits.length.toLocaleString()} 檔（${us ? 'S&P 500 等' : '全市場'} ${all.length.toLocaleString()} 檔）`,
       hits.length > MAX_ROWS ? `，顯示前 ${MAX_ROWS} 檔` : '');
     table.replaceChildren(
       h('thead', {}, h('tr', {}, cols.map((c) => h('th', {
         scope: 'col', title: c.tip,
         'aria-sort': c.key === sort.key ? (sort.dir > 0 ? 'ascending' : 'descending') : null,
-        on: { click: () => { state.sort = { key: c.key, dir: c.key === sort.key ? -sort.dir : (c.key === 'code' || c.key === 'industry' ? 1 : -1) }; drawTable(); } },
+        on: { click: () => { state.sort = { key: c.key, dir: c.key === sort.key ? -sort.dir : (['code', 'industry', 'sector', 'period'].includes(c.key) ? 1 : -1) }; drawTable(); } },
       }, c.label)))),
       h('tbody', {}, hits.slice(0, MAX_ROWS).map((r) => h('tr', {
         dataset: { code: r.code }, title: `${r.code} ${r.name}`, on: { click: () => onPick(r.code) },
@@ -155,17 +206,27 @@ export function renderScreen(host, screen, { watchlist = [], onPick }) {
   const a = screen?.asOf ?? {};
   // 新一季財報公布期間（季底後約 45 天）多數公司還沒有新資料：提醒可清空財報條件
   const withEps = all.filter((r) => F.isNum(r.eps)).length;
-  const epsNote = all.length && withEps < all.length / 2
+  const epsNote = !us && all.length && withEps < all.length / 2
     ? h('p', { class: 'banner warn' }, `財報公布期間：目前只有 ${withEps.toLocaleString()} 檔有最新財報（EPS、利益率），其餘顯示 N/A 並會被條件排除。`
       + '要納入全部股票，請清空「今年累計 EPS」與「營業利益率」兩個條件。')
     : null;
+  const scope = us ? 'S&P 500' : '全市場';
+  count.dataset.scope = scope;
   host.replaceChildren(h('section', { class: 'overview screen' },
+    before,
     h('div', { class: 'overview-head' },
-      h('h2', {}, '全市場選股'),
-      h('p', { class: 'note' }, `收盤 ${F.when(a.twse)}；月營收 ${a.revenue ?? F.NA}；財報 ${a.income ?? F.NA}`)),
+      h('h2', {}, us ? '美股選股（S&P 500）' : '全市場選股'),
+      h('p', { class: 'note' }, us ? `股價 ${F.when(a.date)}；財報 ${a.income ?? F.NA}`
+        : `收盤 ${F.when(a.twse)}；月營收 ${a.revenue ?? F.NA}；財報 ${a.income ?? F.NA}`)),
     epsNote, tabs, desc, form, count,
-    all.length ? h('div', { class: 'ov-wrap' }, table) : h('p', { class: 'note' }, '選股資料尚未產生：下一次 GitHub Actions 更新後就會出現。'),
-    h('p', { class: 'note' }, '上市、上櫃個股（不含 ETF），資料來自證交所與櫃買中心開放資料。條件留空代表不使用。缺資料的股票不會被選入。'
-      + 'ROE 為推估值（股價淨值比 ÷ 本益比）；EPS 與利益率為今年累計至最新一季。★ 表示已在追蹤清單。'),
+    all.length ? h('div', { class: 'ov-wrap' }, table) : h('p', { class: 'note' }, '選股資料尚未產生：下一次 GitHub Actions 完整更新後就會出現。'),
+    h('p', { class: 'note' }, us
+      ? 'S&P 500 成分股與美股追蹤清單。財報來自美國證管會 SEC EDGAR（最新一季；第四季由全年減前三季推算），股價與配息來自 Yahoo Finance，每天更新一次。'
+        + '條件留空代表不使用；缺資料的股票不會被選入。★ 表示已在美股追蹤清單。'
+      : '上市、上櫃個股（不含 ETF），資料來自證交所與櫃買中心開放資料。條件留空代表不使用。缺資料的股票不會被選入。'
+        + 'ROE 為推估值（股價淨值比 ÷ 本益比）；EPS 與利益率為今年累計至最新一季。★ 表示已在追蹤清單。'),
     h('p', { class: 'note' }, '這是依條件篩選的結果，不是買賣建議。')));
 }
+
+/** 舊名稱（測試與外部程式使用） */
+export const PRESETS = TW_PRESETS;

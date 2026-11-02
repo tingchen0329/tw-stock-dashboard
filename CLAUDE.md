@@ -20,7 +20,8 @@ python tests/bench/run_bench.py                # 新舊版效能比較
 - `fetch_data.py --mode full|auto|macro --base-url`：先取回網站上的上一份資料。full（16:23、19:37）個股全部重抓；auto（盤中、push）個股只抓缺的；macro（夜間）只更新總經。取不到網站資料就改 full。
 - `--mode smart`（排程用）：`decide_mode()` 依現在時間與 meta.fullAt 選 full / auto / macro；主要由 cron-job.org 呼叫 workflow_dispatch（docs/SCHEDULER.md），GitHub schedule 只留 2 個備援。
 - `screen.json`：全市場選股資料（證交所 t187ap05_L / t187ap06_L_*、櫃買 mopsfin_t187ap05_O / mopsfin_t187ap06_O_*），條件在 `assets/js/screen.js`。不花 FinMind 額度。
-- 美股：`scripts/us_data.py`（Yahoo 3 年日線 + SEC companyfacts，轉成與 FinMind 相同的表格格式）→ `us/stock/<代號>.json`；`config/us_watchlist.csv`。網頁路由 `#us`、`#us/NVDA`，`analytics.usMarketRow()` 算本益比 / 股價淨值比。
+- 美股：`scripts/us_data.py`（Yahoo 3 年日線 + SEC companyfacts，轉成與 FinMind 相同的表格格式）→ `us/stock/<代號>.json`；`config/us_watchlist.csv`。網頁路由 `#us`、`#us/NVDA`、`#us-screen`，`analytics.usMarketRow()` 算本益比 / 股價淨值比；`per_table()` 產生每日 PER（只用公布 45 天以上的 EPS）。
+- 美股選股：`scripts/us_screen.py`（S&P 500 清單 + SEC frames API + Yahoo）→ `us/screen.json`，只在 full 或檔案不存在時重建；條件在 `screen.js` 的 `US_PRESETS`。美股開休市在 `market.js` 的 `usMarketStatus()`（NYSE_HOLIDAYS 每年要補）。
 - AI 報告：`tw-stock-ai-proxy/api/ai.js`（Vercel Function，固定 iad1；Gemini 優先、失敗改 Claude；保管 GEMINI_API_KEY / ANTHROPIC_API_KEY / AI_ACCESS_CODE，由 `.github/workflows/ai-proxy.yml` 部署並自動寫 `assets/ai.json`）。不用 Cloudflare：免費方案從台灣走香港機房，Gemini / Claude 都不開放香港。AI 金鑰絕不可出現在網頁。
 - `scripts/build_overview.mjs`：fetch 之後執行，用 analytics.js 產生 `overview.json`（網頁首頁總覽表）。
 - `config/watchlist.csv`：追蹤清單（Yahoo 自選股 CSV，順序即顯示順序）。約 70 檔是 FinMind 免費額度上限（`test_repo_watchlist_is_valid` 會檢查）。

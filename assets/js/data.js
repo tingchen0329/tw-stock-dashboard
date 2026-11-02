@@ -55,6 +55,7 @@ export async function loadBootstrap() {
 const OPT = { ttl: 10 * 60 * 1000, persist: true, timeout: 20000 };
 /** 美股總覽（us/overview.json）與個股（us/stock/<代號>.json） */
 export const loadUsOverview = () => fetchJSON(v('us/overview.json', usVersion), OPT);
+export const loadUsScreen = () => fetchJSON(v('us/screen.json', usVersion), { ttl: 10 * 60 * 1000, persist: true, timeout: 20000 });
 export const loadUsStock = (sym, signal) => fetchJSON(v(`us/stock/${encodeURIComponent(sym)}.json`, usVersion), { ...OPT, signal });
 /** AI 報告代理網址（assets/ai.json，Deploy AI proxy 自動填入）；沒有就回傳 null */
 export const loadAiConfig = () => fetchJSON('./assets/ai.json', { ttl: DAY, timeout: 8000 }).then((c) => c?.url || null, () => null);
