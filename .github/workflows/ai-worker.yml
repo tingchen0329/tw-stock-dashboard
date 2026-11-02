@@ -75,13 +75,20 @@ jobs:
           npx --yes wrangler@4 secret bulk "$f"
           rm -f "$f"
 
+      - name: Deploy again (make sure the new code is live)
+        # wrangler secret bulk 會以「先前的版本」再建一版並上線，曾讓新程式碼被舊版蓋掉（2026-11-02 實際發生）。
+        # 最後再部署一次，確保線上是這次的程式碼（已存的 Secret 會保留）
+        if: steps.chk.outputs.ready == 'true'
+        working-directory: worker
+        run: npx --yes wrangler@4 deploy 2>&1 | tee -a "$RUNNER_TEMP/deploy.log"
+
       - name: Health check
         id: health
         if: steps.chk.outputs.ready == 'true'
         run: |
           url=$(grep -oE 'https://[a-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/deploy.log" | head -1)
           if [ -z "$url" ]; then echo "::error title=AI Worker::部署輸出中找不到 workers.dev 網址"; exit 1; fi
-          sleep 5
+          sleep 15
           health=$(curl -fsS "$url/health" || echo '{"ok":false}')
           echo "::notice title=AI Worker 網址::$url  health=$health"
           echo "url=$url" >> "$GITHUB_OUTPUT"
