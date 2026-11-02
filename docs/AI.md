@@ -51,7 +51,8 @@ Actions → **Deploy AI worker** → **Run workflow**。約 1 分鐘完成，wor
 → **儲存並產生報告**。通關密碼只存在這台瀏覽器，之後按按鈕就直接產生。
 
 ## 調整
-- **換模型**：`worker/wrangler.toml` 的 `GEMINI_MODEL`（模型名稱見 https://ai.google.dev/gemini-api/docs/models ），push 後自動重新部署
+- **換模型**：`worker/wrangler.toml` 的 `GEMINI_MODELS`（逗號分隔、依序嘗試，預設 `gemini-4-argon,gemini-3.8-flash`；第一個額度用完或免費方案不提供時自動改用下一個。模型名稱見 https://ai.google.dev/gemini-api/docs/models ），push 後自動重新部署
+- **執行地區**：wrangler.toml 的 `[placement] region = "gcp:us-central1"`。Cloudflare 預設在離你最近的機房執行，台灣常走香港，而 Gemini API 不開放香港，會出現 `FAILED_PRECONDITION` / `User location is not supported`
 - **換通關密碼**：更新 GitHub Secret `AI_ACCESS_CODE` → 重新執行 Deploy AI worker → 網頁按「更換通關密碼」
 - **停用**：把 `assets/ai.json` 的 `url` 改成空字串
 
@@ -61,4 +62,5 @@ Actions → **Deploy AI worker** → **Run workflow**。約 1 分鐘完成，wor
 | 通關密碼錯誤 | 與 `AI_ACCESS_CODE` 不符（大小寫、空白） |
 | 不允許的來源網站 | 從 `ALLOWED_ORIGINS`（wrangler.toml）以外的網址開啟 |
 | Gemini 免費額度暫時用完 | 等一段時間再試，額度見 Google AI Studio |
-| Gemini 拒絕請求 | 金鑰錯誤或模型名稱已停用：檢查 `GEMINI_API_KEY` 與 `GEMINI_MODEL` |
+| Gemini 拒絕請求 | 金鑰錯誤或模型名稱已停用：檢查 `GEMINI_API_KEY` 與 `GEMINI_MODELS`；括號內是 Google 的原始錯誤訊息 |
+| Gemini 不接受這個地區的請求 / FAILED_PRECONDITION | Worker 在 Gemini 不支援的地區執行；確認 wrangler.toml 有 `[placement]` 後重新執行 Deploy AI worker |

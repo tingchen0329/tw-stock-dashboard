@@ -11,7 +11,7 @@
  *   * 同一檔、同一資料日、同一份指令的結果快取 6 小時，不重複呼叫 Gemini
  *   * 指令長度上限 12,000 字
  *
- * 環境變數（wrangler.toml [vars]）：GEMINI_MODEL、ALLOWED_ORIGINS
+ * 環境變數（wrangler.toml [vars]）：GEMINI_MODELS（依序嘗試，逗號分隔）、ALLOWED_ORIGINS
  * Secrets（GitHub Actions 寫入）：GEMINI_API_KEY、AI_ACCESS_CODE
  */
 
@@ -44,7 +44,8 @@ async function sha256(text) {
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
-    const model = env.GEMINI_MODEL || 'gemini-3.8-flash';
+    const models = (env.GEMINI_MODELS || env.GEMINI_MODEL || 'gemini-3.8-flash').split(',').map((x) => x.trim()).filter(Boolean);
+    const model = models[0];
     const allowed = (env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
     const origin = req.headers.get('Origin') || '';
     const cors = {
@@ -57,7 +58,7 @@ export default {
 
     if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
     if (req.method === 'GET' && url.pathname === '/health') {
-      return json({ ok: true, model, keyConfigured: !!env.GEMINI_API_KEY, accessCodeConfigured: !!env.AI_ACCESS_CODE }, 200, cors);
+      return json({ ok: true, models, colo: req.cf?.colo, keyConfigured: !!env.GEMINI_API_KEY, accessCodeConfigured: !!env.AI_ACCESS_CODE }, 200, cors);
     }
     if (req.method !== 'POST') return json({ error: '只接受 POST' }, 405, cors);
     if (!allowed.includes(origin)) return json({ error: '不允許的來源網站' }, 403, cors);
@@ -78,26 +79,42 @@ export default {
       if (hit) return json({ ...(await hit.json()), cached: true }, 200, cors);
     }
 
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM }] },
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.3, maxOutputTokens: 8192 },
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      const msg = res.status === 429 ? 'Gemini 免費額度暫時用完，請稍後再試'
-        : res.status === 400 || res.status === 403 ? `Gemini 拒絕請求（${data.error?.status || res.status}）：請確認 GEMINI_API_KEY 與模型 ${model}`
-          : `Gemini 錯誤 HTTP ${res.status}`;
-      return json({ error: msg }, 502, cors);
+    // 依序嘗試模型：額度用完（429）、免費方案不提供或模型停用（400/403/404）時換下一個
+    let text = '';
+    let used = '';
+    const errors = [];
+    for (const m of models) {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': env.GEMINI_API_KEY },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: SYSTEM }] },
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.3, maxOutputTokens: 8192 },
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
+        if (text) { used = m; break; }
+        errors.push(`${m}：沒有回覆內容（${data.candidates?.[0]?.finishReason || data.promptFeedback?.blockReason || '未知原因'}）`);
+        continue;
+      }
+      // Google 的錯誤說明直接帶回網頁（不含金鑰），方便判斷原因
+      const why = String(data.error?.message || '').slice(0, 160);
+      errors.push(`${m}：HTTP ${res.status} ${data.error?.status || ''} ${why}`.trim());
+      if (/location is not supported/i.test(why)) break;     // 地區限制：換模型也沒用
+      if (![400, 403, 404, 429].includes(res.status)) break;
     }
-    const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || '').join('').trim();
-    if (!text) return json({ error: `Gemini 沒有回覆內容（${data.candidates?.[0]?.finishReason || data.promptFeedback?.blockReason || '未知原因'}）` }, 502, cors);
-
-    const result = { text, model, createdAt: new Date().toISOString() };
+    if (!text) {
+      const all = errors.join('｜');
+      const hint = /location is not supported/i.test(all) ? 'Gemini 不接受這個地區的請求（Worker 所在機房），請重新部署 Worker'
+        : /429|RESOURCE_EXHAUSTED/.test(all) ? 'Gemini 免費額度暫時用完，請稍後再試'
+          : /API key/i.test(all) ? 'GEMINI_API_KEY 無效，請重新設定' : 'Gemini 拒絕請求';
+      return json({ error: `${hint}（${all}）` }, 502, cors);
+    }
+    const model2 = used;
+    const result = { text, model: model2, createdAt: new Date().toISOString() };
     ctx.waitUntil(cache.put(cacheKey, new Response(JSON.stringify(result), {
       headers: { 'Content-Type': 'application/json', 'Cache-Control': `max-age=${CACHE_SECONDS}` },
     })));

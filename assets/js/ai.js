@@ -133,7 +133,7 @@ export function renderAiPanel({ url, code, dataDay, getPrompt }) {
       return;
     }
     if (r?.loading) {
-      body.replaceChildren(h('p', { class: 'ai-loading', role: 'status' }, 'Gemini 正在產生報告，約 10–40 秒…'));
+      body.replaceChildren(h('p', { class: 'ai-loading', role: 'status' }, 'Gemini 正在產生報告，約 20–90 秒…'));
       return;
     }
     const actions = h('div', { class: 'ai-actions' });

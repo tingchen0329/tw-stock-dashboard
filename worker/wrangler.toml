@@ -4,6 +4,12 @@ main = "ai.js"
 compatibility_date = "2026-10-01"
 workers_dev = true
 
+# 指定在美國中部執行：Cloudflare 預設在離使用者最近的機房（台灣常走香港），
+# 而 Gemini API 不開放香港 → FAILED_PRECONDITION「User location is not supported」
+[placement]
+region = "gcp:us-central1"
+
 [vars]
-GEMINI_MODEL = "gemini-3.8-flash"
+# 依序嘗試：第一個額度用完、免費方案不提供或已停用時，自動改用下一個
+GEMINI_MODELS = "gemini-4-argon,gemini-3.8-flash"
 ALLOWED_ORIGINS = "https://tingchen0329.github.io,http://localhost:8000"

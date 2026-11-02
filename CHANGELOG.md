@@ -2,6 +2,13 @@
 
 格式：[語意化版本](https://semver.org/lang/zh-TW/)。每個版本都有 git tag，可用 `git checkout v5.1.0` 回到舊版。
 
+## v6.5.2 — 2026-11-02
+
+- 修正 AI 報告 `FAILED_PRECONDITION`：Cloudflare Worker 預設在離使用者最近的機房（台灣常走香港）執行，Gemini API 不開放香港；
+  改用 placement 固定在美國中部（`gcp:us-central1`）
+- 模型改為依序嘗試 `gemini-4-argon` → `gemini-3.8-flash`（額度用完或免費方案不提供時自動切換），報告下方顯示實際使用的模型
+- 錯誤訊息附上 Google 的原始說明，方便判斷原因
+
 ## v6.5.1 — 2026-11-02
 
 - 個股頁標題列新增 **產生 AI 報告（Gemini）**（在「產生分析指令」左邊）：按下後捲到頁面最下方的「AI 報告（Gemini）」並開始產生；
