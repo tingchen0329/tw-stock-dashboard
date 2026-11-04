@@ -22,7 +22,7 @@ const views = new Map();
 const notify = (key) => (views.get(key) || new Set()).forEach((v) => (v.section.isConnected ? v.show() : views.get(key).delete(v)));
 
 /**
- * 標題列「產生 AI 報告（Gemini）」：捲到個股頁最下方的 AI 區塊並開始產生。
+ * 標題列「產生 AI 報告」：捲到個股頁最下方的 AI 區塊並開始產生。
  * 已有報告就只捲過去；還沒輸入通關密碼就把游標放到密碼欄。
  */
 export function triggerAi(code) {
@@ -123,7 +123,7 @@ export function renderAiPanel({ url, code, dataDay, getPrompt }) {
   const body = h('div', { class: 'ai-body' });
   const section = h('section', { class: 'panel ai-panel', id: 'ai-report' },
     h('h3', {}, 'AI 報告'),
-    h('p', { class: 'note' }, '把「產生分析指令」的內容交給 AI 分析：先用 Google Gemini（免費），額度用完或失敗時改用 Claude。AI 產生的內容可能有誤，僅供參考，非投資建議。'),
+    h('p', { class: 'note' }, '把「產生分析指令」的內容交給 AI（Claude 或 Google Gemini，順序可設定）分析，第一個失敗時自動改用另一個。AI 產生的內容可能有誤，僅供參考，非投資建議。'),
     body);
 
   const show = () => {
@@ -153,7 +153,7 @@ export function renderAiPanel({ url, code, dataDay, getPrompt }) {
       parts.push(h('div', { class: 'ai-result' }, renderMarkdown(r.text)));
       const who = r.provider === 'claude' ? 'Claude' : r.provider === 'gemini' ? 'Gemini' : '';
       parts.push(h('p', { class: 'note' }, `${who} ${r.model}｜產生於 ${F.when(r.createdAt)}${r.cached ? '（快取）' : ''}｜資料日 ${dataDay || 'N/A'}`
-        + (r.fallback ? '｜Gemini 無法使用，已改用 Claude' : '')));
+        + (r.fallback ? `｜第一順位無法使用，已改用 ${who}` : '')));
     }
     body.replaceChildren(...parts);
   };

@@ -55,6 +55,7 @@ export const COLUMNS = [
   },
   { key: 'spark', label: '60日走勢', sort: false, cell: (r) => spark(r.spark) },
   { key: 'r20', label: '20日', tip: '近 20 個交易日漲跌幅', cell: (r) => signedPct(r.r20) },
+  { key: 'rel1y', label: '1年 vs 大盤', tip: '近一年報酬減去大盤（台股：加權指數；美股：S&P 500），單位：百分點', cell: (r) => signedPct(r.rel1y) },
   { key: 'pe', label: '本益比', cell: (r) => plain(F.num(r.pe, 1)) },
   { key: 'riverPct', label: '河流圖位階', tip: '目前本益比在近三年的百分位：0 最便宜、100 最貴', cell: (r) => riverMeter(r.riverPct, r.zone) },
   { key: 'revYoY', label: '營收年增', tip: '最新月營收年增率', cell: (r) => signedPct(r.revYoY) },

@@ -8,12 +8,13 @@
  * 台灣的請求常從香港送出，而 Gemini、Claude 都不開放香港（FAILED_PRECONDITION / 403）。
  * Vercel 可以把函式固定在美國（vercel.json 的 regions）。
  *
- * 流程：先用 Gemini（免費）；額度用完、地區限制或其他錯誤時，改用 Claude（需預付額度）。
+ * 流程：依 AI_ORDER 依序嘗試（預設先 Gemini 免費、失敗改 Claude 預付）；前一個失敗才換下一個。
  *
  * 防濫用：只接受網站網域（Origin 檢查）＋ 通關密碼（X-Access-Code = AI_ACCESS_CODE）＋ 指令長度上限。
  *
  * 環境變數（部署時設定）：
  *   GEMINI_API_KEY、ANTHROPIC_API_KEY（兩者至少一個）、AI_ACCESS_CODE、
+ *   AI_ORDER（供應商順序，預設 gemini,claude；想 Claude 優先設 claude,gemini）、
  *   GEMINI_MODELS（預設 gemini-3.8-flash）、CLAUDE_MODEL（預設 claude-sonnet-5-5）、ALLOWED_ORIGINS、BUILD
  */
 
@@ -34,6 +35,13 @@ function safeEqual(a, b) {
   return diff === 0;
 }
 
+/** 'claude,gemini' → ['claude','gemini']；不認得的名稱略過，沒列到的補在後面 */
+export function parseOrder(text) {
+  const all = ['gemini', 'claude'];
+  const picked = String(text || '').toLowerCase().split(',').map((s) => s.trim()).filter((s) => all.includes(s));
+  return [...new Set([...picked, ...all])];
+}
+
 function config(env = process.env) {
   return {
     gemini: env.GEMINI_API_KEY || '',
@@ -41,6 +49,7 @@ function config(env = process.env) {
     code: env.AI_ACCESS_CODE || '',
     geminiModels: (env.GEMINI_MODELS || 'gemini-3.8-flash').split(',').map((s) => s.trim()).filter(Boolean),
     claudeModel: env.CLAUDE_MODEL || 'claude-sonnet-5-5',
+    order: parseOrder(env.AI_ORDER),
     origins: (env.ALLOWED_ORIGINS || DEFAULT_ORIGINS).split(',').map((s) => s.trim()).filter(Boolean),
     build: env.BUILD || '?',
   };
@@ -86,14 +95,14 @@ async function callClaude(cfg, prompt) {
   return { text, model: cfg.claudeModel };
 }
 
-/** 依序：Gemini → Claude。回傳 {text, model, provider, fallback?} 或丟出彙整後的錯誤 */
+const LABEL = { gemini: 'Gemini', claude: 'Claude' };
+
+/** 依 cfg.order 依序嘗試（預設 Gemini → Claude）。回傳 {text, model, provider, fallback} 或丟出彙整後的錯誤 */
 export async function generate(cfg, prompt, call = { gemini: callGemini, claude: callClaude }) {
   const errors = [];
-  if (cfg.gemini) {
-    try { return { ...(await call.gemini(cfg, prompt)), provider: 'gemini' }; } catch (e) { errors.push(`Gemini：${e.message}`); }
-  }
-  if (cfg.claude) {
-    try { return { ...(await call.claude(cfg, prompt)), provider: 'claude', fallback: errors[0] || null }; } catch (e) { errors.push(`Claude：${e.message}`); }
+  for (const p of cfg.order || ['gemini', 'claude']) {
+    if (!cfg[p]) continue;                      // 沒設定金鑰的供應商跳過
+    try { return { ...(await call[p](cfg, prompt)), provider: p, fallback: errors[0] || null }; } catch (e) { errors.push(`${LABEL[p]}：${e.message}`); }
   }
   if (!cfg.gemini && !cfg.claude) errors.push('沒有設定 GEMINI_API_KEY 或 ANTHROPIC_API_KEY');
   const all = errors.join('｜');
@@ -122,7 +131,7 @@ export async function handle(req, env = process.env) {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
   if (req.method === 'GET') {
     return json({
-      ok: true, build: cfg.build, region: process.env.VERCEL_REGION || '?',
+      ok: true, build: cfg.build, region: process.env.VERCEL_REGION || '?', order: cfg.order.filter((p) => cfg[p]),
       gemini: cfg.gemini ? cfg.geminiModels : null, claude: cfg.claude ? cfg.claudeModel : null,
       accessCodeConfigured: !!cfg.code,
     });

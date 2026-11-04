@@ -52,6 +52,15 @@ const instructions = (aspects, index) => `請用繁體中文輸出，先結論�
 5. 操作前要再確認的 3 個數字
 規則：只用上方數據，N/A 照寫不推測；推估值標「推估」；不用 emoji；結尾註明「非投資建議」。`;
 
+/** 相對大盤與風險（兩個版本共用） */
+function riskLine(rk) {
+  if (!rk) return '【相對大盤】N/A';
+  const p = (x) => (x ? `${pct(x.stock)} vs ${pct(x.bench)}` : 'N/A');
+  return `【相對大盤，比 ${rk.label}】${join([
+    `1月 ${p(rk.periods.m1)}`, `3月 ${p(rk.periods.m3)}`, `6月 ${p(rk.periods.m6)}`, `1年 ${p(rk.periods.y1)}`,
+  ])}\n　${join([`Beta ${F.num(rk.beta, 2)}`, `年化波動 ${F.pct(rk.vol, 1)}（大盤 ${F.pct(rk.benchVol, 1)}）`, `近一年最大回撤 ${F.pct(rk.mdd, 1)}`])}`;
+}
+
 /** 美股版：資料來自 Yahoo 日線與 SEC 財報（沒有月營收、法人籌碼、本益比歷史） */
 function buildPromptUS(s, macro) {
   const { info, price: px, valuation: v, tech: t, fundamentals: f } = s;
@@ -61,7 +70,7 @@ function buildPromptUS(s, macro) {
   const L = [];
   L.push(`你是美股分析師，依下列數據分析 ${info.code} ${info.name}（${info.industry || '交易所 N/A'}${etf ? '｜無 SEC 財報，可能為 ETF 或外國公司' : ''}）。`);
   L.push(`資料日：${dataDay ? `${dataDay} 美東收盤` : 'N/A'}｜財報至 ${f?.latestQuarter ? quarter(f.latestQuarter) : 'N/A'}（SEC，日曆季）｜單位：美元`);
-  L.push('來源：Yahoo Finance、美國證管會 SEC EDGAR；分析師預估、機構持股、選擇權、前瞻財測無資料');
+  L.push('來源：Yahoo Finance、美國證管會 SEC EDGAR；分析師預估、機構持股、內部人交易、選擇權、前瞻財測無資料');
   L.push('');
   L.push(`【總經】${macroLine(macro)}`);
   L.push(`【股價】${join([
@@ -78,8 +87,13 @@ function buildPromptUS(s, macro) {
     ])}\n　${join([
       `毛利/營益/淨利率 ${F.pct(f.margins?.gross, 1)} / ${F.pct(f.margins?.op, 1)} / ${F.pct(f.margins?.net, 1)}（去年同期 ${F.pct(f.marginsLastYear?.gross, 1)} / ${F.pct(f.marginsLastYear?.op, 1)} / ${F.pct(f.marginsLastYear?.net, 1)}）`,
       `ROE ${F.pct(f.roe, 1)}`, `ROA ${F.pct(f.roa, 1)}`, `負債比 ${F.pct(f.debtRatio, 1)}`, `流動比 ${F.pct(f.currentRatio, 0)}`,
+    ])}\n　${join([
+      `近四季自由現金流 ${F.usd(f.fcf4)}`,
+      F.isNum(f.fcf4) && F.isNum(f.ni4) && f.ni4 > 0 && `FCF ÷ 淨利 ${F.num(f.fcf4 / f.ni4, 2)} 倍`,
+      `單季營收年增 ${quarter(f.quarters.slice(-4)[0]?.date)} 起：${f.quarters.slice(-4).map((q) => pct(q.revYoY)).join(', ')}`,
     ])}`
     : '【財報】不適用（無 SEC us-gaap 財報）');
+  L.push(riskLine(s.risk));
   L.push(...techLines(t));
   L.push('');
   L.push(instructions(etf ? '總經、股價、技術、估值' : '總經、股價、基本面、技術、估值', 'S&P 500 / 那斯達克'));
@@ -137,6 +151,7 @@ export function buildPrompt(s, meta, macro = []) {
     margin ? `融資 ${F.num(margin.margin, 0)}（20日 ${F.signed(margin.marginChg20, 0)}）、融券 ${F.num(margin.short, 0)}（20日 ${F.signed(margin.shortChg20, 0)}）、券資比 ${F.pct(margin.shortRatio)}` : '融資券 N/A',
   ])}`);
 
+  L.push(riskLine(s.risk));
   L.push(...techLines(t));
 
   L.push(rv

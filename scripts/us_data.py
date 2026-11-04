@@ -45,6 +45,12 @@ INSTANT_CONCEPTS = {
     "CurrentAssets": ["AssetsCurrent"],
     "CurrentLiabilities": ["LiabilitiesCurrent"],
 }
+# 現金流量表在 10-Q 是「年初至今累計」（6 個月、9 個月），SEC 不給單季 frame → 自己用相鄰兩期相減
+CASH_CONCEPTS = {
+    "OperatingCashFlow": ["NetCashProvidedByUsedInOperatingActivities",
+                          "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
+    "Capex": ["PaymentsToAcquirePropertyPlantAndEquipment", "PaymentsToAcquireProductiveAssets"],
+}
 QUARTERS = 12          # 保留 3 年（12 季）
 QEND = {1: "03-31", 2: "06-30", 3: "09-30", 4: "12-31"}
 
@@ -125,6 +131,40 @@ def _units(concept: dict, kind: str) -> list[dict]:
     return u.get("USD/shares" if kind == "EPS" else "USD", [])
 
 
+def _calendar_quarter(end: str) -> str | None:
+    """財報期末日 → 最接近的日曆季末（NVDA 2026-07-26 → 2026-06-30）；差距超過 50 天視為對不上"""
+    try:
+        e = dt.date.fromisoformat(end)
+    except (TypeError, ValueError):
+        return None
+    cands = [dt.date(y, m, d) for y in (e.year - 1, e.year) for m, d in ((3, 31), (6, 30), (9, 30), (12, 31))]
+    best = min(cands, key=lambda c: abs((e - c).days))
+    return best.isoformat() if abs((e - best).days) <= 50 else None
+
+
+def quarterly_from_ytd(facts: list[dict]) -> dict[str, float]:
+    """
+    年初至今累計值 → 單季值。同一個 start（會計年度起點）的各期依 end 排序：
+    第一期（約 3 個月）直接用；之後每期 = 本期累計 − 上一期累計（兩期必須相隔約一季，否則跳過）。
+    """
+    by_start: dict[str, dict[str, float]] = {}
+    for f in facts:
+        st, en, val = f.get("start"), f.get("end"), f.get("val")
+        if st and en and isinstance(val, (int, float)):
+            by_start.setdefault(st, {}).setdefault(en, val)
+    out: dict[str, float] = {}
+    for st, ends in by_start.items():
+        prev_end, prev_val = st, 0.0
+        for en in sorted(ends):
+            gap = (dt.date.fromisoformat(en) - dt.date.fromisoformat(prev_end)).days
+            if 75 <= gap <= 105:
+                q = _calendar_quarter(en)
+                if q:
+                    out.setdefault(q, round(ends[en] - prev_val, 4))
+            prev_end, prev_val = en, ends[en]
+    return out
+
+
 def parse_companyfacts(facts: dict) -> dict:
     """
     companyfacts → {income: 表, balance: 表, shares}
@@ -154,6 +194,13 @@ def parse_companyfacts(facts: dict) -> dict:
                 quarters[d] = round(total - sum(parts), 4)
         for d, v in quarters.items():
             income[(d, typ)] = v
+    for typ, names in CASH_CONCEPTS.items():
+        for name in names:
+            q = quarterly_from_ytd(_units(g.get(name, {}), typ))
+            if q:
+                for d, v in q.items():
+                    income.setdefault((d, typ), v)
+                break
     balance: dict[tuple[str, str], float] = {}
     for typ, names in INSTANT_CONCEPTS.items():
         for name in names:

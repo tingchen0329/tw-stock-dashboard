@@ -1,14 +1,14 @@
 // AI 代理（tw-stock-ai-proxy/api/ai.js）：來源、通關密碼、Gemini → Claude 備援
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { handle, generate } from '../../tw-stock-ai-proxy/api/ai.js';
+import { handle, generate, parseOrder } from '../../tw-stock-ai-proxy/api/ai.js';
 
 const ENV = { GEMINI_API_KEY: 'g', ANTHROPIC_API_KEY: 'c', AI_ACCESS_CODE: 'pw', ALLOWED_ORIGINS: 'https://site.test' };
 const post = (body, headers = {}) => new Request('https://proxy.test/api/ai', {
   method: 'POST', headers: { origin: 'https://site.test', 'x-access-code': 'pw', 'content-type': 'application/json', ...headers },
   body: JSON.stringify(body),
 });
-const cfg = (o = {}) => ({ gemini: 'g', claude: 'c', geminiModels: ['gm'], claudeModel: 'cm', ...o });
+const cfg = (o = {}) => ({ gemini: 'g', claude: 'c', geminiModels: ['gm'], claudeModel: 'cm', order: ['gemini', 'claude'], ...o });
 
 test('Gemini 成功就不呼叫 Claude', async () => {
   let claude = 0;
@@ -47,4 +47,13 @@ test('健康檢查不洩漏金鑰', async () => {
   const txt = await res.text();
   assert.match(txt, /"ok":true/);
   assert.doesNotMatch(txt, /"g"|"c"|"pw"/);
+});
+
+test('AI_ORDER：Claude 優先時不呼叫 Gemini；設定值寬鬆解析', async () => {
+  assert.deepEqual(parseOrder('Claude, gemini'), ['claude', 'gemini']);
+  assert.deepEqual(parseOrder('claude'), ['claude', 'gemini']);
+  assert.deepEqual(parseOrder('xx'), ['gemini', 'claude']);
+  let gem = 0;
+  const r = await generate(cfg({ order: ['claude', 'gemini'] }), 'p', { gemini: async () => { gem++; return { text: 'G', model: 'gm' }; }, claude: async () => ({ text: 'C', model: 'cm' }) });
+  assert.deepEqual([r.provider, gem, r.fallback], ['claude', 0, null]);
 });

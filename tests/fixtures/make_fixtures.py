@@ -229,9 +229,10 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
         {"country": "FED", "date": "2025-12-10", "full_country_name": "", "interest_rate": 3.75},
         {"country": "FED", "date": "2026-09-16", "full_country_name": "", "interest_rate": 3.5}])
 
-    def yahoo(sym: str, base: float, vol: float = 0.01) -> None:
-        ser = walk(random.Random(sym), base, 64, 0.0003, vol)
-        ts = [int(dt.datetime.combine(d, dt.time(13, 30)).timestamp()) for d in days[-64:]]
+    def yahoo(sym: str, base: float, vol: float = 0.01, n: int = 64) -> None:
+        n = min(n, len(days))
+        ser = walk(random.Random(sym), base, n, 0.0003, vol)
+        ts = [int(dt.datetime.combine(d, dt.time(13, 30)).timestamp()) for d in days[-n:]]
         w(f"yahoo_{sym}.json", {"chart": {"result": [{
             "meta": {"regularMarketPrice": ser[-1], "regularMarketTime": ts[-1], "chartPreviousClose": ser[0]},
             "timestamp": ts, "indicators": {"quote": [{"close": ser}]}}], "error": None}})
@@ -295,8 +296,9 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
                                   ("202612", 26950, -42, 300, "after_market"),
                                   ("202611/202612", 40, 0, 50000, "after_market")]])
     for sym, base in [("IDX_TWII", 27000), ("TWD_X", 30.6), ("DX-Y.NYB", 98.2), ("IDX_DJI", 46000), ("IDX_IXIC", 22800),
-                      ("IDX_TNX", 4.1), ("GC_F", 3900), ("IDX_SOX", 6200)]:
-        yahoo(sym, base)
+                      ("IDX_TNX", 4.1), ("GC_F", 3900), ("IDX_SOX", 6200), ("IDX_GSPC", 6500), ("IDX_VIX", 16)]:
+        # 加權指數、S&P 500 兼做「相對大盤」的 2 年日線 → 給長一點
+        yahoo(sym, base, n=520 if sym in ("IDX_TWII", "IDX_GSPC") else 64)
     for c, (n, m, _, base) in WATCH.items():
         yahoo(f"{c}.{'TWO' if m == 'tpex' else 'TW'}", closes[c][-1] if c in closes else base)
     # ── 美股：Yahoo 3 年日線 + SEC companyfacts（NVDA、AAPL 有財報；SPY 是 ETF，SEC 查無）──
@@ -319,9 +321,11 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
         dur = {k: [] for k in ("RevenueFromContractWithCustomerExcludingAssessedTax", "GrossProfit", "OperatingIncomeLoss", "NetIncomeLoss")}
         eps, inst = [], {k: [] for k in ("Assets", "Liabilities", "StockholdersEquity", "AssetsCurrent", "LiabilitiesCurrent")}
         rev0 = rr2.uniform(2e10, 6e10)
+        cash = {"NetCashProvidedByUsedInOperatingActivities": [], "PaymentsToAcquirePropertyPlantAndEquipment": []}
         for y in (2023, 2024, 2025, 2026):
             yearly = {k: 0.0 for k in dur}
             yeps = 0.0
+            ytd = {k: 0.0 for k in cash}
             for q in (1, 2, 3, 4):
                 if (y, q) > (2026, 2):
                     break
@@ -335,6 +339,11 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
                     if q < 4:                               # 第四季只有全年數字（測試推算）
                         dur[k].append({"end": end, "val": round(v), "frame": f"CY{y}Q{q}", "form": "10-Q"})
                 yeps += e
+                # 現金流量表：10-Q / 10-K 都是年初至今累計（沒有單季 frame），測試自行相減
+                for k, v in (("NetCashProvidedByUsedInOperatingActivities", rv * 0.4), ("PaymentsToAcquirePropertyPlantAndEquipment", rv * 0.05)):
+                    ytd[k] += v
+                    cash[k].append({"start": f"{y}-01-01", "end": end, "val": round(ytd[k]),
+                                    "form": "10-K" if q == 4 else "10-Q", **({"frame": f"CY{y}"} if q == 4 else {"frame": f"CY{y}Q1"} if q == 1 else {})})
                 if q < 4:
                     eps.append({"end": end, "val": e, "frame": f"CY{y}Q{q}", "form": "10-Q"})
                 ta = rv * 5
@@ -345,7 +354,7 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
                     for k in dur:
                         dur[k].append({"end": end, "val": round(yearly[k]), "frame": f"CY{y}", "form": "10-K"})
                     eps.append({"end": end, "val": round(yeps, 2), "frame": f"CY{y}", "form": "10-K"})
-        g = {k: {"units": {"USD": v}} for k, v in {**dur, **inst}.items()}
+        g = {k: {"units": {"USD": v}} for k, v in {**dur, **inst, **cash}.items()}
         g["EarningsPerShareDiluted"] = {"units": {"USD/shares": eps}}
         w(f"api_xbrl_companyfacts_CIK{cik:010d}.json.json", {"cik": cik, "entityName": name, "facts": {
             "us-gaap": g, "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [{"end": "2026-07-20", "val": 24_000_000_000}]}}}}})

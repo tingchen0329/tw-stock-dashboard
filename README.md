@@ -230,6 +230,25 @@ Days of month、Months 保持全選（整列反灰）。
 5. 費用：每產生一份報告依字數計費，實際用量可在 console 的 **Usage** 查看
 
 > 不想付費可以跳過 5-2，只用 Gemini；Gemini 額度用完時報告會顯示「額度暫時用完」，稍後再試即可。
+>
+> **Claude Pro / Max 會員不能拿來用**：會員方案只適用 claude.ai 網頁與 App，API 要另外在 console 儲值（與 Gemini 會員同理）。
+
+**每份報告大約多少錢**（一份分析指令約 3,000–4,000 tokens、報告約 3,000–5,000 tokens；價格以 console 為準）：
+
+| 模型（`CLAUDE_MODEL`） | 特色 | 每份約 | US$5 約可產生 |
+|---|---|---|---|
+| `claude-haiku-5-5` | 最便宜、最快，內容較精簡 | US$0.003 | 1,500 份以上 |
+| `claude-sonnet-5-5`（預設） | 分析品質與價格平衡 | US$0.06 | 約 80 份 |
+| `claude-opus-5-5` | 推理最完整，最貴 | US$0.12 | 約 40 份 |
+
+**想讓 Claude 優先（不先試 Gemini）**：repo → Settings → Secrets and variables → Actions → **Variables** 分頁 → New repository variable
+
+| Name | Value | 作用 |
+|---|---|---|
+| `AI_ORDER` | `claude,gemini` | 先用 Claude，失敗才改 Gemini（不設定 = 先 Gemini） |
+| `CLAUDE_MODEL` | `claude-sonnet-5-5` | 換模型（見上表；不設定 = Sonnet） |
+
+改完 Variables 要到 **Actions → Deploy AI proxy → Run workflow** 重新部署一次才會生效。
 
 #### 5-3. Vercel 帳號與權杖（免費）
 
@@ -397,7 +416,7 @@ repo → **Settings** → **Secrets and variables** → **Actions** → **Secret
 | *選用* FinMind Backer | 付費 | NT$699/月 | 單日全市場批次下載（可做全市場篩選）、股權分散表（千張大戶）、還原股價 |
 | *選用* FinMind Sponsor | 付費 | NT$999/月 | 盤中即時快照、分點進出、八大行庫 |
 | Google Gemini API | 免費方案 | NT$0 | AI 報告優先使用，額度以 Google AI Studio 為準 |
-| *選用* Claude API | 預付 | 最低儲值約 US$5 | Gemini 失敗時的備援，依用量扣除預付額度 |
+| *選用* Claude API | 預付 | 最低儲值約 US$5 | 依用量扣除預付額度（Sonnet 每份約 US$0.06）；`AI_ORDER=claude,gemini` 可設為優先 |
 | Vercel | Hobby（免費） | NT$0 | 保管 AI 金鑰的代理 |
 | cron-job.org | Free | NT$0 | 外部排程，準時觸發更新（[設定](docs/SCHEDULER.md)） |
 | *選用* 自訂網域 | 網域商 | 約 NT$400–1,000/年 | 例如 stock.你的網域.tw |

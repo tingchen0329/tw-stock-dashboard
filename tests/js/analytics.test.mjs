@@ -134,3 +134,21 @@ test('完整度：沒有任何資料時為 0%，並列出缺項', () => {
   assert.equal(c.pct, 0);
   assert.ok(c.missing.includes('近四季 EPS'));
 });
+
+test('riskStats：相對大盤、Beta、波動度、最大回撤', async () => {
+  const { riskStats } = await import('../../assets/js/analytics.js');
+  const dates = Array.from({ length: 300 }, (_, i) => new Date(Date.UTC(2025, 0, 1) + i * 864e5).toISOString().slice(0, 10));
+  const bench = { label: 'B', dates, close: dates.map((_, i) => 100 * 1.001 ** i * (1 + 0.01 * Math.sin(i))) };
+  // 個股 = 大盤日報酬的 2 倍 → Beta 約 2
+  const close = [100];
+  for (let i = 1; i < 300; i++) close.push(close[i - 1] * (1 + 2 * (bench.close[i] / bench.close[i - 1] - 1)));
+  const r = riskStats({ dates, close }, bench);
+  assert.ok(Math.abs(r.beta - 2) < 0.01, `beta ${r.beta}`);
+  assert.ok(Math.abs(r.vol / r.benchVol - 2) < 0.01);
+  assert.ok(r.mdd <= 0);
+  assert.equal(r.label, 'B');
+  assert.ok(r.periods.y1 && Math.abs(r.periods.y1.excess - (r.periods.y1.stock - r.periods.y1.bench)) < 1e-9);
+  // 對不上日期（少於 120 個共同交易日）→ null
+  assert.equal(riskStats({ dates: dates.slice(0, 100), close: close.slice(0, 100) }, bench), null);
+  assert.equal(riskStats({ dates, close }, null), null);
+});

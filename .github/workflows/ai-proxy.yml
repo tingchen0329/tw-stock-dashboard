@@ -68,11 +68,15 @@ jobs:
           AI_ACCESS_CODE: ${{ secrets.AI_ACCESS_CODE }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AI_ORDER: ${{ vars.AI_ORDER }}            # 選用 Variable：claude,gemini = Claude 優先
+          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}    # 選用 Variable：claude-haiku-5-5 / claude-sonnet-5-5 / claude-opus-5-5
         run: |
           args=(deploy --prod --yes --token "$VERCEL_TOKEN"
                 --env "AI_ACCESS_CODE=$AI_ACCESS_CODE" --env "BUILD=${GITHUB_SHA::7}")
           [ -n "$GEMINI_API_KEY" ] && args+=(--env "GEMINI_API_KEY=$GEMINI_API_KEY")
           [ -n "$ANTHROPIC_API_KEY" ] && args+=(--env "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
+          [ -n "$AI_ORDER" ] && args+=(--env "AI_ORDER=$AI_ORDER")
+          [ -n "$CLAUDE_MODEL" ] && args+=(--env "CLAUDE_MODEL=$CLAUDE_MODEL")
           npx --yes vercel@latest "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/deploy.log"
 
       - name: Health check

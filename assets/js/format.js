@@ -74,6 +74,12 @@ export function twd(v) {
   return num(v, 0);
 }
 
+/** 美元大數字（中文單位）：7.47e10 → "747.0 億美元" */
+export function usd(v) {
+  if (!isNum(v)) return NA;
+  return `${twd(v)} 美元`;
+}
+
 /** 圖表 Y 軸刻度：簡潔顯示（1.2K、3.4萬） */
 export function axis(v) {
   if (!isNum(v)) return '';

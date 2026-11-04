@@ -174,7 +174,7 @@ async function showStock(code) {
   const draw = (tables, meta) => {
     if (state.current !== cur) return;     // 已經換股票了，丟棄舊結果
     cur.tables = tables;
-    cur.summary = summarize({ info, mkt, quote, tables, asOf });
+    cur.summary = summarize({ info, mkt, quote, tables, asOf, bench: state.boot.macro?.bench?.tw });
     if (!info.name && cur.summary.info) cur.summary.info.name = code;
     cur.cleanup?.();
     cur.cleanup = renderStock($('stock'), cur.summary, {
@@ -326,10 +326,10 @@ async function showUsStock(sym) {
   if (state.current !== cur) return;
   const mkt = usMarketRow(detail);
   const hasFin = (detail.tables?.income?.rows ?? []).length > 0;
-  const info = { code: sym, name: detail.name || sym, market: 'us', industry: detail.exchange || '', etf: !hasFin };
+  const info = { code: sym, name: detail.name || sym, market: 'us', industry: detail.exchange || '', etf: !hasFin, shares: detail.shares ?? null };
   const draw = () => {
     cur.tables = detail.tables || {};
-    cur.summary = summarize({ info, mkt, quote: null, tables: cur.tables, asOf: { twse: mkt?.date } });
+    cur.summary = summarize({ info, mkt, quote: null, tables: cur.tables, asOf: { twse: mkt?.date }, bench: state.boot.macro?.bench?.us });
     cur.cleanup?.();
     cur.cleanup = renderStock($('stock'), cur.summary, {
       range: state.range, pending: false, errors: detail.errors, source: 'us', fetchedAt: detail.fetchedAt,

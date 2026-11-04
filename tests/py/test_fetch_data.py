@@ -430,9 +430,30 @@ class EndToEnd(unittest.TestCase):
     def test_macro_has_night_futures_dow_nasdaq_in_order(self):
         items = json.loads((self.out / "macro.json").read_text())["items"]
         keys = [m["key"] for m in items]
-        self.assertEqual(keys, ["taiex", "otc", "txf_night", "dji", "ixic", "sox", "usdtwd", "dxy", "us10y", "gold", "fed"])
+        self.assertEqual(keys, ["taiex", "otc", "txf_night", "dji", "ixic", "spx", "sox", "vix", "usdtwd", "dxy", "us10y", "gold", "fed"])
         night = items[2]
         self.assertEqual((night["label"], night["value"], night["source"]), ("台指期夜盤", 27050.0, "期交所（臺指期116）"))
+
+    def test_macro_has_benchmarks_for_relative_strength(self):
+        bench = json.loads((self.out / "macro.json").read_text())["bench"]
+        self.assertEqual(sorted(bench), ["tw", "us"])
+        for key, label in (("tw", "加權指數"), ("us", "S&P 500")):
+            b = bench[key]
+            self.assertEqual(b["label"], label)
+            self.assertGreaterEqual(len(b["dates"]), 250)
+            self.assertEqual(len(b["dates"]), len(b["close"]))
+            self.assertEqual(b["dates"], sorted(b["dates"]))
+
+    def test_us_cash_flow_is_quarterly_not_ytd(self):
+        d = json.loads((self.out / "us" / "stock" / "NVDA.json").read_text())
+        rows = [r for r in d["tables"]["income"]["rows"] if r[1] in ("OperatingCashFlow", "Revenue")]
+        by = {}
+        for date, typ, val, _ in rows:
+            by.setdefault(date, {})[typ] = val
+        full = [v for v in by.values() if len(v) == 2]
+        self.assertGreaterEqual(len(full), 8)
+        for v in full:                                   # 合成資料：營業現金流 = 營收 × 0.4（單季，不是累計）
+            self.assertAlmostEqual(v["OperatingCashFlow"] / v["Revenue"], 0.4, places=3)
 
     def test_night_futures_falls_back_to_finmind_close(self):
         with tempfile.TemporaryDirectory() as d:

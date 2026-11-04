@@ -25,6 +25,7 @@ if (!meta) {
 }
 const market = read('market.json');
 const quotes = read('quotes.json')?.rows ?? {};
+const bench = read('macro.json')?.bench ?? {};      // 相對大盤：台股比加權指數、美股比 S&P 500
 const byCode = new Map((read('stocks.json')?.rows ?? []).map((r) => [r[0], r]));
 
 const rows = [];
@@ -36,7 +37,7 @@ for (const code of meta.watchlist ?? []) {
   if (!detail) missing.push(code);
   try {
     rows.push(overviewRow(summarize({
-      info, mkt: marketRow(market, code), quote: quotes[code] ?? null, tables: detail?.tables ?? {}, asOf: market?.asOf ?? {},
+      info, mkt: marketRow(market, code), quote: quotes[code] ?? null, tables: detail?.tables ?? {}, asOf: market?.asOf ?? {}, bench: bench.tw,
     })));
   } catch (e) {
     // 單一檔資料異常不能讓整個部署失敗：這一列只顯示代號名稱，其餘 N/A
@@ -61,7 +62,7 @@ for (const code of meta.usWatchlist ?? []) {
   try {
     const mkt = usMarketRow(detail);
     if (mkt?.date && (!usDay || mkt.date > usDay)) usDay = mkt.date;
-    usRows.push(overviewRow(summarize({ info, mkt, quote: null, tables: detail?.tables ?? {}, asOf: { twse: mkt?.date } })));
+    usRows.push(overviewRow(summarize({ info, mkt, quote: null, tables: detail?.tables ?? {}, asOf: { twse: mkt?.date }, bench: bench.us })));
   } catch (e) {
     console.warn(`::warning title=美股總覽::${code} 計算失敗：${e.message}`);
     usRows.push(overviewRow({ info }));

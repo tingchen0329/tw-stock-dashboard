@@ -676,13 +676,18 @@ MACRO_YAHOO = [
     ("sox", "費城半導體", "^SOX"),
     ("dji", "道瓊工業", "^DJI"),
     ("ixic", "那斯達克", "^IXIC"),
+    ("spx", "S&P 500", "^GSPC"),
+    ("vix", "VIX 恐慌指數", "^VIX"),
 ]
+
+# 個股「相對大盤與風險」用的大盤日線（約 2 年）：台股比加權指數、美股比 S&P 500
+BENCH = {"tw": ("加權指數", "^TWII"), "us": ("S&P 500", "^GSPC")}
 
 
 # FinMind 的台股指數（TaiwanStockPrice 的 data_id）：只有日收盤，沒有盤中
 FINMIND_INDEX = {"taiex": ("加權指數", "TAIEX"), "otc": ("櫃買指數", "TPEx")}
 # 顯示順序：台股 → 美股 → 匯率 / 利率 / 商品
-MACRO_ORDER = ["taiex", "otc", "txf_night", "dji", "ixic", "sox", "usdtwd", "dxy", "us10y", "gold", "fed"]
+MACRO_ORDER = ["taiex", "otc", "txf_night", "dji", "ixic", "spx", "sox", "vix", "usdtwd", "dxy", "us10y", "gold", "fed"]
 
 
 def finmind_index(tx, data_id: str, today: dt.date) -> dict | None:
@@ -747,6 +752,44 @@ def finmind_txf_night(tx, today: dt.date) -> dict | None:
     return {"value": close, "prev": prev, "change": spread,
             "changePct": round(spread / prev * 100, 2) if spread is not None and prev else None,
             "time": latest, "contract": str(best.get("contract_date", ""))}
+
+
+def parse_bench(payload: dict, label: str) -> dict | None:
+    """Yahoo 日線 → {label, dates, close}（台北日期；收盤缺值的日子略過）"""
+    try:
+        r = payload["chart"]["result"][0]
+        ts = r.get("timestamp") or []
+        closes = (r.get("indicators", {}).get("quote") or [{}])[0].get("close") or []
+    except (KeyError, IndexError, TypeError):
+        return None
+    pts: dict[str, float] = {}
+    tz = dt.timezone(dt.timedelta(seconds=r.get("meta", {}).get("gmtoffset") or 0))
+    for t, c in zip(ts, closes):
+        if c is not None:
+            pts[dt.datetime.fromtimestamp(t, tz).date().isoformat()] = round(c, 2)
+    if len(pts) < 120:
+        return None
+    ds = sorted(pts)
+    return {"label": label, "dates": ds, "close": [pts[d] for d in ds]}
+
+
+def fetch_bench(tx, report: SourceReport, prev: dict | None = None) -> dict:
+    """台股 / 美股大盤 2 年日線；失敗時沿用上一份"""
+    out = dict(prev or {})
+    for key, (label, sym) in BENCH.items():
+        res = report.run(f"bench_{key}", lambda s=sym, l=label: parse_bench(
+            tx.get_json(f"{YAHOO_CHART}{urllib.parse.quote(s, safe='')}", {"range": "2y", "interval": "1d"}), l),
+            count=lambda r: len(r["dates"]) if r else 0)
+        if res:
+            out[key] = res
+    return out
+
+
+def read_bench(out: Path) -> dict:
+    try:
+        return json.loads((out / "macro.json").read_text("utf-8")).get("bench") or {}
+    except (OSError, ValueError):
+        return {}
 
 
 def fetch_macro(tx, report: SourceReport, today: dt.date, use_finmind: bool) -> list[dict]:
@@ -1156,7 +1199,7 @@ def main(argv: list[str] | None = None) -> int:
         macro = fetch_macro(tx, report, today, use_finmind=not quota_hit)
     except QuotaExceeded:
         quota_hit, macro = True, []
-    sizes["macro.json"] = write_json(out / "macro.json", {"items": macro})
+    sizes["macro.json"] = write_json(out / "macro.json", {"items": macro, "bench": fetch_bench(tx, report, read_bench(out))})
 
     # 追蹤清單盤中報價（Yahoo）：上市用 .TW、上櫃用 .TWO
     market_of = {r[0]: r[2] for r in stock_list}
@@ -1259,7 +1302,7 @@ def run_macro_only(tx, out: Path, prev: dict, today: dt.date, token: str | None,
             f"補抓 {fetched} 檔" if fetched else "",
             f"缺 {len(watchlist) - len(files)} 檔" if len(files) < len(watchlist) else "",
             "FinMind 額度用完 (HTTP 402)，下次執行會補抓" if quota else "") if x)}
-    sizes["macro.json"] = write_json(out / "macro.json", {"items": macro})
+    sizes["macro.json"] = write_json(out / "macro.json", {"items": macro, "bench": fetch_bench(tx, report, read_bench(out))})
     asof = json.loads((out / "market.json").read_text("utf-8")).get("asOf", {})
     market = market_block(tx, report, today, clock(today), asof.get("twse") or asof.get("tpex"), macro,
                           prev.get("market"))

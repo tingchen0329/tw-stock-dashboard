@@ -163,6 +163,48 @@ export function returns(dates, close) {
   };
 }
 
+/**
+ * 相對大盤與風險（參考 Finviz / Stock Analysis 的 Beta、波動度、相對報酬）
+ * @param {{dates,close}} ps     個股（priceSeries）
+ * @param {{label,dates,close}|null} bench  大盤（台股：加權指數；美股：S&P 500）
+ * 只用兩邊都有收盤的日子對齊；不足 120 個共同交易日就回傳 null（數字不可靠）。
+ *   Beta     近一年日報酬：cov(個股, 大盤) ÷ var(大盤)
+ *   波動度    近一年日報酬標準差 × √252（年化，%）
+ *   最大回撤  近一年從前高跌下來的最大幅度（%）
+ */
+export function riskStats(ps, bench) {
+  if (!bench?.dates?.length || !ps?.dates?.length) return null;
+  const bm = new Map(bench.dates.map((d, i) => [d, bench.close[i]]));
+  const pts = ps.dates.map((d, i) => [d, ps.close[i], bm.get(d)]).filter(([, a, b]) => isNum(a) && isNum(b) && a > 0 && b > 0);
+  if (pts.length < 120) return null;
+  const win = pts.slice(-251);                          // 近一年（250 個報酬）
+  const ra = []; const rb = [];
+  for (let i = 1; i < win.length; i++) { ra.push(win[i][1] / win[i - 1][1] - 1); rb.push(win[i][2] / win[i - 1][2] - 1); }
+  const ma = mean(ra); const mb = mean(rb);
+  let cov = 0; let vb = 0; let va = 0;
+  for (let i = 0; i < ra.length; i++) { cov += (ra[i] - ma) * (rb[i] - mb); vb += (rb[i] - mb) ** 2; va += (ra[i] - ma) ** 2; }
+  const n1 = ra.length - 1;
+  let peak = -Infinity; let mdd = 0;
+  for (const [, c] of win) { peak = Math.max(peak, c); mdd = Math.min(mdd, (c / peak - 1) * 100); }
+  const lastP = pts[pts.length - 1];
+  const period = (k) => {
+    if (pts.length <= k) return null;
+    const a = (lastP[1] / pts[pts.length - 1 - k][1] - 1) * 100;
+    const b = (lastP[2] / pts[pts.length - 1 - k][2] - 1) * 100;
+    return { stock: a, bench: b, excess: a - b };
+  };
+  return {
+    label: bench.label || '大盤',
+    date: lastP[0],
+    periods: { m1: period(21), m3: period(63), m6: period(126), y1: period(250) },
+    beta: vb > 0 ? cov / vb : null,
+    vol: n1 > 0 ? Math.sqrt(va / n1) * Math.sqrt(252) * 100 : null,
+    benchVol: n1 > 0 ? Math.sqrt(vb / n1) * Math.sqrt(252) * 100 : null,
+    mdd,
+    days: ra.length,
+  };
+}
+
 /** 均線排列判斷 */
 export function maAlignment(m5, m20, m60, m240) {
   if (![m5, m20, m60].every(isNum)) return '資料不足';
@@ -370,6 +412,8 @@ const ACCOUNTS = {
   equity: { types: ['Equity', 'EquityAttributableToOwnersOfParent'], origin: ['權益總計', '權益總額'] },
   ca: { types: ['CurrentAssets'], origin: ['流動資產合計'] },
   cl: { types: ['CurrentLiabilities'], origin: ['流動負債合計'] },
+  ocf: { types: ['OperatingCashFlow'], origin: [] },
+  capex: { types: ['Capex'], origin: [] },
 };
 
 function byQuarter(table, keys) {
@@ -394,7 +438,7 @@ function byQuarter(table, keys) {
 }
 
 export function fundamentals(incomeTable, balanceTable) {
-  const inc = byQuarter(incomeTable, ['eps', 'revenue', 'gross', 'op', 'ni']);
+  const inc = byQuarter(incomeTable, ['eps', 'revenue', 'gross', 'op', 'ni', 'ocf', 'capex']);
   const bal = byQuarter(balanceTable, ['assets', 'liab', 'equity', 'ca', 'cl']);
   if (!inc.length && !bal.length) return null;
 
@@ -414,7 +458,17 @@ export function fundamentals(incomeTable, balanceTable) {
   const avg = (k) => (lastB && isNum(lastB[k]) && prevB && isNum(prevB[k]) ? (lastB[k] + prevB[k]) / 2 : null);
 
   return {
-    quarters: inc.map((q) => ({ date: q.date, eps: q.eps ?? null, revenue: q.revenue ?? null, ...margins(q) })),
+    quarters: inc.map((q) => {
+      const ly = inc.find((x) => x.date === String(+q.date.slice(0, 4) - 1) + q.date.slice(4));
+      return {
+        date: q.date, eps: q.eps ?? null, revenue: q.revenue ?? null, ...margins(q),
+        revYoY: ly && isNum(q.revenue) && isNum(ly.revenue) && ly.revenue ? ((q.revenue - ly.revenue) / Math.abs(ly.revenue)) * 100 : null,
+        fcf: isNum(q.ocf) && isNum(q.capex) ? q.ocf - q.capex : null,
+      };
+    }),
+    // 自由現金流 = 營業現金流 − 資本支出（目前只有美股 SEC 財報有現金流量表）
+    fcf4: (() => { const xs = inc.filter((q) => isNum(q.ocf) && isNum(q.capex)).slice(-4); return xs.length === 4 ? sumOrNull(xs.map((q) => q.ocf - q.capex)) : null; })(),
+    ni4,
     latestQuarter: lastQ?.date ?? null,
     eps4, epsPrev4,
     eps4YoY: isNum(eps4) && isNum(epsPrev4) && epsPrev4 !== 0 ? ((eps4 - epsPrev4) / Math.abs(epsPrev4)) * 100 : null,
@@ -453,7 +507,7 @@ export function marketRow(market, code) {
  */
 const SOURCE = { twse: '證交所', tpex: '櫃買中心', us: 'Yahoo + SEC 推算' };
 
-export function summarize({ info, mkt, quote, tables = {}, asOf = {} }) {
+export function summarize({ info, mkt, quote, tables = {}, asOf = {}, bench = null }) {
   const ps = priceSeries(tables.price);
   const tech = technicals(ps);
   const fmLast = ps.close.length ? { date: last(ps.dates), close: last(ps.close), prev: ps.close[ps.close.length - 2] } : null;
@@ -503,6 +557,8 @@ export function summarize({ info, mkt, quote, tables = {}, asOf = {} }) {
     margin: marginStats(tables.margin),
     holding: holdingStats(tables.holding),
     fundamentals: fundamentals(tables.income, tables.balance),
+    risk: riskStats(ps, bench),
+    shares: info.shares ?? null,
     series: ps,
   };
 }
@@ -555,6 +611,7 @@ export function overviewRow(s) {
     priceKind: s.price?.kind ?? null,
     spark: (s.series?.close ?? []).slice(-60).map(r2),
     r20: r2(t?.returns?.d20),
+    rel1y: r2(s.risk?.periods?.y1?.excess),
     pe: r2(s.valuation?.pe),
     riverPct: r2(s.river?.percentile),
     zone: s.river?.zone ?? null,

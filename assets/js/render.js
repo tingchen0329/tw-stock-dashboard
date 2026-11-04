@@ -105,6 +105,12 @@ const RANGES = [['3M', 63, '3 個月'], ['6M', 126, '6 個月'], ['1Y', 250, '1 
  * @param {object} state   { range, pending:boolean, errors, source, fetchedAt, onRange, onPrompt, onCSV, onXLSX }
  * @returns {Function} cleanup（移除圖表的 ResizeObserver）
  */
+/** 自由現金流殖利率 = 近四季 FCF ÷ 市值（收盤 × 流通股數） */
+function fcfYield(fcf, price, shares) {
+  if (![fcf, price, shares].every(F.isNum) || price <= 0 || shares <= 0) return 'N/A';
+  return F.pct((fcf / (price * shares)) * 100, 1);
+}
+
 export function renderStock(host, s, state) {
   const charts = [];
   const { info, price: px, valuation: v, tech: t, river: rv, revenue: rev, inst, instToday: it, margin: mg, holding: hd, fundamentals: f } = s;
@@ -264,6 +270,47 @@ export function renderStock(host, s, state) {
     ['券資比', mg ? F.pct(mg.shortRatio) : 'N/A'],
   ]), !inst && !mg && !hd && state.pending ? h('p', { class: 'note' }, '載入中…') : null);
 
+  /* 相對大盤與風險（台股比加權指數、美股比 S&P 500） */
+  const rk = s.risk;
+  const relRow = (label, x) => [label, x ? [signedSpan(F.pct(x.stock, 1, true), x.stock), h('span', { class: 'muted' }, ` vs ${F.pct(x.bench, 1, true)}，`),
+    signedSpan(`${x.excess >= 0 ? '贏' : '輸'} ${F.num(Math.abs(x.excess), 1)} 點`, x.excess)] : 'N/A'];
+  const betaText = (b) => (!F.isNum(b) ? 'N/A' : `${F.num(b, 2)}（${b > 1.2 ? '大盤漲跌時，漲跌幅通常更大' : b < 0.8 ? '與大盤連動較低' : '與大盤大致同步'}）`);
+  const riskPanel = panel('相對大盤與風險', rk ? `比較對象：${rk.label}，至 ${rk.date}；報酬為「個股 vs 大盤」` : null, rk ? kv([
+    relRow('近 1 個月', rk.periods.m1),
+    relRow('近 3 個月', rk.periods.m3),
+    relRow('近 6 個月', rk.periods.m6),
+    relRow('近 1 年', rk.periods.y1),
+    ['Beta（近一年）', betaText(rk.beta)],
+    ['年化波動度', `${F.pct(rk.vol, 1)}（大盤 ${F.pct(rk.benchVol, 1)}）`],
+    ['近一年最大回撤', h('span', { class: 'down' }, F.pct(rk.mdd, 1))],
+  ]) : h('p', { class: 'note' }, state.pending ? '載入中…' : '大盤資料不足，無法比較'));
+
+  /* 季度趨勢：每季 EPS（長條）＋營收年增、毛利率（提示框） */
+  const qChart = h('div');
+  const qs = f ? f.quarters.filter((q) => F.isNum(q.eps)).slice(-12) : [];
+  const money = us ? F.usd : F.twd;
+  const lastQ = qs[qs.length - 1];
+  const qPanel = panel('季度趨勢', lastQ ? `最新 ${lastQ.date}：EPS ${F.num(lastQ.eps)}，營收 ${money(lastQ.revenue)}，年增 ${F.pct(lastQ.revYoY, 1, true)}` : null,
+    qChart,
+    qs.length ? tableView(['季度', 'EPS', '營收', '營收年增', '毛利率', ...(us ? ['自由現金流'] : [])],
+      qs.map((q) => [q.date, F.num(q.eps), money(q.revenue), F.pct(q.revYoY, 1, true), F.pct(q.gross, 1), ...(us ? [money(q.fcf)] : [])])) : null);
+  if (qs.length) {
+    const ch = barChart(qChart);
+    ch.update({
+      labels: qs.map((q) => `${q.date.slice(2, 4)}Q${Math.ceil(+q.date.slice(5, 7) / 3)}`),
+      values: qs.map((q) => q.eps),
+      colorFor: (val) => (val >= 0 ? 'var(--s1)' : 'var(--down)'),
+      fmt: (val) => F.num(val), axisFmt: (val) => F.num(val, Math.abs(val) >= 10 ? 0 : 2),
+      tipRows: (i) => [
+        { value: F.num(qs[i].eps), label: 'EPS' },
+        { value: F.pct(qs[i].revYoY, 1, true), label: '營收年增' },
+        { value: F.pct(qs[i].gross, 1), label: '毛利率' },
+      ],
+      ariaLabel: `${info.name}近 ${qs.length} 季每股盈餘`,
+    });
+    charts.push(ch);
+  } else qChart.append(h('p', { class: 'note' }, state.pending ? '載入中…' : '沒有季度財報資料'));
+
   /* 基本面 */
   const fundPanel = panel('基本面', f ? `財報至 ${f.latestQuarter ?? 'N/A'}（單季）` : null, f ? [kv([
     ['近四季 EPS', `${F.num(f.eps4)} ${us ? '美元' : '元'}`],
@@ -274,14 +321,18 @@ export function renderStock(host, s, state) {
     ['淨利率', `${F.pct(f.margins?.net, 1)}（去年同期 ${F.pct(f.marginsLastYear?.net, 1)}）`],
     ['ROE / ROA（近四季）', `${F.pct(f.roe, 1)} / ${F.pct(f.roa, 1)}`],
     ['負債比 / 流動比', `${F.pct(f.debtRatio, 1)} / ${F.pct(f.currentRatio, 0)}`],
+    us && ['近四季自由現金流', F.usd(f.fcf4)],
+    us && ['自由現金流殖利率', fcfYield(f.fcf4, px?.price, s.shares)],
+    us && ['盈餘品質（FCF ÷ 淨利）', F.isNum(f.fcf4) && F.isNum(f.ni4) && f.ni4 > 0 ? `${F.num(f.fcf4 / f.ni4, 2)} 倍` : 'N/A'],
   ]), tableView(['季度', 'EPS', '毛利率', '營益率', '淨利率'], f.quarters.map((q) => [q.date, F.num(q.eps), F.pct(q.gross, 1), F.pct(q.op, 1), F.pct(q.net, 1)]))]
     : h('p', { class: 'note' }, state.pending ? '載入中…' : '沒有財報資料'));
 
   host.replaceChildren(
     head, quote, comp, tiles,
     h('div', { class: 'grid' }, pricePanel, techPanel),
-    // 美股沒有月營收、法人籌碼 → 河流圖（由 SEC EPS 與股價推算）+ 財報
-    ...(us ? [h('div', { class: 'grid even' }, riverPanel, fundPanel)] : [h('div', { class: 'grid even' }, riverPanel, revPanel), h('div', { class: 'grid even' }, chipPanel, fundPanel)]),
+    // 美股沒有月營收、法人籌碼 → 河流圖 + 財報、季度趨勢 + 相對大盤
+    ...(us ? [h('div', { class: 'grid even' }, riverPanel, fundPanel), h('div', { class: 'grid even' }, qPanel, riskPanel)]
+      : [h('div', { class: 'grid even' }, riverPanel, revPanel), h('div', { class: 'grid even' }, chipPanel, fundPanel), h('div', { class: 'grid even' }, qPanel, riskPanel)]),
   );
   return () => charts.forEach((ch) => ch.destroy());
 }

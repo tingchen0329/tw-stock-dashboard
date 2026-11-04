@@ -118,7 +118,8 @@ class Dashboard(unittest.TestCase):
         self.page.wait_for_selector(".panel .chart svg")
         self.assertIn("2330", self.title())
         self.assertIn("100%", self.page.locator(".completeness summary").inner_text())
-        self.assertEqual(self.page.locator(".chart svg").count(), 3)
+        self.assertEqual(self.page.locator(".chart svg").count(), 4)          # 股價、河流圖、月營收、季度 EPS
+        self.assertIn("相對大盤與風險", self.page.locator("#stock").inner_text())
         macro = self.page.locator("#macro").inner_text()
         for label in ("台指期夜盤", "道瓊工業", "那斯達克", "櫃買指數"):
             self.assertIn(label, macro)
@@ -212,7 +213,7 @@ class Dashboard(unittest.TestCase):
         th.click()
         self.assertEqual(th.get_attribute("aria-sort"), "descending")
         vals = [float(t.replace("%", "").replace("+", "")) for t in
-                self.page.locator(".ov tbody tr td:nth-child(7)").all_inner_texts()]
+                self.page.locator(".ov tbody tr td:nth-child(8)").all_inner_texts()]
         self.assertEqual(vals, sorted(vals, reverse=True))
         # 點一列 → 開啟個股
         code = rows.first.get_attribute("data-code")
@@ -262,7 +263,10 @@ class Dashboard(unittest.TestCase):
         rows.first.click()
         self.page.locator(".stock-head h2").filter(has_text="NVDA").wait_for()
         self.assertIn("#us/NVDA", self.page.url)
-        self.assertEqual(self.page.locator(".chart svg").count(), 2)           # 股價圖 + 本益比河流圖（沒有月營收）
+        self.assertEqual(self.page.locator(".chart svg").count(), 3)           # 股價、河流圖、季度 EPS（沒有月營收）
+        txt = self.page.locator("#stock").inner_text()
+        self.assertIn("S&P 500", txt)
+        self.assertIn("自由現金流", txt)
         self.assertTrue(self.page.locator(".us-notice").is_visible())
         self.assertIn("100%", self.page.locator(".completeness summary").inner_text())
         tv = self.page.get_by_role("link", name="TradingView ↗")

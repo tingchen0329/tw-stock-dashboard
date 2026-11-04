@@ -32,8 +32,9 @@ workflow 會自動把代理網址寫進 `assets/ai.json` 並重新部署網站�
 
 ## 調整
 - **Gemini 模型**：部署時加環境變數 `GEMINI_MODELS`（逗號分隔、依序嘗試），預設 `gemini-3.8-flash`
-- **Claude 模型**：`CLAUDE_MODEL`，預設 `claude-sonnet-5-5`
-- 以上兩個可在 `.github/workflows/ai-proxy.yml` 的 Deploy 步驟加 `--env "GEMINI_MODELS=..."`
+- **Claude 模型**：GitHub Variable `CLAUDE_MODEL`，預設 `claude-sonnet-5-5`（可改 `claude-haiku-5-5` 省錢、`claude-opus-5-5` 最完整）
+- **供應商順序**：GitHub Variable `AI_ORDER`，預設 `gemini,claude`；設 `claude,gemini` 改成 Claude 優先（改完重跑 Deploy AI proxy）
+- Gemini 模型可在 `.github/workflows/ai-proxy.yml` 的 Deploy 步驟加 `--env "GEMINI_MODELS=..."`
 - **只用 Gemini**：不要設定 `ANTHROPIC_API_KEY`；**只用 Claude**：不要設定 `GEMINI_API_KEY`
 - **停用**：把 `assets/ai.json` 的 `url` 改成空字串
 
