@@ -36,7 +36,7 @@ function isSubsequence(q, s) {
   return i === q.length;
 }
 
-const MARKET_LABEL = { twse: '上市', tpex: '上櫃', emerging: '興櫃' };
+const MARKET_LABEL = { twse: '上市', tpex: '上櫃', emerging: '興櫃', us: '美股' };
 export const marketLabel = (m) => MARKET_LABEL[m] ?? m ?? '';
 
 /**
@@ -68,6 +68,9 @@ function score(item, q, qCode, qName) {
     }
     return s;
   }
+  // 英文代號（美股 NVDA、BRK.B）：代號完全相符 / 開頭相符優先於名稱
+  if (item.c === q) return 1000;
+  if (/^[a-z]/.test(q) && item.c.startsWith(q)) return 820 - (item.c.length - q.length);
   const n = item.n;
   if (n === q) s = 950;
   else if (n.startsWith(q)) s = 700 - n.length;

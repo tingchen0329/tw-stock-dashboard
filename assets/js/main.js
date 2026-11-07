@@ -30,7 +30,10 @@ const state = {
   byCode: new Map(),
   current: null,      // { code, summary, ctrl, cleanup, range, tables, meta }
   range: '1Y',
-  peerData: {},      // 同業比較：{ tw: screen.json, us: us/screen.json }，第一次打開個股頁才下載
+  peerData: {},
+  usIndex: [],        // 美股搜尋索引（追蹤清單 + S&P 500），第一次切到美股時建立
+  usActive: '',
+  usDay: null,      // 同業比較：{ tw: screen.json, us: us/screen.json }，第一次打開個股頁才下載
   macroRange: '3M',
   aiUrl: null,        // AI 報告代理網址（assets/ai.json）
 };
@@ -40,7 +43,16 @@ function markMarket(us) {
   $('sw-tw')?.setAttribute('aria-current', String(!us));
   $('sw-us')?.setAttribute('aria-current', String(us));
   document.body.classList.toggle('us-mode', us);
+  const input = $('search');
+  if (input && state.index.length) {
+    input.placeholder = us
+      ? `美股代號或名稱，例如 NVDA、Apple${state.usIndex.length ? `（${state.usIndex.length.toLocaleString()} 檔）` : ''}`
+      : `代號或名稱，例如 2330、台積（${state.index.length.toLocaleString()} 檔）`;
+  }
+  if (us) ensureUsData();
 }
+
+const isUs = () => document.body.classList.contains('us-mode');
 
 /** 個股頁最下方的 AI 報告區塊（每次重畫後補上；分析結果保留在 ai.js 的記憶體中） */
 function appendAi(code, dataDay, getPrompt) {
@@ -66,7 +78,7 @@ let results = [];
 
 function renderResults(query) {
   const list = $('results');
-  results = search(state.index, query, 8);
+  results = search(isUs() ? state.usIndex : state.index, query, 8);
   active = results.length ? 0 : -1;
   if (!query.trim()) { closeResults(); return; }
   list.replaceChildren(...(results.length
@@ -74,13 +86,15 @@ function renderResults(query) {
       const [a, b, c] = highlightParts(item.name, query);
       return h('li', {
         id: `opt-${i}`, role: 'option', 'aria-selected': String(i === active),
-        on: { mousedown: (e) => { e.preventDefault(); pick(item.code); }, mousemove: () => setActive(i) },
+        on: { mousedown: (e) => { e.preventDefault(); pickAny(item); }, mousemove: () => setActive(i) },
       },
       h('span', { class: 'code' }, item.code),
       h('span', {}, a, b ? h('mark', {}, b) : null, c, ' ', h('span', { class: 'badge' }, marketLabel(item.market))),
       h('span', { class: 'ind' }, item.industry));
     })
-    : [h('li', { class: 'empty', role: 'option', 'aria-disabled': 'true' }, `找不到「${query.trim()}」。可輸入代號（例如 2330）或公司名稱（例如 台積）。`)]));
+    : [h('li', { class: 'empty', role: 'option', 'aria-disabled': 'true' }, isUs()
+      ? `找不到「${query.trim()}」。可輸入美股代號（例如 NVDA）或英文公司名稱（例如 Apple），按 Enter 直接開啟代號。`
+      : `找不到「${query.trim()}」。可輸入代號（例如 2330）或公司名稱（例如 台積）。`)]));
   list.hidden = false;
   $('search').setAttribute('aria-expanded', 'true');
   $('search').setAttribute('aria-activedescendant', active >= 0 ? `opt-${active}` : '');
@@ -108,6 +122,15 @@ function pick(code) {
   else location.hash = code;      // 觸發 hashchange → showStock
 }
 
+/** 搜尋結果：美股開 #us/代號，台股開 #代號 */
+function pickAny(item) {
+  if (item.market !== 'us') { pick(item.code); return; }
+  closeResults();
+  $('search').value = '';
+  $('search').blur();
+  usPick(item.code);
+}
+
 let blurTimer = 0;
 
 function wireSearch() {
@@ -126,10 +149,12 @@ function wireSearch() {
       e.preventDefault();
       clearTimeout(timer);
       if ($('results').hidden) renderResults(input.value);
-      const exact = resolveExact(state.index, input.value);
+      const exact = resolveExact(isUs() ? state.usIndex : state.index, input.value);
       const chosen = active >= 0 && results[active] ? results[active].item : exact;
-      if (chosen) pick(chosen.code);
-      else if (/^\d{4,6}$/.test(input.value.trim())) pick(input.value.trim());   // 清單外的代號也試著查
+      const raw = input.value.trim();
+      if (chosen) pickAny(chosen);
+      else if (!isUs() && /^\d{4,6}$/.test(raw)) pick(raw);                       // 清單外的代號也試著查
+      else if (isUs() && /^[A-Za-z][A-Za-z0-9.\-]{0,9}$/.test(raw)) pickAny({ code: raw.toUpperCase(), market: 'us' });
     }
   });
   // 失焦延遲關閉：讓滑鼠點選結果有時間觸發；重新聚焦時取消
@@ -259,13 +284,53 @@ async function showScreen() {
 
 const usPick = (sym) => { location.hash = `us/${sym}`; };
 
-/** 美股頁上方：子選單（總覽 / 選股）＋ 開休市提示（台北時間） */
+/**
+ * 美股版面（與台股同位置）：頁首橫幅放開休市提示、搜尋框下方放美股追蹤列（總覽 / 選股 / 清單）
+ * @param {string} active  目前頁面：'us'、'us-screen' 或代號
+ * @param {string|null} dataDay  資料日期（美東）
+ */
 function usTop(active, dataDay) {
-  const n = usMarketNotice(usMarketStatus(new Date()), dataDay);
-  const link = (href, key, label) => h('a', { href, 'aria-current': String(active === key) }, label);
-  return h('div', { class: 'us-top' },
-    h('nav', { class: 'us-nav', 'aria-label': '美股' }, link('#us', 'overview', '美股總覽'), link('#us-screen', 'screen', '美股選股')),
-    h('p', { class: `banner us-notice ${n.level === 'warn' ? 'warn' : 'info'}` }, n.text));
+  const n = usMarketNotice(usMarketStatus(new Date()), dataDay ?? state.usDay);
+  if (dataDay) state.usDay = dataDay;
+  $('banners').querySelector('.us-notice')?.remove();
+  const el = h('p', { class: `banner us-notice ${n.level === 'warn' ? 'warn' : 'info'}` }, n.text);
+  $('banners').prepend(el);
+  state.usActive = active;
+  markUsChip();
+  return document.createDocumentFragment();          // 呼叫端 prepend 用（已不放進內容區）
+}
+
+function markUsChip() {
+  document.querySelectorAll('#us-watchlist .chip').forEach((c) => c.setAttribute('aria-current', String(c.dataset.code === state.usActive)));
+}
+
+/** 美股追蹤列與搜尋索引：第一次切到美股時載入（追蹤清單 + S&P 500 成分股） */
+let usDataPromise = null;
+function ensureUsData() {
+  if (usDataPromise) return usDataPromise;
+  usDataPromise = (async () => {
+    const [ov, sc] = await Promise.all([loadUsOverview().catch(() => null), loadUsScreen().catch(() => null)]);
+    const rows = new Map();
+    for (const r of ov?.rows ?? []) rows.set(r.code, [r.code, r.name || r.code, 'us', r.etf ? 'ETF' : (r.industry || '')]);
+    const cols = sc?.cols ?? [];
+    for (const r of sc?.rows ?? []) {
+      const o = Object.fromEntries(cols.map((c, i) => [c, r[i]]));
+      if (!rows.has(o.code)) rows.set(o.code, [o.code, o.name || o.code, 'us', o.sector || '']);
+      else if (!rows.get(o.code)[3] || rows.get(o.code)[3] === 'NasdaqGS') rows.get(o.code)[3] = o.sector || '';
+    }
+    state.usIndex = buildIndex([...rows.values()], state.boot.meta.usWatchlist ?? []);
+    if (ov?.dataDay) state.usDay = ov.dataDay;
+    const items = (ov?.rows ?? []).map((r) => ({ code: r.code, name: r.name?.replace(/,? (Inc\.|Corporation|Corp\.|Platforms|Holdings)\.?$/i, '') ?? '', price: r.price, changePct: r.chgPct }));
+    renderWatchlist($('us-watchlist'), items, usPick);
+    $('us-watchlist').firstChild.after(
+      h('button', { class: 'chip ov-chip', type: 'button', dataset: { code: 'us' }, on: { click: () => { location.hash = 'us'; } } },
+        h('span', { class: 't' }, '總覽'), h('span', { class: 'v' }, `${items.length} 檔`)),
+      h('button', { class: 'chip ov-chip', type: 'button', dataset: { code: 'us-screen' }, on: { click: () => { location.hash = 'us-screen'; } } },
+        h('span', { class: 't' }, '選股'), h('span', { class: 'v' }, 'S&P 500')));
+    markUsChip();
+    if (isUs()) markMarket(true);                     // 更新搜尋框提示的檔數
+  })();
+  return usDataPromise;
 }
 
 async function showUsScreen() {
@@ -282,7 +347,7 @@ async function showUsScreen() {
   try { data = await loadUsScreen(); } catch { /* 顯示「尚未產生」 */ }
   if (state.current !== cur) return;
   renderScreen($('stock'), data, { watchlist: state.boot.meta.usWatchlist ?? [], onPick: usPick, market: 'us' });
-  $('stock').prepend(usTop('screen', data?.asOf?.date));
+  $('stock').prepend(usTop('us-screen', data?.asOf?.date));
 }
 
 async function showUsOverview() {
@@ -303,7 +368,7 @@ async function showUsOverview() {
     note: '資料來源：Yahoo Finance（日線、配息）、美國證管會 SEC EDGAR（財報）。本益比 = 收盤 ÷ 近四季 EPS；河流圖位階 = 目前本益比在近三年的百分位（由財報與股價推算）；營收年增為最新一季與去年同季比較。'
       + 'ETF、外國公司（例如台積電 ADR）沒有 SEC 財報，顯示 N/A。清單在 config/us_watchlist.csv。',
   });
-  $('stock').prepend(usTop('overview', data?.dataDay));
+  $('stock').prepend(usTop('us', data?.dataDay));
 }
 
 async function showUsStock(sym) {
@@ -314,6 +379,8 @@ async function showUsStock(sym) {
   state.current = cur;
   markCurrentChip('');
   markMarket(true);
+  state.usActive = sym;
+  markUsChip();
   document.title = `${sym}｜美股｜台股研究台`;
   $('stock').replaceChildren(h('p', { class: 'note' }, `載入 ${sym}…`));
   let detail;
@@ -323,7 +390,7 @@ async function showUsStock(sym) {
     if (e.name === 'AbortError' || state.current !== cur) return;
     const inList = (state.boot.meta.usWatchlist ?? []).includes(sym);
     const ext = (href, label) => h('a', { href, target: '_blank', rel: 'noopener' }, label);
-    $('stock').replaceChildren(usTop('', null),
+    $('stock').replaceChildren(usTop(sym, null),
       h('p', { class: 'banner warn' }, inList ? `${sym} 的資料尚未產生：下一次 GitHub Actions 更新後就會出現。`
         : `${sym} 不在美股追蹤清單，所以沒有完整個股頁（股價圖、河流圖、財報）。想追蹤的話，把代號加進 config/us_watchlist.csv（可直接用 Yahoo Finance 匯出的 CSV），下次更新就會出現。`),
       h('p', { class: 'ext-links' },
@@ -350,7 +417,7 @@ async function showUsStock(sym) {
       onPrompt: openPrompt, onCSV: () => exportFile('csv'), onXLSX: () => exportFile('xlsx'),
       onAi: () => triggerAi(`US:${sym}`),
     });
-    $('stock').prepend(usTop('', mkt?.date));
+    $('stock').prepend(usTop(sym, mkt?.date));
     appendAi(`US:${sym}`, mkt?.date ?? '', () => buildPrompt(cur.summary, state.boot.meta, state.boot.macro?.items));
   };
   draw();

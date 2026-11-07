@@ -313,12 +313,44 @@ class Dashboard(unittest.TestCase):
         self.page.locator(".ov tbody tr").nth(19).wait_for()
         self.assertEqual(self.errors, [])
 
+    def test_us_layout_matches_tw_and_search(self):
+        """美股與台股版面位置相同：開休市提示在頁首橫幅、搜尋框、追蹤列、總經"""
+        self.page.goto(self.base + "#us")
+        self.page.locator('#us-watchlist .chip[data-code="NVDA"]').wait_for()
+        self.assertTrue(self.page.locator("#search").is_visible())
+        self.assertTrue(self.page.locator("#banners .us-notice").is_visible())
+        self.assertFalse(self.page.locator("#watchlist").is_visible())
+        order = self.page.evaluate("""() => ['banners', 'search', 'us-watchlist', 'macro', 'stock']
+            .map((id) => (id === 'search' ? document.querySelector('.search') : document.getElementById(id)).getBoundingClientRect().top)""")
+        self.assertEqual(order, sorted(order))
+        self.assertIn("美股代號", self.page.locator("#search").get_attribute("placeholder"))
+        # 代號、名稱、S&P 500 成分股（不在追蹤清單）都搜得到
+        self.page.locator("#search").fill("nvd")
+        self.page.locator("#results li").first.wait_for()
+        self.assertIn("NVDA", self.page.locator("#results li").first.inner_text())
+        self.page.locator("#search").fill("coca")
+        self.page.locator("#results li", has_text="KO").wait_for()
+        self.page.locator("#search").press("Enter")
+        self.page.wait_for_url("**#us/KO")
+        # 清單外的代號直接 Enter → 開啟代號頁（顯示外部連結）
+        self.page.locator("#search").fill("tsla")
+        self.page.locator("#search").press("Enter")
+        self.page.wait_for_url("**#us/TSLA")
+        self.page.get_by_role("link", name="Finviz ↗").wait_for()
+        self.errors.clear()          # TSLA 沒有資料檔：瀏覽器記錄的 404 是預期的
+        # 回台股：台股追蹤列與台股搜尋恢復
+        self.page.get_by_role("link", name="台股").click()
+        self.page.locator("#watchlist").wait_for(state="visible")
+        self.assertFalse(self.page.locator("#banners .us-notice").is_visible())
+        self.assertIn("2330", self.page.locator("#search").get_attribute("placeholder"))
+        self.assertEqual(self.errors, [])
+
     def test_us_screen(self):
         self.page.goto(self.base + "#us")
-        self.page.get_by_role("link", name="美股選股").click()
+        self.page.locator('#us-watchlist .chip[data-code="us-screen"]').click()
         self.page.locator(".screen h2").filter(has_text="S&P 500").wait_for()
         self.assertIn("#us-screen", self.page.url)
-        self.assertEqual(self.page.locator(".us-nav a[aria-current='true']").inner_text(), "美股選股")
+        self.assertIn("選股", self.page.locator("#us-watchlist .chip[aria-current='true']").inner_text())
         rows = self.page.locator(".ov tbody tr")
         self.page.get_by_role("button", name="殖利率型").click()
         codes = rows.evaluate_all("rs => rs.map(r => r.dataset.code)")
