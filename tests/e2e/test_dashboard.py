@@ -118,11 +118,39 @@ class Dashboard(unittest.TestCase):
         self.page.wait_for_selector(".panel .chart svg")
         self.assertIn("2330", self.title())
         self.assertIn("100%", self.page.locator(".completeness summary").inner_text())
-        self.assertEqual(self.page.locator(".chart svg").count(), 4)          # 股價、河流圖、月營收、季度 EPS
-        self.assertIn("相對大盤與風險", self.page.locator("#stock").inner_text())
+        self.page.locator(".peer-table tr.me").wait_for()          # 同業資料回來後會重畫一次
+        self.page.locator(".chart svg").nth(4).wait_for()
+        # 股價、河流圖、月營收、季度 EPS、歷年股利（股利資料分批更新，這檔有）
+        self.assertEqual(self.page.locator(".chart svg").count(), 5)
+        txt = self.page.locator("#stock").inner_text()
+        for t in ("相對大盤與風險", "股利政策與填息", "自由現金流"):
+            self.assertIn(t, txt)
+        # 同業比較：背景載入 screen.json 後出現，自己那一列標示
+        self.page.locator(".peer-table tr.me").wait_for()
+        self.assertIn("2330", self.page.locator(".peer-table tr.me").inner_text())
         macro = self.page.locator("#macro").inner_text()
         for label in ("台指期夜盤", "道瓊工業", "那斯達克", "櫃買指數"):
             self.assertIn(label, macro)
+        self.assertEqual(self.errors, [])
+
+    def test_macro_chip_opens_history(self):
+        self.open("#2330")
+        chip = self.page.locator('#macro .chip[data-key="spx"]')
+        chip.wait_for()
+        self.assertRegex(chip.inner_text(), r"S&P 500\s+[\d,.]+\s+[▲▼]?\s*[+-]?\d+\.\d\d%")
+        self.assertNotIn("-0.00%", self.page.locator("#macro").inner_text())
+        chip.click()
+        dlg = self.page.locator("#macro-dialog")
+        dlg.locator(".chart svg").wait_for()
+        self.assertIn("S&P 500｜歷史紀錄", dlg.inner_text())
+        self.assertIn("區間最高", dlg.inner_text())
+        dlg.get_by_role("button", name="1Y").click()
+        self.assertEqual(dlg.get_by_role("button", name="1Y").get_attribute("aria-pressed"), "true")
+        dlg.locator("summary", has_text="每日紀錄").click()
+        dlg.locator("tbody tr").first.wait_for()
+        self.assertGreater(dlg.locator("tbody tr").count(), 200)
+        self.page.locator("#macro-close").click()
+        self.assertFalse(dlg.is_visible())
         self.assertEqual(self.errors, [])
 
     def test_search_by_name_full_width_and_partial(self):
@@ -263,10 +291,16 @@ class Dashboard(unittest.TestCase):
         rows.first.click()
         self.page.locator(".stock-head h2").filter(has_text="NVDA").wait_for()
         self.assertIn("#us/NVDA", self.page.url)
+        # 同業資料（us/screen.json）回來後整頁會重畫一次 → 等重畫完成、圖表畫好再數
+        self.page.locator(".peer-table tr.me").wait_for()
+        self.page.locator(".chart svg").nth(2).wait_for()
         self.assertEqual(self.page.locator(".chart svg").count(), 3)           # 股價、河流圖、季度 EPS（沒有月營收）
         txt = self.page.locator("#stock").inner_text()
         self.assertIn("S&P 500", txt)
         self.assertIn("自由現金流", txt)
+        self.assertIn("內部人買賣", txt)
+        self.assertIn("公開市場賣出", txt)
+        self.page.locator(".peer-table tr.me").wait_for()
         self.assertTrue(self.page.locator(".us-notice").is_visible())
         self.assertIn("100%", self.page.locator(".completeness summary").inner_text())
         tv = self.page.get_by_role("link", name="TradingView ↗")

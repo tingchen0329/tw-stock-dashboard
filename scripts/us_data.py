@@ -3,7 +3,8 @@
 
 來源（皆免費、免金鑰）：
   * Yahoo Finance chart API：3 年日線（技術指標）與最新報價
-  * 美國證管會 SEC EDGAR companyfacts：官方財報（營收、毛利、營業利益、淨利、EPS、資產負債）
+  * 美國證管會 SEC EDGAR companyfacts：官方財報（營收、毛利、營業利益、淨利、EPS、資產負債、現金流量）
+  * SEC EDGAR submissions + Form 4 XML：內部人（董事、高階主管、持股 10% 以上大股東）買賣申報
 
 輸出格式刻意與台股 FinMind 個股檔相同（{cols, rows} 資料表、type 用 Revenue / EPS 等名稱），
 網頁與 analytics.js 不需要分辨台股或美股就能算出技術指標、近四季 EPS、ROE 等。
@@ -17,12 +18,17 @@ import datetime as dt
 import io
 import json
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Callable
 
 YAHOO_CHART = "https://query1.finance.yahoo.com/v8/finance/chart/"
 SEC_TICKERS = "https://www.sec.gov/files/company_tickers.json"
 SEC_FACTS = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
+SEC_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+SEC_ARCHIVE = "https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/{doc}"
+INSIDER_DAYS = 180          # 內部人交易保留近 6 個月
+INSIDER_MAX_NEW = 40        # 每檔每次最多下載幾份新的 Form 4（大型股一季可能上百份；以「最新的」優先）
 
 US_SYMBOL = re.compile(r"[A-Z][A-Z0-9.\-]{0,9}")
 PRICE_COLS = ["date", "open", "max", "min", "close", "Trading_Volume"]     # 與 FinMind TaiwanStockPrice 相同
@@ -225,6 +231,100 @@ def parse_companyfacts(facts: dict) -> dict:
     return {"income": table(income), "balance": table(balance), "shares": shares[1] if shares else None}
 
 
+# ── 內部人交易（Form 4）──────────────────────────────────────────────
+def _x(node, path: str) -> str:
+    """Form 4 的值多半包在 <value> 裡：<transactionShares><value>100</value></transactionShares>"""
+    if node is None:
+        return ""
+    el = node.find(path + "/value")
+    if el is None:
+        el = node.find(path)
+    return (el.text or "").strip() if el is not None and el.text else ""
+
+
+def _num(t: str) -> float | None:
+    try:
+        return float(t.replace(",", ""))
+    except (AttributeError, ValueError):
+        return None
+
+
+def parse_form4(xml_text: str) -> list[dict]:
+    """
+    Form 4 XML → 非衍生性交易（普通股）清單：
+      {date, owner, role, code, shares, price, ad, after, plan}
+    code：P 公開市場買進、S 公開市場賣出、A 獎酬配股、M 行使選擇權、F 繳稅扣股、G 贈與…（SEC 交易代碼）
+    plan：申報時勾選 Rule 10b5-1（事先排定的交易計畫）
+    """
+    try:
+        root = ET.fromstring(xml_text.strip().encode("utf-8"))
+    except ET.ParseError:
+        return []
+    owners, roles = [], []
+    for ro in root.findall("reportingOwner"):
+        owners.append(_x(ro, "reportingOwnerId/rptOwnerName"))
+        rel = ro.find("reportingOwnerRelationship")
+        r = []
+        if rel is not None:
+            if _x(rel, "officerTitle"):
+                r.append(_x(rel, "officerTitle"))
+            elif _x(rel, "isOfficer") in ("1", "true"):
+                r.append("Officer")
+            if _x(rel, "isDirector") in ("1", "true"):
+                r.append("Director")
+            if _x(rel, "isTenPercentOwner") in ("1", "true"):
+                r.append("10% Owner")
+        roles.append(", ".join(dict.fromkeys(r)))
+    plan = _x(root, "aff10b5One") in ("1", "true")
+    out = []
+    for t in root.findall("nonDerivativeTable/nonDerivativeTransaction"):
+        shares = _num(_x(t, "transactionAmounts/transactionShares"))
+        if not shares:
+            continue
+        out.append({
+            "date": _x(t, "transactionDate")[:10],
+            "owner": " / ".join(o for o in owners if o)[:80],
+            "role": " / ".join(r for r in roles if r)[:80],
+            "code": _x(t, "transactionCoding/transactionCode")[:2],
+            "shares": shares,
+            "price": _num(_x(t, "transactionAmounts/transactionPricePerShare")),
+            "ad": _x(t, "transactionAmounts/transactionAcquiredDisposedCode")[:1],
+            "after": _num(_x(t, "postTransactionAmounts/sharesOwnedFollowingTransaction")),
+            "plan": plan,
+        })
+    return out
+
+
+def fetch_insider(tx, cik: int, prev: dict | None, today: dt.date) -> dict:
+    """
+    近 6 個月 Form 4。已下載過的申報（依 accession 編號）沿用上一份，只抓新的。
+    回傳 {"filings": {accession: {"filed": 日期, "tx": [...]}}}
+    """
+    sub = tx.get_json(SEC_SUBMISSIONS.format(cik=cik), kind="sec")
+    rec = (sub or {}).get("filings", {}).get("recent", {})
+    since = (today - dt.timedelta(days=INSIDER_DAYS)).isoformat()
+    cache = dict((prev or {}).get("filings") or {})
+    filings, new = {}, 0
+    rows = zip(rec.get("form", []), rec.get("accessionNumber", []), rec.get("filingDate", []), rec.get("primaryDocument", []))
+    for form, acc, filed, doc in sorted(rows, key=lambda r: r[2], reverse=True):
+        if form != "4" or filed < since:
+            continue
+        if acc in cache:
+            filings[acc] = cache[acc]
+            continue
+        if new >= INSIDER_MAX_NEW:
+            continue
+        # primaryDocument 常是 XSL 轉成網頁的版本（xslF345X05/xxx.xml）→ 去掉前綴就是原始 XML
+        raw = doc.split("/", 1)[1] if doc.startswith("xsl") and "/" in doc else doc
+        try:
+            text = tx.get_text(SEC_ARCHIVE.format(cik=cik, acc=acc.replace("-", ""), doc=raw), kind="sec")
+        except Exception:  # noqa: BLE001
+            continue
+        filings[acc] = {"filed": filed, "tx": parse_form4(text)}
+        new += 1
+    return {"filings": filings}
+
+
 PER_COLS = ["date", "PER", "PBR", "dividend_yield"]     # 與 FinMind TaiwanStockPER 相同 → 沿用本益比河流圖
 FILING_LAG = dt.timedelta(days=45)                       # 季底後約 45 天才有財報：避免用「未來」的 EPS 算歷史本益比
 
@@ -285,7 +385,7 @@ def fetch_us(tx, report, out: Path, symbols: list[str], full: bool, write_json: 
         if "403" in st.get("note", ""):
             st["note"] += "：SEC 拒絕此 User-Agent，請在 GitHub 設定變數 SEC_USER_AGENT（見 docs/SETUP.md）"
 
-    ok_px = ok_sec = 0
+    ok_px = ok_sec = ok_ins = 0
     sizes = {}
     for s in symbols:
         old = prev[s] or {}
@@ -315,6 +415,16 @@ def fetch_us(tx, report, out: Path, symbols: list[str], full: bool, write_json: 
                 errors["income"] = "SEC 查無此代號（ETF 或非美國公司）"
         elif tables.get("income"):
             ok_sec += 1
+        insider, insider_at = old.get("insider"), old.get("insiderAt")
+        if s in need_sec and s in cik:
+            try:
+                insider = fetch_insider(tx, cik[s], old.get("insider"), dt.date.fromisoformat(now_iso[:10]))
+                insider_at = now_iso
+                ok_ins += 1
+            except Exception as e:  # noqa: BLE001
+                errors["insider"] = str(e)[:120]
+        elif insider:
+            ok_ins += 1
         dividends = (chart or {}).get("dividends") if chart else old.get("dividends", [])
         per = per_table(tables.get("price"), tables.get("income"), tables.get("balance"), shares, dividends or [])
         if per:
@@ -323,6 +433,7 @@ def fetch_us(tx, report, out: Path, symbols: list[str], full: bool, write_json: 
                   "exchange": (chart or {}).get("exchange") or old.get("exchange", ""),
                   "currency": (chart or {}).get("currency") or old.get("currency", "USD"),
                   "fetchedAt": now_iso if chart else old.get("fetchedAt"), "secAt": sec_at, "shares": shares,
+                  "insider": insider, "insiderAt": insider_at,
                   "tables": tables, "errors": errors}
         if tables:
             sizes[f"us/stock/{s}.json"] = write_json(d / f"{s}.json", detail)
@@ -331,4 +442,6 @@ def fetch_us(tx, report, out: Path, symbols: list[str], full: bool, write_json: 
     report.items["us_financials"] = {"ok": ok_sec > 0 or not symbols, "rows": ok_sec, "ms": 0,
                                      "note": f"{len(symbols) - ok_sec} 檔沒有 SEC 財報（ETF / 外國公司為正常）"
                                      if ok_sec < len(symbols) else ""}
+    report.items["sec_insider"] = {"ok": ok_ins > 0 or not ok_sec, "rows": ok_ins, "ms": 0,
+                                   "note": "內部人交易（Form 4）只在完整更新時抓取"}
     return sizes

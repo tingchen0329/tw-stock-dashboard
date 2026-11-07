@@ -6,7 +6,7 @@
  */
 
 import * as F from './format.js';
-import { completeness } from './analytics.js';
+import { completeness, INSIDER_CODES } from './analytics.js';
 import { lineChart, barChart, tableView } from './charts.js';
 import { marketLabel } from './search.js';
 
@@ -66,19 +66,100 @@ export function renderWatchlist(host, items, onPick) {
   );
 }
 
-export function renderMacro(host, items) {
+/** 總經數值的顯示格式（卡片與歷史視窗共用） */
+export function macroFmt(key, v) {
+  if (key === 'fed' || key === 'us10y') return F.pct(v, 2);
+  if (key === 'usdtwd') return F.num(v, 3);
+  return F.num(v, Math.abs(v) > 1000 ? 0 : 2);
+}
+
+/**
+ * 總經列：每張卡片顯示「最後價格、漲跌 %、資料日期」，點擊開啟歷史紀錄（onOpen(item)）
+ */
+export function renderMacro(host, items, onOpen) {
   if (!items?.length) { host.replaceChildren(); return; }
   host.replaceChildren(
     h('span', { class: 'strip-label' }, '總經'),
-    h('div', { class: 'chips' }, ...items.map((m) => h('div', { class: 'chip', title: `${m.source}，${F.when(m.time)}` },
+    h('div', { class: 'chips' }, ...items.map((m) => h('button', {
+      type: 'button', class: 'chip', 'data-key': m.key,
+      title: `${m.source}，${F.when(m.time)}｜點擊查看歷史紀錄`,
+      'aria-label': `${m.label} ${macroFmt(m.key, m.value)}，查看歷史紀錄`,
+      on: { click: () => onOpen?.(m) },
+    },
       h('span', { class: 't' }, m.label),
-      h('span', { class: 'v' }, m.key === 'fed' || m.key === 'us10y' ? F.pct(m.value, 2) : m.key === 'usdtwd' ? F.num(m.value, 3) : F.num(m.value, m.value > 1000 ? 0 : 2)),
+      h('span', { class: 'v' }, macroFmt(m.key, m.value)),
       h('span', { class: `d ${m.key === 'fed' ? 'flat' : F.dir(m.changePct)}` },
-        m.key === 'fed' ? `自 ${F.when(m.time)}` : F.isNum(m.changePct) ? `${m.changePct > 0 ? '▲' : m.changePct < 0 ? '▼' : ''} ${F.pct(m.changePct, 2, true)}` : '—',
-        // 夜盤的價值在於「多新」：顯示報價時間（盤中為時:分，備援的昨夜收盤為日期）
-        m.key === 'txf_night' ? h('span', { class: 'when' }, F.when(m.time)) : null),
+        m.key === 'fed' ? `自 ${F.when(m.time)}` : F.isNum(m.changePct) ? `${m.changePct >= 0.005 ? '▲' : m.changePct <= -0.005 ? '▼' : ''} ${F.pct(m.changePct, 2, true)}` : '—',
+        // 資料日期：夜盤顯示報價時間（盤中為時:分）；其他顯示收盤日（美股用美國日期）
+        m.key === 'fed' ? null : h('span', { class: 'when' }, macroDay(m))),
     ))),
   );
+}
+
+/** 卡片上的日期：日線收盤顯示 MM/DD；台指期夜盤顯示 MM/DD HH:MM */
+function macroDay(m) {
+  if (m.key === 'txf_night') return F.when(m.time);
+  return m.day ? F.when(m.day) : F.when(String(m.time || '').slice(0, 10));
+}
+
+/** 美股收盤在台北隔天凌晨：顯示「10/19（台北 10/20 05:00）」，避免以為是 10/20 的收盤 */
+function lastWhen(item) {
+  const t = String(item.time || '');
+  if (item.day && t.length > 10 && t.slice(0, 10) !== item.day) return `${F.when(item.day)}（台北 ${F.when(t)}）`;
+  return F.when(t);
+}
+
+const MACRO_RANGES = [['1M', 21, '1 個月'], ['3M', 63, '3 個月'], ['6M', 126, '6 個月'], ['1Y', Infinity, '1 年']];
+
+/**
+ * 總經歷史紀錄（對話框內容）：折線圖 + 區間統計 + 每日收盤表
+ * @param {HTMLElement} host
+ * @param {object} item   macro.json 的一項（label、value、changePct…）
+ * @param {{dates:string[], close:number[], source?:string}|null} hist
+ * @param {{range:string, onRange:(r)=>void}} state
+ */
+export function renderMacroHistory(host, item, hist, state) {
+  const charts = [];
+  const head = h('div', { class: 'mh-head' },
+    h('div', { class: 'mh-price' },
+      h('span', { class: 'v' }, macroFmt(item.key, item.value)),
+      item.key === 'fed' ? h('span', { class: 'muted' }, `自 ${F.when(item.time)} 起`)
+        : h('span', { class: `d ${F.dir(item.changePct)}` }, `${F.signed(item.change, item.key === 'usdtwd' ? 3 : 2)}（${F.pct(item.changePct, 2, true)}）`)),
+    h('p', { class: 'note' }, `最後${item.key === 'txf_night' ? '報價' : '收盤'}：${lastWhen(item)}｜來源：${item.source || hist?.source || 'N/A'}`));
+  if (!hist?.dates?.length || hist.dates.length < 2) {
+    host.replaceChildren(head, h('p', { class: 'note' }, '這一項目前沒有歷史資料（下次資料更新後會出現）。'));
+    return () => {};
+  }
+  const [, n] = MACRO_RANGES.find(([k]) => k === state.range) || MACRO_RANGES[3];
+  const start = Math.max(0, hist.dates.length - (Number.isFinite(n) ? n + 1 : hist.dates.length));
+  const dates = hist.dates.slice(start);
+  const close = hist.close.slice(start);
+  const valid = close.filter(F.isNum);
+  const hi = Math.max(...valid);
+  const lo = Math.min(...valid);
+  const first = close.find(F.isNum);
+  const lastV = [...close].reverse().find(F.isNum);
+  const chg = F.isNum(first) && F.isNum(lastV) && first ? ((lastV / first) - 1) * 100 : null;
+  const box = h('div');
+  const fmt = (v) => macroFmt(item.key, v);
+  const stats = h('dl', { class: 'kv mh-stats' },
+    h('dt', {}, '區間漲跌'), h('dd', { class: F.dir(chg) }, F.pct(chg, 2, true)),
+    h('dt', {}, '區間最高'), h('dd', {}, `${fmt(hi)}（${F.when(dates[close.indexOf(hi)])}）`),
+    h('dt', {}, '區間最低'), h('dd', {}, `${fmt(lo)}（${F.when(dates[close.indexOf(lo)])}）`),
+    h('dt', {}, '距區間高點'), h('dd', {}, F.pct(hi ? ((lastV / hi) - 1) * 100 : null, 2, true)));
+  const rowsDesc = dates.map((d, i) => [d, fmt(close[i]), i ? F.pct(F.isNum(close[i]) && F.isNum(close[i - 1]) && close[i - 1] ? ((close[i] / close[i - 1]) - 1) * 100 : null, 2, true) : '—']);
+  host.replaceChildren(head,
+    h('div', { class: 'seg', role: 'group', 'aria-label': '期間' }, MACRO_RANGES.map(([k, , label]) =>
+      h('button', { type: 'button', 'aria-pressed': String(k === state.range), title: label, on: { click: () => state.onRange(k) } }, k))),
+    box, stats,
+    tableView(['日期', item.key === 'fed' ? '利率' : '收盤', '日漲跌'], rowsDesc, { label: '每日紀錄（表格）' }));
+  const ch = lineChart(box);
+  ch.update({
+    dates, series: [{ name: item.label, values: close, color: 'var(--s1)', endLabel: true }],
+    height: 240, fmt, axisFmt: (v) => macroFmt(item.key, v), ariaLabel: `${item.label}近${dates.length}個交易日走勢`,
+  });
+  charts.push(ch);
+  return () => charts.forEach((c) => c.destroy?.());
 }
 
 /* ───────── 個股 ───────── */
@@ -109,6 +190,98 @@ const RANGES = [['3M', 63, '3 個月'], ['6M', 126, '6 個月'], ['1Y', 250, '1 
 function fcfYield(fcf, price, shares) {
   if (![fcf, price, shares].every(F.isNum) || price <= 0 || shares <= 0) return 'N/A';
   return F.pct((fcf / (price * shares)) * 100, 1);
+}
+
+/** 台股沒有流通股數欄位：用 近四季淨利 ÷ 近四季 EPS 推算（只在兩者都為正時） */
+function impliedShares(f) {
+  return F.isNum(f?.ni4) && F.isNum(f?.eps4) && f.ni4 > 0 && f.eps4 > 0 ? f.ni4 / f.eps4 : null;
+}
+
+const rankText = (r, unit, better) => (r?.rank ? `第 ${r.rank} ${better} / ${r.of} 檔（產業中位數 ${F.num(r.median, 1)}${unit}）` : `N/A（產業中位數 ${F.num(r?.median, 1)}${unit}）`);
+
+/** 同業比較：同產業排名 + 前 12 檔（依營收年增排序，自己標粗體） */
+function renderPeers(p, info, state) {
+  const us = info.market === 'us';
+  if (!p) {
+    return panel('同業比較', null, h('p', { class: 'note' }, state.peersLoading ? '載入全市場資料中…'
+      : us ? '這一檔不在 S&P 500 選股資料中，沒有同業可比較' : '全市場資料中找不到這一檔的產業別（ETF 沒有同業比較）'));
+  }
+  const peers = [...p.peers].sort((a, b) => (F.isNum(b.revYoY) ? b.revYoY : -1e9) - (F.isNum(a.revYoY) ? a.revYoY : -1e9));
+  const top = peers.slice(0, 12);
+  if (!top.some((r) => r.code === p.me.code)) top.push(p.me);
+  const href = (c) => (us ? `#us/${c}` : `#${c}`);
+  const table = h('table', { class: 'peer-table' },
+    h('thead', {}, h('tr', {}, ['代號', '名稱', '本益比', '營收年增', 'ROE', '殖利率'].map((t) => h('th', { scope: 'col' }, t)))),
+    h('tbody', {}, top.map((r) => h('tr', { class: r.code === p.me.code ? 'me' : '' },
+      h('td', {}, h('a', { href: href(r.code) }, r.code)),
+      h('td', {}, r.name || ''),
+      h('td', {}, F.isNum(r.pe) && r.pe > 0 ? F.num(r.pe, 1) : 'N/A'),
+      h('td', { class: F.dir(r.revYoY) }, F.pct(r.revYoY, 1, true)),
+      h('td', {}, F.pct(r.roe, 1)),
+      h('td', {}, F.pct(r.yield, 2))))));
+  return panel('同業比較', `${p.industry}，共 ${p.n} 檔${us ? '（S&P 500 成分股）' : '（上市櫃）'}；表格依營收年增排序，前 12 檔`,
+    kv([
+      ['本益比', rankText(p.ranks.pe, ' 倍', '低')],
+      ['營收年增', rankText(p.ranks.revYoY, '%', '高')],
+      ['ROE', rankText(p.ranks.roe, '%', '高')],
+      ['殖利率', rankText(p.ranks.yield, '%', '高')],
+    ]),
+    h('div', { class: 'scroll-x' }, table));
+}
+
+/** 股利政策與填息（台股） */
+function renderDividends(d, s, state, charts) {
+  if (!d) {
+    return panel('股利政策與填息', null, h('p', { class: 'note' },
+      state.pending ? '載入中…' : '尚無股利資料：股利、除權息、現金流量表每次更新只補幾檔（避免超過 FinMind 免費額度），約 1–2 天內全部補齊。'));
+  }
+  const e = d.last;
+  const lastText = !e ? 'N/A'
+    : e.filled ? `${e.date} 除${e.kind || '息'} ${F.num(e.dividend)} 元，${e.fillDays} 個交易日填息`
+      : e.inData ? `${e.date} 除${e.kind || '息'} ${F.num(e.dividend)} 元，尚未填息（已 ${e.tradingDaysSince} 個交易日，距填息 ${F.pct(e.gap != null ? -e.gap : null, 1)}）`
+        : `${e.date} 除${e.kind || '息'} ${F.num(e.dividend)} 元`;
+  const pol = d.policy.slice(-8);
+  const box = h('div');
+  const p = panel('股利政策與填息', `連續 ${d.streak} 年發放現金股利；填息 = 除息後收盤回到除息前一天的收盤價`,
+    box,
+    kv([
+      ['最近一次', lastText],
+      ['近 5 次平均填息', F.isNum(d.avgFillDays) ? `${F.num(d.avgFillDays, 0)} 個交易日` : 'N/A'],
+      ['填息率（股價資料期間內）', F.isNum(d.fillRate) ? `${F.pct(d.fillRate, 0)}（${d.events.filter((x) => x.filled).length}/${d.events.filter((x) => x.inData).length} 次）` : 'N/A'],
+      ['最近年度現金股利', pol.length ? `${pol[pol.length - 1].year} 年度 ${F.num(pol[pol.length - 1].cash)} 元，配發率 ${F.pct(pol[pol.length - 1].payout, 0)}` : 'N/A'],
+    ]),
+    tableView(['盈餘年度', '現金股利', '股票股利', 'EPS', '配發率'], d.policy.map((r) => [String(r.year), F.num(r.cash), F.num(r.stock), F.num(r.eps), F.pct(r.payout, 0)]), { label: '歷年股利政策' }),
+    tableView(['除權息日', '股利', '除息前收盤', '填息天數'], d.events.map((x) => [x.date, F.num(x.dividend), F.num(x.before),
+      x.filled ? `${x.fillDays} 天` : x.inData ? '尚未填息' : '超出股價資料期間']), { label: '除權息與填息紀錄' }));
+  if (pol.length) {
+    const ch = barChart(box);
+    ch.update({
+      labels: pol.map((r) => String(r.year)), values: pol.map((r) => r.cash),
+      colorFor: () => 'var(--s1)', fmt: (v) => F.num(v), axisFmt: (v) => F.num(v, Math.abs(v) >= 10 ? 0 : 1),
+      tipRows: (i) => [{ value: `${F.num(pol[i].cash)} 元`, label: '現金股利' }, { value: F.pct(pol[i].payout, 0), label: '配發率' }],
+      ariaLabel: `${s.info.name}近 ${pol.length} 年現金股利`, height: 160,
+    });
+    charts.push(ch);
+  }
+  return p;
+}
+
+/** 美股內部人買賣（SEC Form 4） */
+function renderInsider(x, state) {
+  if (!x || !x.filings) {
+    return panel('內部人買賣', null, h('p', { class: 'note' }, state.pending ? '載入中…' : '沒有 Form 4 資料（ETF、外國公司不需申報，或下次完整更新後才會出現）'));
+  }
+  const usd = (v) => (F.isNum(v) ? `${v < 0 ? '-' : ''}$${F.twd(Math.abs(v))}` : 'N/A');
+  const line = (a, label) => (a.n ? `${a.n} 筆、${a.people} 人，${F.num(a.shares, 0)} 股，約 ${usd(a.value)}${a.plan ? `（${a.plan} 筆為 10b5-1 預排計畫）` : ''}` : `無${label}`);
+  return panel('內部人買賣', `SEC Form 4，${x.since ?? ''} 至 ${x.end ?? ''}（近 6 個月，${x.filings} 份申報）。只有「公開市場買進 / 賣出」反映內部人的看法；獎酬配股、繳稅扣股屬例行性`,
+    kv([
+      ['公開市場買進', h('span', { class: x.buy.n ? 'up' : '' }, line(x.buy, '買進'))],
+      ['公開市場賣出', h('span', { class: x.sell.n ? 'down' : '' }, line(x.sell, '賣出'))],
+      ['淨買賣金額', signedSpan(usd(x.net), x.net)],
+    ]),
+    tableView(['日期', '人員', '職稱', '交易', '股數', '價格', '交易後持股'], [...x.recent].reverse().map((t) => [
+      t.date, t.owner, t.role || '', `${INSIDER_CODES[t.code] || t.code}${t.plan ? '（10b5-1）' : ''}`,
+      `${t.ad === 'D' ? '-' : '+'}${F.num(t.shares, 0)}`, F.isNum(t.price) && t.price ? `$${F.num(t.price, 2)}` : 'N/A', F.num(t.after, 0)]), { label: '最近 20 筆申報明細' }));
 }
 
 export function renderStock(host, s, state) {
@@ -289,11 +462,12 @@ export function renderStock(host, s, state) {
   const qChart = h('div');
   const qs = f ? f.quarters.filter((q) => F.isNum(q.eps)).slice(-12) : [];
   const money = us ? F.usd : F.twd;
+  const hasFcf = qs.some((q) => F.isNum(q.fcf));
   const lastQ = qs[qs.length - 1];
   const qPanel = panel('季度趨勢', lastQ ? `最新 ${lastQ.date}：EPS ${F.num(lastQ.eps)}，營收 ${money(lastQ.revenue)}，年增 ${F.pct(lastQ.revYoY, 1, true)}` : null,
     qChart,
-    qs.length ? tableView(['季度', 'EPS', '營收', '營收年增', '毛利率', ...(us ? ['自由現金流'] : [])],
-      qs.map((q) => [q.date, F.num(q.eps), money(q.revenue), F.pct(q.revYoY, 1, true), F.pct(q.gross, 1), ...(us ? [money(q.fcf)] : [])])) : null);
+    qs.length ? tableView(['季度', 'EPS', '營收', '營收年增', '毛利率', ...(hasFcf ? ['自由現金流'] : [])],
+      qs.map((q) => [q.date, F.num(q.eps), money(q.revenue), F.pct(q.revYoY, 1, true), F.pct(q.gross, 1), ...(hasFcf ? [money(q.fcf)] : [])])) : null);
   if (qs.length) {
     const ch = barChart(qChart);
     ch.update({
@@ -321,18 +495,24 @@ export function renderStock(host, s, state) {
     ['淨利率', `${F.pct(f.margins?.net, 1)}（去年同期 ${F.pct(f.marginsLastYear?.net, 1)}）`],
     ['ROE / ROA（近四季）', `${F.pct(f.roe, 1)} / ${F.pct(f.roa, 1)}`],
     ['負債比 / 流動比', `${F.pct(f.debtRatio, 1)} / ${F.pct(f.currentRatio, 0)}`],
-    us && ['近四季自由現金流', F.usd(f.fcf4)],
-    us && ['自由現金流殖利率', fcfYield(f.fcf4, px?.price, s.shares)],
-    us && ['盈餘品質（FCF ÷ 淨利）', F.isNum(f.fcf4) && F.isNum(f.ni4) && f.ni4 > 0 ? `${F.num(f.fcf4 / f.ni4, 2)} 倍` : 'N/A'],
+    (us || F.isNum(f.fcf4)) && ['近四季自由現金流', money(f.fcf4)],
+    (us || F.isNum(f.fcf4)) && ['自由現金流殖利率', fcfYield(f.fcf4, px?.price, us ? s.shares : impliedShares(f))],
+    (us || F.isNum(f.fcf4)) && ['盈餘品質（FCF ÷ 淨利）', F.isNum(f.fcf4) && F.isNum(f.ni4) && f.ni4 > 0 ? `${F.num(f.fcf4 / f.ni4, 2)} 倍` : 'N/A'],
   ]), tableView(['季度', 'EPS', '毛利率', '營益率', '淨利率'], f.quarters.map((q) => [q.date, F.num(q.eps), F.pct(q.gross, 1), F.pct(q.op, 1), F.pct(q.net, 1)]))]
     : h('p', { class: 'note' }, state.pending ? '載入中…' : '沒有財報資料'));
+
+  const peerPanel = renderPeers(s.peers, info, state);
+  const divPanel = us ? null : renderDividends(s.dividends, s, state, charts);
+  const insPanel = us ? renderInsider(s.insider, state) : null;
 
   host.replaceChildren(
     head, quote, comp, tiles,
     h('div', { class: 'grid' }, pricePanel, techPanel),
-    // 美股沒有月營收、法人籌碼 → 河流圖 + 財報、季度趨勢 + 相對大盤
-    ...(us ? [h('div', { class: 'grid even' }, riverPanel, fundPanel), h('div', { class: 'grid even' }, qPanel, riskPanel)]
-      : [h('div', { class: 'grid even' }, riverPanel, revPanel), h('div', { class: 'grid even' }, chipPanel, fundPanel), h('div', { class: 'grid even' }, qPanel, riskPanel)]),
+    // 美股沒有月營收、法人籌碼 → 河流圖 + 財報、季度趨勢 + 相對大盤、內部人 + 同業
+    ...(us ? [h('div', { class: 'grid even' }, riverPanel, fundPanel), h('div', { class: 'grid even' }, qPanel, riskPanel),
+      h('div', { class: 'grid even' }, insPanel, peerPanel)]
+      : [h('div', { class: 'grid even' }, riverPanel, revPanel), h('div', { class: 'grid even' }, chipPanel, fundPanel),
+        h('div', { class: 'grid even' }, qPanel, riskPanel), h('div', { class: 'grid even' }, divPanel, peerPanel)]),
   );
   return () => charts.forEach((ch) => ch.destroy());
 }

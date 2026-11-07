@@ -578,6 +578,12 @@ class MacroOnly(unittest.TestCase):
         stop(cls.srv)
         cls.tmp.cleanup()
 
+    def setUp(self):
+        # 請求次數的測試不含「股利 / 現金流分批更新」（另有 SlowDatasets 測試）
+        p = mock.patch.dict(fd.SLOW_BUDGET, {"full": 0, "auto": 0, "macro": 0})
+        p.start()
+        self.addCleanup(p.stop)
+
     def run_macro(self, url: str, out: Path) -> int:
         return fd.main(["--watchlist", WATCH, "--us-watchlist", US_WATCH, "--fixtures", str(self.fx), "--out", str(out), "--today", "2026-10-19",
                         "--macro-only", "--base-url", url])
@@ -638,8 +644,8 @@ class MacroOnly(unittest.TestCase):
             self.assertFalse((out / "stock/2330.json").exists())                # 移除的：刪掉
             self.assertNotIn("stock/2330.json", meta["bytes"])
             self.assertEqual((out / "stock/3189.json").read_bytes(), (self.site / "data/stock/3189.json").read_bytes())
-            # 只抓 2454 一檔（8 個資料集）+ 股票清單 1 + 總經 2
-            self.assertEqual(meta["finmindRequests"], 8 + 1 + 2)
+            # 只抓 2454 一檔（8 個資料集）+ 股票清單 1 + 總經 3（櫃買、夜盤歷史、Fed）
+            self.assertEqual(meta["finmindRequests"], 8 + 1 + 3)
             self.assertIn("本次更新 1 檔", meta["sources"]["finmind_watchlist"]["note"])
             self.assertTrue(meta["sources"]["finmind_watchlist"]["ok"])
 
@@ -668,7 +674,7 @@ class MacroOnly(unittest.TestCase):
             self.assertEqual(meta["mode"], "macro")
             self.assertTrue((out / "stock/6669.json").exists())
             self.assertIn("stock/6669.json", meta["bytes"])
-            self.assertEqual(meta["macroFinmindRequests"], 2 + 8)
+            self.assertEqual(meta["macroFinmindRequests"], 3 + 8)
             wl = meta["sources"]["finmind_watchlist"]
             self.assertTrue(wl["ok"])
             self.assertEqual(wl["note"], "補抓 1 檔")
@@ -699,3 +705,71 @@ class MacroOnly(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SlowDatasets(unittest.TestCase):
+    """股利、除權息、現金流量表：每次執行只更新幾檔、最久沒更新的優先、7 天內不重抓"""
+
+    def test_budget_oldest_first_and_ttl(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            fx = make_fixtures(root)
+            out = root / "data"
+            with mock.patch.dict(fd.SLOW_BUDGET, {"full": 3}):
+                fd.main(["--watchlist", WATCH, "--us-watchlist", US_WATCH, "--fixtures", str(fx), "--out", str(out), "--today", "2026-10-19"])
+            watch = json.loads(Path(WATCH).read_text())["stocks"]
+            have = [c for c in watch if json.loads((out / f"stock/{c}.json").read_text()).get("slowAt")]
+            self.assertEqual(len(have), 3)
+            spec = fd.load_spec()
+            tx = fd.FixtureTransport(fx)
+            today = fd.now_tpe().date()
+            # 已更新的 3 檔在 7 天內不會再抓；其餘依序補上
+            n, quota = fd.refresh_slow(tx, watch, spec, today, out, 100)
+            self.assertFalse(quota)
+            self.assertEqual(n, len(watch) - 3)
+            self.assertEqual(tx.finmind_requests, sum(1 if fd.is_etf(c) else 0 for c in watch if c not in have) * 2
+                             + sum(0 if fd.is_etf(c) else 3 for c in watch if c not in have))
+            self.assertEqual(fd.refresh_slow(fd.FixtureTransport(fx), watch, spec, today, out, 100)[0], 0)
+            # 8 天後到期 → 全部重抓；個股一般更新時保留上一份慢速資料
+            n, _ = fd.refresh_slow(fd.FixtureTransport(fx), watch, spec, today + dt.timedelta(days=8), out, 100)
+            self.assertEqual(n, len(watch))
+            d2330 = json.loads((out / "stock/2330.json").read_text())
+            kept = fd.fetch_stock_detail(fd.FixtureTransport(fx), "2330", spec, today, d2330)
+            for k in ("dividend", "divResult", "cashflow"):
+                self.assertEqual(kept["tables"][k], d2330["tables"][k])
+            self.assertEqual(kept["slowAt"], d2330["slowAt"])
+
+    def test_web_never_fetches_slow_datasets_live(self):
+        spec = fd.load_spec()
+        for k in ("dividend", "divResult", "cashflow"):
+            self.assertEqual(spec[k]["wave"], 3)          # data.js 只跑 wave 1、2
+
+
+class MacroHistory(unittest.TestCase):
+    def test_us_index_change_uses_exchange_date(self):
+        # 美股 K 棒 = 紐約 09:30（UTC 14:30）；收盤時間 16:00 = 台北隔天 05:00 → 舊版會算成 0.00%
+        utc = dt.timezone.utc
+        days = [dt.date(2026, 11, 5), dt.date(2026, 11, 6)]
+        ts = [int(dt.datetime.combine(d, dt.time(14, 30), utc).timestamp()) for d in days]
+        payload = {"chart": {"result": [{"meta": {"regularMarketPrice": 110.0, "gmtoffset": -18000,
+                   "regularMarketTime": int(dt.datetime(2026, 11, 6, 21, 0, tzinfo=utc).timestamp())},
+                   "timestamp": ts, "indicators": {"quote": [{"close": [100.0, 110.0]}]}}]}}
+        r = fd.parse_yahoo_chart(payload)
+        self.assertEqual(r["prev"], 100.0)
+        self.assertEqual(r["changePct"], 10.0)
+        self.assertEqual(r["day"], "2026-11-06")
+        self.assertEqual(r["hist"], {"dates": ["2026-11-05", "2026-11-06"], "close": [100.0, 110.0]})
+
+    def test_hist_file_written_and_merged(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            items = [{"key": "spx", "label": "S&P 500", "value": 1, "hist": {"dates": ["2026-11-06"], "close": [1]}},
+                     {"key": "dji", "label": "道瓊", "value": 2}]
+            (out / "macro_hist.json").write_text(json.dumps({"items": {"dji": {"label": "道瓊", "dates": ["x"], "close": [2]},
+                                                                        "gone": {"dates": [], "close": []}}}))
+            sizes = fd.write_macro(out, items, {})
+            self.assertEqual(set(sizes), {"macro.json", "macro_hist.json"})
+            macro = json.loads((out / "macro.json").read_text())
+            self.assertNotIn("hist", macro["items"][0])                      # macro.json 保持精簡
+            hist = json.loads((out / "macro_hist.json").read_text())["items"]
+            self.assertEqual(sorted(hist), ["dji", "spx"])                    # dji 沿用上一份；不在清單的移除

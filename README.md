@@ -411,7 +411,7 @@ repo → **Settings** → **Secrets and variables** → **Actions** → **Secret
 | GitHub Pages | Free | NT$0 | 網站約 2 MB；軟上限 1 GB 容量、每月 100 GB 流量 |
 | 證交所 / 櫃買 OpenAPI | 政府開放資料 | NT$0 | 全市場行情、本益比、三大法人 |
 | Yahoo Finance chart API | 非官方、免費 | NT$0 | 指數、匯率、盤中價。無服務保證，偶爾限流 |
-| FinMind 註冊會員 | Free | NT$0 | 每小時 600 次；收盤後完整更新約 510 次（68 檔），其他時段約 3 次。清單上限約 70 檔 |
+| FinMind 註冊會員 | Free | NT$0 | 每小時 600 次；收盤後完整更新約 560 次（68 檔，含股利 / 現金流分批更新 15 檔），其他時段約 4–30 次。清單上限約 70 檔 |
 | Claude | 你現有的方案 | 不增加 | 貼上「分析指令」或在 Claude Code 使用 skill |
 | *選用* FinMind Backer | 付費 | NT$699/月 | 單日全市場批次下載（可做全市場篩選）、股權分散表（千張大戶）、還原股價 |
 | *選用* FinMind Sponsor | 付費 | NT$999/月 | 盤中即時快照、分點進出、八大行庫 |

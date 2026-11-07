@@ -60,6 +60,9 @@ export const loadUsStock = (sym, signal) => fetchJSON(v(`us/stock/${encodeURICom
 /** AI 報告代理網址（assets/ai.json，Deploy AI proxy 自動填入）；沒有就回傳 null */
 export const loadAiConfig = () => fetchJSON('./assets/ai.json', { ttl: DAY, timeout: 8000 }).then((c) => c?.url || null, () => null);
 
+/** 總經歷史（約一年日線，點總經卡片才下載）；版本跟著 macro.json */
+export const loadMacroHist = () => fetchJSON(v('macro_hist.json', macroVersion), { ttl: 10 * 60 * 1000, persist: true, timeout: 15000 });
+
 /** 全市場選股資料（約 300 KB，壓縮後約 80 KB）：第一次打開選股頁才下載 */
 export const loadScreen = () => fetchJSON(v('screen.json'), { ttl: 10 * 60 * 1000, persist: true, timeout: 20000 });
 

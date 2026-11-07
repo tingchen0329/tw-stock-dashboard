@@ -22,14 +22,19 @@
 | 自由現金流、FCF 殖利率、盈餘品質 | Stock Analysis、財報狗（現金流） | 美股（SEC 現金流量表）；台股需 FinMind 額外請求，暫不做 |
 | VIX、S&P 500 | Finviz、Yahoo Finance | 總經列 |
 
+## v6.9.0 新增
+| 功能 | 參考網站 | 說明 |
+|---|---|---|
+| 總經卡片歷史紀錄 | Yahoo Finance、Investing.com | 點卡片看近一年走勢、區間高低、每日收盤 |
+| 同業比較 | 財報狗、Finviz | 同產業本益比、營收年增、ROE、殖利率排名（screen.json，不花 FinMind 額度） |
+| 股利政策與填息天數 | Goodinfo | FinMind TaiwanStockDividend / DividendResult，每檔 7 天更新一次 |
+| 台股自由現金流 | 財報狗 | FinMind TaiwanStockCashFlowsStatement（年初累計拆單季） |
+| 美股內部人買賣 | Finviz、OpenInsider | SEC Form 4，近 6 個月，依申報編號快取 |
+
 ## 後續可做（依價值排序）
 | 功能 | 參考網站 | 免費資料源 | 難度 / 注意 |
 |---|---|---|---|
-| 美股內部人交易（Form 4） | Finviz、OpenInsider | SEC EDGAR submissions + Form 4 XML | 中：每檔要抓多份 XML，需控制每秒 10 次上限 |
 | 美股機構持股（13F） | Yahoo Finance、WhaleWisdom | SEC 13F | 高：資料量大，季更新 |
-| 台股自由現金流 | 財報狗 | FinMind TaiwanStockCashFlowsStatement | 每檔 +1 次請求（68 檔 ≈ +68 次 / 完整更新，額度仍在 600 內） |
-| 台股股利政策 / 填息天數 | Goodinfo | FinMind TaiwanStockDividend、DividendResult | 每檔 +1–2 次請求 |
-| 同業比較（同產業本益比、營收年增排名） | 財報狗、Finviz | 現有 screen.json（產業別） | 低：只要前端 |
 | 財報公布日 / 法說會日期 | Yahoo Finance、MOPS | 證交所 OpenAPI（法說會）；美股無免費官方日曆 | 中 |
 | 分析師目標價、EPS 預估 | Yahoo Finance、Finviz | 無可靠免費 API | 不做（只放外部連結） |
 | 千張大戶、借券 | Goodinfo、神秘金字塔 | FinMind 付費方案 | 需付費 |

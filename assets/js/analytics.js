@@ -437,6 +437,189 @@ function byQuarter(table, keys) {
   return [...q.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
 }
 
+/**
+ * 台股現金流量表（FinMind TaiwanStockCashFlowsStatement）→ 單季 {date, ocf, capex} 的 income 格式列
+ * 台灣財報的現金流量表是「年初至今累計」：Q1 = 1–3 月、Q2 = 1–6 月 … → 單季 = 本期 − 同年上一期。
+ * 同年缺上一期（例如只有 6 月沒有 3 月）時無法拆，該季略過（寧缺勿錯）。
+ * 資本支出（取得不動產、廠房及設備）在報表上是負數 → 一律轉正，FCF = 營業現金流 − 資本支出。
+ */
+export function twCashflowRows(table) {
+  const ytd = new Map();      // date → {ocf, capex}
+  for (const r of rows(table)) {
+    const v = toNum(r.value);
+    if (!isNum(v) || !r.date) continue;
+    const t = String(r.type || '');
+    const o = String(r.origin_name || '');
+    const rec = ytd.get(r.date) || {};
+    if (['CashFlowsFromOperatingActivities', 'NetCashInflowFromOperatingActivities'].includes(t) || (o.includes('營業活動之淨現金') && rec.ocf === undefined)) rec.ocf = v;
+    if ((t === 'PropertyAndPlantAndEquipment' || (o.startsWith('取得不動產、廠房及設備') && !o.includes('預付'))) && rec.capex === undefined) rec.capex = Math.abs(v);
+    ytd.set(r.date, rec);
+  }
+  const dates = [...ytd.keys()].sort();
+  const out = [];
+  for (const d of dates) {
+    const m = +d.slice(5, 7);
+    const cur = ytd.get(d);
+    let q;
+    if (m <= 3) q = cur;
+    else {
+      const pd = dates.filter((x) => x.slice(0, 4) === d.slice(0, 4) && x < d).pop();
+      const pm = pd ? +pd.slice(5, 7) : 0;
+      if (!pd || m - pm !== 3) continue;
+      const prev = ytd.get(pd);
+      q = { ocf: isNum(cur.ocf) && isNum(prev.ocf) ? cur.ocf - prev.ocf : undefined, capex: isNum(cur.capex) && isNum(prev.capex) ? cur.capex - prev.capex : undefined };
+    }
+    if (isNum(q.ocf)) out.push([d, 'OperatingCashFlow', q.ocf, '營業活動現金流（單季）']);
+    if (isNum(q.capex)) out.push([d, 'Capex', q.capex, '資本支出（單季）']);
+  }
+  return out;
+}
+
+/** income 表接上現金流列（台股用；美股的 SEC 資料已經是單季並放在 income 表） */
+function withCashflow(incomeTable, cashflowTable) {
+  const extra = twCashflowRows(cashflowTable);
+  if (!extra.length) return incomeTable;
+  const cols = incomeTable?.cols || ['date', 'type', 'value', 'origin_name'];
+  const idx = (c) => cols.indexOf(c);
+  const mk = ([d, t, v, o]) => { const r = cols.map(() => null); r[idx('date')] = d; r[idx('type')] = t; r[idx('value')] = v; if (idx('origin_name') >= 0) r[idx('origin_name')] = o; return r; };
+  return { cols, rows: [...(incomeTable?.rows || []), ...extra.map(mk)] };
+}
+
+/** 民國或西元年 → 西元年（"113年" → 2024、"113年第2季" → 2024、"2024" → 2024） */
+function adYear(text) {
+  const n = parseInt(String(text ?? '').replace(/\D.*$/, ''), 10);
+  if (!Number.isFinite(n)) return null;
+  return n < 1911 ? n + 1911 : n;
+}
+
+/**
+ * 股利政策與填息（參考 Goodinfo 股利政策、財報狗填息天數）
+ * @param dividendTable  FinMind TaiwanStockDividend（每次董事會 / 股東會決議一列；季配息公司一年多列）
+ * @param resultTable    FinMind TaiwanStockDividendResult（每次除權息一列：除權息前收盤 before_price）
+ * @param ps             priceSeries（判斷填息：除息日起，收盤 ≥ 除息前收盤的第一天）
+ * @param quarters       fundamentals().quarters（算配發率：現金股利 ÷ 該年度 EPS）
+ */
+export function dividendStats(dividendTable, resultTable, ps, quarters = []) {
+  const pol = rows(dividendTable);
+  const res = rows(resultTable);
+  if (!pol.length && !res.length) return null;
+  // 年度政策：盈餘年度（year 欄）彙總現金 / 股票股利
+  const years = new Map();
+  for (const r of pol) {
+    const y = adYear(r.year) ?? (r.date ? +r.date.slice(0, 4) - 1 : null);
+    if (!y) continue;
+    const rec = years.get(y) || { year: y, cash: 0, stock: 0, times: 0 };
+    rec.cash += (toNum(r.CashEarningsDistribution) || 0) + (toNum(r.CashStatutorySurplus) || 0);
+    rec.stock += (toNum(r.StockEarningsDistribution) || 0) + (toNum(r.StockStatutorySurplus) || 0);
+    rec.times += 1;
+    years.set(y, rec);
+  }
+  const epsYear = new Map();
+  for (const q of quarters) {
+    if (!isNum(q.eps)) continue;
+    const y = +q.date.slice(0, 4);
+    const e = epsYear.get(y) || { sum: 0, n: 0 };
+    e.sum += q.eps; e.n += 1; epsYear.set(y, e);
+  }
+  const policy = [...years.values()].sort((a, b) => a.year - b.year).map((r) => {
+    const e = epsYear.get(r.year);
+    return { ...r, cash: +r.cash.toFixed(4), stock: +r.stock.toFixed(4), eps: e && e.n === 4 ? e.sum : null,
+      payout: e && e.n === 4 && e.sum > 0 ? (r.cash / e.sum) * 100 : null };
+  });
+  // 連續發放現金股利年數（從最近一年往回數）
+  let streak = 0;
+  for (let i = policy.length - 1; i >= 0 && policy[i].cash > 0; i--) streak++;
+
+  // 填息天數：除息日當天算第 1 個交易日
+  const idx = new Map(ps.dates.map((d, i) => [d, i]));
+  const events = res.filter((r) => r.date && isNum(toNum(r.before_price))).sort((a, b) => (a.date < b.date ? -1 : 1)).map((r) => {
+    const before = toNum(r.before_price);
+    let i0 = idx.get(r.date);
+    if (i0 === undefined) i0 = ps.dates.findIndex((d) => d >= r.date);
+    let fillDays = null;
+    let fillDate = null;
+    if (i0 >= 0) {
+      for (let i = i0; i < ps.close.length; i++) if (ps.close[i] >= before) { fillDays = i - i0 + 1; fillDate = ps.dates[i]; break; }
+    }
+    const since = i0 >= 0 ? ps.close.length - i0 : null;
+    const lastClose = ps.close.length ? ps.close[ps.close.length - 1] : null;
+    return {
+      date: r.date, kind: r.stock_or_cache_dividend || '', dividend: toNum(r.stock_and_cache_dividend),
+      before, after: toNum(r.after_price), fillDays, fillDate, filled: fillDays !== null,
+      inData: i0 >= 0, tradingDaysSince: since,
+      gap: fillDays === null && isNum(lastClose) && before ? ((lastClose / before) - 1) * 100 : null,
+    };
+  });
+  const known = events.filter((e) => e.inData);
+  const filled = known.filter((e) => e.filled);
+  const recent = filled.slice(-5);
+  return {
+    policy,
+    streak,
+    events,
+    fillRate: known.length ? (filled.length / known.length) * 100 : null,
+    avgFillDays: recent.length ? recent.reduce((a, e) => a + e.fillDays, 0) / recent.length : null,
+    last: events[events.length - 1] || null,
+  };
+}
+
+/** 美股內部人交易（SEC Form 4）。代碼：P 公開市場買進、S 賣出、A 獎酬、M 行使、F 繳稅扣股、G 贈與 */
+export const INSIDER_CODES = { P: '公開市場買進', S: '公開市場賣出', A: '獎酬配股', M: '行使選擇權', F: '繳稅扣股', G: '贈與', D: '返還公司', C: '轉換', X: '行使權證', J: '其他' };
+
+export function insiderStats(insider, days = 180, asOf = null) {
+  const fs = Object.values(insider?.filings || {});
+  if (!fs.length && !insider) return null;
+  const txs = fs.flatMap((f) => (f.tx || []).map((t) => ({ ...t, filed: f.filed })))
+    .filter((t) => t.date)
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  const end = asOf || txs[0]?.date || null;
+  const since = end ? new Date(Date.parse(end) - days * 864e5).toISOString().slice(0, 10) : null;
+  const win = txs.filter((t) => !since || t.date >= since);
+  const agg = (code) => {
+    const xs = win.filter((t) => t.code === code);
+    const value = xs.reduce((a, t) => a + (isNum(t.price) ? t.shares * t.price : 0), 0);
+    return { n: xs.length, people: new Set(xs.map((t) => t.owner)).size, shares: xs.reduce((a, t) => a + t.shares, 0), value, plan: xs.filter((t) => t.plan).length };
+  };
+  const buy = agg('P');
+  const sell = agg('S');
+  return {
+    since, end, filings: fs.length, buy, sell,
+    net: buy.value - sell.value,
+    recent: txs.slice(0, 20),
+  };
+}
+
+/**
+ * 同業比較：同產業（台股：證交所產業別；美股：GICS 產業）的本益比、營收年增、ROE、殖利率排名
+ * @param screen  screen.json / us/screen.json（{cols, rows}）
+ * @returns {null | {industry, n, me, ranks:{pe,revYoY,roe,yield}: {rank, of, median}, peers:[row]}}
+ */
+export function peerStats(screen, code, key = 'industry') {
+  const list = rows(screen);
+  const me = list.find((r) => r.code === code);
+  if (!me || !me[key]) return null;
+  const peers = list.filter((r) => r[key] === me[key]);
+  if (peers.length < 2) return null;
+  const rank = (field, asc) => {
+    const xs = peers.filter((r) => isNum(r[field]) && (field !== 'pe' || r[field] > 0));
+    if (!isNum(me[field]) || (field === 'pe' && me[field] <= 0)) return { rank: null, of: xs.length, median: median(xs.map((r) => r[field])) };
+    const sorted = [...xs].sort((a, b) => (asc ? a[field] - b[field] : b[field] - a[field]));
+    return { rank: sorted.findIndex((r) => r.code === code) + 1, of: xs.length, median: median(xs.map((r) => r[field])) };
+  };
+  return {
+    industry: me[key], n: peers.length, me,
+    ranks: { pe: rank('pe', true), revYoY: rank('revYoY', false), roe: rank('roe', false), yield: rank('yield', false) },
+    peers,
+  };
+}
+
+function median(xs) {
+  const v = xs.filter(isNum).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const m = Math.floor(v.length / 2);
+  return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+}
+
 export function fundamentals(incomeTable, balanceTable) {
   const inc = byQuarter(incomeTable, ['eps', 'revenue', 'gross', 'op', 'ni', 'ocf', 'capex']);
   const bal = byQuarter(balanceTable, ['assets', 'liab', 'equity', 'ca', 'cl']);
@@ -538,6 +721,7 @@ export function summarize({ info, mkt, quote, tables = {}, asOf = {}, bench = nu
   };
 
   const inst = instStats(tables.inst);
+  const fund = fundamentals(withCashflow(tables.income, tables.cashflow), tables.balance);
   // 上市股的法人資料來自證交所 T86（有自己的日期）；上櫃股來自櫃買中心（與行情同日）
   const today = mkt && isNum(mkt.foreign)
     ? info.market === 'tpex'
@@ -556,7 +740,8 @@ export function summarize({ info, mkt, quote, tables = {}, asOf = {}, bench = nu
     revenue: revenueStats(tables.revenue),
     margin: marginStats(tables.margin),
     holding: holdingStats(tables.holding),
-    fundamentals: fundamentals(tables.income, tables.balance),
+    fundamentals: fund,
+    dividends: dividendStats(tables.dividend, tables.divResult, ps, fund?.quarters),
     risk: riskStats(ps, bench),
     shares: info.shares ?? null,
     series: ps,

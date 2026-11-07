@@ -152,3 +152,52 @@ test('riskStats：相對大盤、Beta、波動度、最大回撤', async () => {
   assert.equal(riskStats({ dates: dates.slice(0, 100), close: close.slice(0, 100) }, bench), null);
   assert.equal(riskStats({ dates, close }, null), null);
 });
+
+test('台股現金流量表：年初累計拆單季；缺上一期就略過', async () => {
+  const { twCashflowRows } = await import('../../assets/js/analytics.js');
+  const t = { cols: ['date', 'type', 'value', 'origin_name'], rows: [
+    ['2025-03-31', 'CashFlowsFromOperatingActivities', 100, '營業活動之淨現金流入（流出）'],
+    ['2025-03-31', 'PropertyAndPlantAndEquipment', -30, '取得不動產、廠房及設備'],
+    ['2025-06-30', 'CashFlowsFromOperatingActivities', 250, '營業活動之淨現金流入（流出）'],
+    ['2025-06-30', 'PropertyAndPlantAndEquipment', -50, '取得不動產、廠房及設備'],
+    ['2025-12-31', 'CashFlowsFromOperatingActivities', 600, '營業活動之淨現金流入（流出）'],   // 缺 9 月 → 無法拆
+  ] };
+  const r = twCashflowRows(t);
+  assert.deepEqual(r.map((x) => [x[0], x[1], x[2]]), [
+    ['2025-03-31', 'OperatingCashFlow', 100], ['2025-03-31', 'Capex', 30],
+    ['2025-06-30', 'OperatingCashFlow', 150], ['2025-06-30', 'Capex', 20]]);
+});
+
+test('股利與填息：民國年度、填息天數、尚未填息', async () => {
+  const { dividendStats } = await import('../../assets/js/analytics.js');
+  const ps = { dates: ['2025-07-01', '2025-07-02', '2025-07-03', '2025-07-04', '2026-07-01', '2026-07-02'], close: [100, 95, 97, 101, 110, 104] };
+  const div = { cols: ['year', 'CashEarningsDistribution', 'StockEarningsDistribution'], rows: [['113年', 5, 0], ['114年第1季', 2, 0], ['114年第2季', 3, 0]] };
+  const res = { cols: ['date', 'before_price', 'stock_and_cache_dividend', 'stock_or_cache_dividend'], rows: [['2025-07-02', 100, 5, '息'], ['2026-07-02', 108, 3, '息']] };
+  const quarters = ['2024-03-31', '2024-06-30', '2024-09-30', '2024-12-31'].map((date) => ({ date, eps: 2.5 }));
+  const d = dividendStats(div, res, ps, quarters);
+  assert.deepEqual(d.policy.map((r) => [r.year, r.cash, r.times]), [[2024, 5, 1], [2025, 5, 2]]);
+  assert.equal(d.policy[0].payout, 50);
+  assert.equal(d.streak, 2);
+  assert.equal(d.events[0].fillDays, 3);          // 07-02 起第 3 個交易日 07-04 收 101 ≥ 100
+  assert.equal(d.events[1].filled, false);
+  assert.ok(Math.abs(d.events[1].gap - (104 / 108 - 1) * 100) < 1e-9);
+  assert.equal(d.fillRate, 50);
+});
+
+test('同業排名與內部人彙總', async () => {
+  const { peerStats, insiderStats } = await import('../../assets/js/analytics.js');
+  const sc = { cols: ['code', 'industry', 'pe', 'revYoY', 'roe', 'yield'], rows: [
+    ['A', 'X', 10, 5, 10, 3], ['B', 'X', 20, 15, 8, 2], ['C', 'X', -5, 30, 1, 0], ['D', 'Y', 8, 1, 1, 1]] };
+  const p = peerStats(sc, 'B');
+  assert.equal(p.n, 3);
+  assert.deepEqual(p.ranks.pe, { rank: 2, of: 2, median: 15 });          // 負本益比不列入
+  assert.equal(p.ranks.revYoY.rank, 2);
+  assert.equal(peerStats(sc, 'D'), null);                                  // 同產業只有自己
+  const x = insiderStats({ filings: {
+    a: { filed: '2026-10-01', tx: [{ date: '2026-10-01', owner: 'P1', code: 'P', shares: 10, price: 5 }] },
+    b: { filed: '2026-09-01', tx: [{ date: '2026-09-01', owner: 'P2', code: 'S', shares: 4, price: 10, plan: true }, { date: '2026-09-01', owner: 'P2', code: 'F', shares: 1, price: 10 }] },
+    c: { filed: '2025-01-01', tx: [{ date: '2025-01-01', owner: 'P3', code: 'S', shares: 999, price: 10 }] },
+  } });
+  assert.deepEqual([x.buy.value, x.sell.value, x.sell.plan, x.net], [50, 40, 1, 10]);     // 6 個月外的不算
+  assert.equal(x.recent[0].date, '2026-10-01');
+});

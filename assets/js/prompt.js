@@ -52,6 +52,36 @@ const instructions = (aspects, index) => `請用繁體中文輸出，先結論�
 5. 操作前要再確認的 3 個數字
 規則：只用上方數據，N/A 照寫不推測；推估值標「推估」；不用 emoji；結尾註明「非投資建議」。`;
 
+/** 股利政策與填息（台股） */
+function dividendLine(d) {
+  if (!d) return '【股利】N/A';
+  const pol = d.policy.slice(-5);
+  const e = d.last;
+  return `【股利】${join([
+    `連續 ${d.streak} 年配發現金股利`,
+    pol.length && `近 ${pol.length} 年現金股利（${pol[0].year} 起）：${pol.map((r) => F.num(r.cash)).join(', ')} 元`,
+    pol.some((r) => F.isNum(r.payout)) && `配發率 ${pol.map((r) => F.pct(r.payout, 0)).join(', ')}`,
+  ])}\n　${join([
+    e && `最近除息 ${e.date}（${F.num(e.dividend)} 元）${e.filled ? `，${e.fillDays} 個交易日填息` : e.inData ? '，尚未填息' : ''}`,
+    F.isNum(d.avgFillDays) && `近 5 次平均填息 ${F.num(d.avgFillDays, 0)} 個交易日`,
+    F.isNum(d.fillRate) && `填息率 ${F.pct(d.fillRate, 0)}`,
+  ]) || 'N/A'}`;
+}
+
+/** 同業比較（兩個版本共用） */
+function peerLine(p) {
+  if (!p) return '【同業】N/A';
+  const r = (x, w) => (x?.rank ? `第 ${x.rank} ${w}/${x.of}（中位數 ${F.num(x.median, 1)}）` : 'N/A');
+  return `【同業：${p.industry}，${p.n} 檔】${join([`本益比 ${r(p.ranks.pe, '低')}`, `營收年增 ${r(p.ranks.revYoY, '高')}`, `ROE ${r(p.ranks.roe, '高')}`, `殖利率 ${r(p.ranks.yield, '高')}`])}`;
+}
+
+/** 美股內部人交易（SEC Form 4） */
+function insiderLine(x) {
+  if (!x) return '【內部人】N/A';
+  const a = (o) => (o.n ? `${o.n} 筆 / ${o.people} 人 / ${F.num(o.shares, 0)} 股 / 約 US$${F.twd(o.value)}${o.plan ? `（${o.plan} 筆 10b5-1 預排）` : ''}` : '無');
+  return `【內部人，近 6 個月 Form 4】公開市場買進 ${a(x.buy)}；賣出 ${a(x.sell)}`;
+}
+
 /** 相對大盤與風險（兩個版本共用） */
 function riskLine(rk) {
   if (!rk) return '【相對大盤】N/A';
@@ -70,7 +100,7 @@ function buildPromptUS(s, macro) {
   const L = [];
   L.push(`你是美股分析師，依下列數據分析 ${info.code} ${info.name}（${info.industry || '交易所 N/A'}${etf ? '｜無 SEC 財報，可能為 ETF 或外國公司' : ''}）。`);
   L.push(`資料日：${dataDay ? `${dataDay} 美東收盤` : 'N/A'}｜財報至 ${f?.latestQuarter ? quarter(f.latestQuarter) : 'N/A'}（SEC，日曆季）｜單位：美元`);
-  L.push('來源：Yahoo Finance、美國證管會 SEC EDGAR；分析師預估、機構持股、內部人交易、選擇權、前瞻財測無資料');
+  L.push('來源：Yahoo Finance、美國證管會 SEC EDGAR（財報、Form 4）；分析師預估、機構持股、選擇權、前瞻財測無資料');
   L.push('');
   L.push(`【總經】${macroLine(macro)}`);
   L.push(`【股價】${join([
@@ -94,6 +124,8 @@ function buildPromptUS(s, macro) {
     ])}`
     : '【財報】不適用（無 SEC us-gaap 財報）');
   L.push(riskLine(s.risk));
+  L.push(insiderLine(s.insider));
+  L.push(peerLine(s.peers));
   L.push(...techLines(t));
   L.push('');
   L.push(instructions(etf ? '總經、股價、技術、估值' : '總經、股價、基本面、技術、估值', 'S&P 500 / 那斯達克'));
@@ -137,8 +169,9 @@ export function buildPrompt(s, meta, macro = []) {
     ])}\n　${join([
       `毛利/營益/淨利率 ${F.pct(f.margins?.gross, 1)} / ${F.pct(f.margins?.op, 1)} / ${F.pct(f.margins?.net, 1)}（去年同期 ${F.pct(f.marginsLastYear?.gross, 1)} / ${F.pct(f.marginsLastYear?.op, 1)} / ${F.pct(f.marginsLastYear?.net, 1)}）`,
       `ROE ${F.pct(f.roe, 1)}`, `ROA ${F.pct(f.roa, 1)}`, `負債比 ${F.pct(f.debtRatio, 1)}`, `流動比 ${F.pct(f.currentRatio, 0)}`,
-    ])}`
+    ])}${F.isNum(f.fcf4) ? `\n　近四季自由現金流 ${F.twd(f.fcf4)}元${F.isNum(f.ni4) && f.ni4 > 0 ? `，FCF ÷ 淨利 ${F.num(f.fcf4 / f.ni4, 2)} 倍` : ''}` : ''}`
     : `【獲利】${na}`);
+  L.push(dividendLine(s.dividends));
 
   const lots = (o) => `外資 ${F.lots(o.foreign)}、投信 ${F.lots(o.trust)}、自營 ${F.lots(o.dealer)}`;
   L.push(`【籌碼，張】${join([
@@ -152,6 +185,7 @@ export function buildPrompt(s, meta, macro = []) {
   ])}`);
 
   L.push(riskLine(s.risk));
+  L.push(peerLine(s.peers));
   L.push(...techLines(t));
 
   L.push(rv

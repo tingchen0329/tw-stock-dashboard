@@ -24,6 +24,10 @@ python tests/bench/run_bench.py                # 新舊版效能比較
 - 美股選股：`scripts/us_screen.py`（S&P 500 清單 + SEC frames API + Yahoo）→ `us/screen.json`，只在 full 或檔案不存在時重建；條件在 `screen.js` 的 `US_PRESETS`。美股開休市在 `market.js` 的 `usMarketStatus()`（NYSE_HOLIDAYS 每年要補）。
 - AI 報告：`tw-stock-ai-proxy/api/ai.js`（Vercel Function，固定 iad1；供應商順序由 `AI_ORDER` 決定（預設 gemini,claude），`CLAUDE_MODEL` 換模型；保管 GEMINI_API_KEY / ANTHROPIC_API_KEY / AI_ACCESS_CODE，由 `.github/workflows/ai-proxy.yml` 部署並自動寫 `assets/ai.json`）。不用 Cloudflare：免費方案從台灣走香港機房，Gemini / Claude 都不開放香港。AI 金鑰絕不可出現在網頁。
 - 相對大盤與風險：`macro.json` 的 `bench`（Yahoo ^TWII / ^GSPC 2 年日線）→ `analytics.riskStats()`（Beta、波動度、最大回撤、相對報酬）。美股現金流量表是年初至今累計，`us_data.quarterly_from_ytd()` 拆成單季算自由現金流。
+- 總經：`macro.json`（精簡，每次載入）+ `macro_hist.json`（約一年日線，點總經卡片才讀，`write_macro()` 寫）。Yahoo 漲跌用交易所當地日期判斷昨收（美股收盤在台北隔天凌晨）。
+- 慢速資料集（`datasets.json` 的 `wave: 3`：股利、除權息、現金流量表）：網頁不即時查；`refresh_slow()` 每次執行只更新 `SLOW_BUDGET` 檔（最久沒更新優先、7 天內不重抓），避免超過 FinMind 每小時 600 次。
+- 美股內部人：`us_data.fetch_insider()`（SEC submissions + Form 4 XML，依 accession 快取，只在 full 抓）→ us/stock 檔的 `insider`。
+- 同業比較：`analytics.peerStats()` 用 screen.json（產業別）/ us/screen.json（GICS sector），個股頁背景載入。
 - `scripts/build_overview.mjs`：fetch 之後執行，用 analytics.js 產生 `overview.json`（網頁首頁總覽表）。
 - `config/watchlist.csv`：追蹤清單（Yahoo 自選股 CSV，順序即顯示順序）。約 70 檔是 FinMind 免費額度上限（`test_repo_watchlist_is_valid` 會檢查）。
 - 測試用清單是 `tests/fixtures/watchlist.json`（對應 fixtures 的合成資料），不是正式清單。

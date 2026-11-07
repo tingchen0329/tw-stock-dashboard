@@ -35,13 +35,14 @@ export function price(v) {
 
 /** 方向：'up' | 'down' | 'flat'（給 CSS class 用） */
 export function dir(v) {
-  if (!isNum(v) || v === 0) return 'flat';
+  if (!isNum(v) || Math.abs(v) < 0.005) return 'flat';
   return v > 0 ? 'up' : 'down';
 }
 
 /** 帶符號：+1.23 / -1.23 / 0.00。注意 0 是合法值（舊版把 0 當成缺資料） */
 export function signed(v, dp = 2) {
   if (!isNum(v)) return NA;
+  if (Number(Math.abs(v).toFixed(dp)) === 0) v = 0;        // -0.001 → 「0.00」，不是「-0.00」
   return (v > 0 ? '+' : '') + nf(dp).format(v);
 }
 

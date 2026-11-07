@@ -171,6 +171,8 @@ class HttpTransport:
         self._token = finmind_token or None
         self._twse_lock = threading.Lock()
         self._twse_last = 0.0
+        self._sec_lock = threading.Lock()
+        self._sec_last = 0.0
         self.finmind_requests = 0
 
     def _get(self, url: str, headers: dict | None = None, retries: int = 2, data: bytes | None = None) -> bytes:
@@ -197,8 +199,20 @@ class HttpTransport:
         # 錯誤訊息只含 URL 路徑，不含 header（header 裡才有 token）
         raise RuntimeError(f"{'POST' if data else 'GET'} failed: {urllib.parse.urlsplit(url).path} ({last_err})")
 
-    def get_text(self, url: str) -> str:
-        return self._get(url).decode("utf-8-sig")
+    def _sec_wait(self) -> None:
+        """SEC 規定每秒最多 10 個請求 → 每次間隔至少 0.12 秒（多執行緒共用）"""
+        with self._sec_lock:
+            wait = 0.12 - (time.monotonic() - self._sec_last)
+            if wait > 0:
+                time.sleep(wait)
+            self._sec_last = time.monotonic()
+
+    def get_text(self, url: str, kind: str = "public") -> str:
+        headers = {}
+        if kind == "sec":
+            self._sec_wait()
+            headers["User-Agent"] = SEC_USER_AGENT
+        return self._get(url, headers).decode("utf-8-sig")
 
     def get_json(self, url: str, params: dict | None = None, kind: str = "public") -> Any:
         if params:
@@ -209,6 +223,7 @@ class HttpTransport:
             if self._token:
                 headers["Authorization"] = f"Bearer {self._token}"
         elif kind == "sec":
+            self._sec_wait()
             headers["User-Agent"] = SEC_USER_AGENT
         elif kind == "twse_www":
             # 證交所 www 站限流：同一時間只允許一個請求，且與上次間隔 TWSE_GAP_SEC
@@ -259,7 +274,7 @@ class FixtureTransport:
             raise RuntimeError(f"no fixture: {f.name}")
         return json.loads(f.read_text("utf-8"))
 
-    def get_text(self, url: str) -> str:
+    def get_text(self, url: str, kind: str = "public") -> str:
         f = self.dir / self.fixture_name(url, None).removesuffix(".json")
         if not f.exists():
             raise RuntimeError(f"no fixture: {f.name}")
@@ -578,11 +593,19 @@ def to_table(rows: list[dict], spec: dict) -> dict:
     return {"cols": cols, "rows": [[r.get(c) for c in cols] for r in kept]}
 
 
-def fetch_stock_detail(tx, code: str, spec: dict, today: dt.date) -> dict:
-    """一檔股票的所有 FinMind 資料集。單一資料集失敗只記錄錯誤，不影響其他。"""
+def fetch_stock_detail(tx, code: str, spec: dict, today: dt.date, prev: dict | None = None) -> dict:
+    """
+    一檔股票的所有 FinMind 資料集。單一資料集失敗只記錄錯誤，不影響其他。
+    wave 3（股利、現金流量表：一季 / 一年才變一次）不在這裡抓，沿用上一份，由 refresh_slow() 分批更新。
+    """
     tables, errors = {}, {}
+    for key in slow_keys(spec):
+        if key in ((prev or {}).get("tables") or {}):
+            tables[key] = prev["tables"][key]
     for key, s in spec.items():
         if s.get("skipEtf") and is_etf(code):             # ETF 沒有本益比、月營收、財報：不浪費請求
+            continue
+        if s.get("wave") == 3:
             continue
         start = (today - dt.timedelta(days=int(s["days"]))).isoformat()
         try:
@@ -592,7 +615,76 @@ def fetch_stock_detail(tx, code: str, spec: dict, today: dt.date) -> dict:
         except Exception as e:  # noqa: BLE001
             errors[key] = str(e)[:160]
     return {"code": code, "fetchedAt": now_tpe().isoformat(timespec="seconds"),
-            "tables": tables, "errors": errors}
+            "slowAt": (prev or {}).get("slowAt"), "tables": tables, "errors": errors}
+
+
+def slow_keys(spec: dict) -> list[str]:
+    return [k for k, s in spec.items() if s.get("wave") == 3]
+
+
+# 每次執行最多更新幾檔的慢速資料（每檔 3 次請求）。完整更新本身約 510 次，加 15 檔 × 3 = 45 次仍低於每小時 600 次；
+# 夜間（macro）額度幾乎全空 → 一次更新較多檔。全部 68 檔約 1–2 天補齊，之後每檔每 7 天更新一次
+SLOW_BUDGET = {"full": 15, "auto": 10, "macro": 40}
+
+
+def refresh_slow(tx, codes: list[str], spec: dict, today: dt.date, out: Path, budget: int,
+                 report: SourceReport | None = None) -> tuple[int, bool]:
+    """
+    更新股利政策、除權息結果、現金流量表（wave 3）。最久沒更新的優先；未到期（ttlDays 內）的不抓。
+    直接改寫 out/stock/<代號>.json 的 tables 與 slowAt。回傳 (更新檔數, 是否遇到額度用完)。
+    """
+    keys = slow_keys(spec)
+    if not keys or budget <= 0:
+        return 0, False
+    ttl = min(int(spec[k].get("ttlDays", 7)) for k in keys)
+    cand = []
+    for c in codes:
+        f = out / "stock" / f"{c}.json"
+        try:
+            d = json.loads(f.read_text("utf-8"))
+        except (OSError, ValueError):
+            continue
+        at = d.get("slowAt")
+        try:
+            age = (today - dt.date.fromisoformat(str(at)[:10])).days if at else 10**6
+        except ValueError:
+            age = 10**6
+        if age >= ttl:
+            cand.append((-age, c, d))
+    cand.sort(key=lambda x: x[:2])
+
+    def one(item):
+        _, code, d = item
+        tables, errors = dict(d.get("tables") or {}), dict(d.get("errors") or {})
+        for k in keys:
+            s = spec[k]
+            if s.get("skipEtf") and is_etf(code):
+                continue
+            start = (today - dt.timedelta(days=int(s["days"]))).isoformat()
+            try:
+                tables[k] = to_table(finmind(tx, s["dataset"], code, start), s)
+                errors.pop(k, None)
+            except QuotaExceeded:
+                return code, None, True
+            except Exception as e:  # noqa: BLE001
+                errors[k] = str(e)[:160]
+        return code, {**d, "tables": tables, "errors": errors, "slowAt": now_tpe().isoformat(timespec="seconds")}, False
+
+    done, quota = 0, False
+    with ThreadPoolExecutor(max_workers=FINMIND_WORKERS) as pool:
+        for code, d, hit in pool.map(one, cand[:budget]):
+            quota |= hit
+            if d:
+                write_json(out / "stock" / f"{code}.json", d)
+                done += 1
+    if report is not None:
+        have = sum(1 for c in codes if (out / "stock" / f"{c}.json").exists()
+                   and json.loads((out / "stock" / f"{c}.json").read_text("utf-8")).get("slowAt"))
+        report.items["finmind_slow"] = {
+            "ok": not quota, "rows": done, "ms": 0,
+            "note": f"股利 / 除權息 / 現金流量表：本次更新 {done} 檔，已有 {have}/{len(codes)} 檔"
+                    + ("；FinMind 額度用完，下次繼續" if quota else "")}
+    return done, quota
 
 
 def fetch_details(tx, codes: list[str], spec: dict, today: dt.date, out: Path) -> tuple[int, bool]:
@@ -602,7 +694,11 @@ def fetch_details(tx, codes: list[str], spec: dict, today: dt.date, out: Path) -
     """
     def one(code: str) -> tuple[str, dict | None, bool]:
         try:
-            return code, fetch_stock_detail(tx, code, spec, today), False
+            prev = json.loads((out / "stock" / f"{code}.json").read_text("utf-8"))
+        except (OSError, ValueError):
+            prev = None
+        try:
+            return code, fetch_stock_detail(tx, code, spec, today, prev), False
         except QuotaExceeded:
             return code, None, True
     fetched, quota = 0, False
@@ -649,16 +745,30 @@ def parse_yahoo_chart(payload: dict) -> dict | None:
     # 盤中 Yahoo 常把「今天」的 close 留空 (null)：
     #   最後一個有效點是今天 → 昨收 = 倒數第二點
     #   最後一個有效點不是今天（今天尚未寫入）→ 昨收 = 最後一點
-    day = lambda t: dt.datetime.fromtimestamp(t, TPE).date()  # noqa: E731
+    # 「今天」要用交易所當地時間判斷：美股 16:00 收盤 = 台北隔天 05:00，用台北日期會把
+    # 今天的收盤誤當昨收 → 漲跌 0.00%（2026-11-07 道瓊、那斯達克、S&P 500 實際發生）
+    tz = dt.timezone(dt.timedelta(seconds=meta.get("gmtoffset") or 0)) if "gmtoffset" in meta else TPE
+    day = lambda t: dt.datetime.fromtimestamp(t, tz).date()  # noqa: E731
     prev = pts[-2][1] if day(pts[-1][0]) == day(t_last) else pts[-1][1]
+    hist = {}
+    for t, c in pts:
+        hist[day(t).isoformat()] = round(c, 4)
+    if day(t_last).isoformat() not in hist or abs(hist[day(t_last).isoformat()] - price) > 1e-9:
+        hist[day(t_last).isoformat()] = round(price, 4)          # 盤中價（今天的 close 還沒寫入時）
+    hd = sorted(hist)[-HIST_DAYS:]
     return {
         "value": round(price, 4),
         "prev": round(prev, 4),
         "change": round(price - prev, 4),
         "changePct": round((price - prev) / prev * 100, 2) if prev else None,
         "time": dt.datetime.fromtimestamp(t_last, TPE).isoformat(timespec="minutes"),
+        "day": day(t_last).isoformat(),          # 交易所當地的交易日（美股收盤在台北隔天凌晨）
         "spark": [round(c, 4) for _, c in pts[-60:]],
+        "hist": {"dates": hd, "close": [hist[d] for d in hd]},
     }
+
+
+HIST_DAYS = 260            # 總經歷史紀錄：約一年交易日（點總經卡片查看）
 
 
 def yahoo(tx, symbol: str, rng: str = "3mo") -> dict | None:
@@ -692,13 +802,15 @@ MACRO_ORDER = ["taiex", "otc", "txf_night", "dji", "ixic", "spx", "sox", "vix", 
 
 def finmind_index(tx, data_id: str, today: dt.date) -> dict | None:
     """FinMind 日線 → 與 parse_yahoo_chart 相同的格式（value/prev/change/changePct/time/spark）"""
-    rows = finmind(tx, "TaiwanStockPrice", data_id, (today - dt.timedelta(days=120)).isoformat())
+    rows = finmind(tx, "TaiwanStockPrice", data_id, (today - dt.timedelta(days=400)).isoformat())
     pts = [(r["date"], to_num(r.get("close"))) for r in rows if to_num(r.get("close"))]
     if len(pts) < 2:
         return None
     v, p = pts[-1][1], pts[-2][1]
+    h = pts[-HIST_DAYS:]
     return {"value": v, "prev": p, "change": round(v - p, 4), "changePct": round((v - p) / p * 100, 2),
-            "time": pts[-1][0], "spark": [c for _, c in pts[-60:]]}
+            "time": pts[-1][0], "spark": [c for _, c in pts[-60:]],
+            "hist": {"dates": [d for d, _ in h], "close": [c for _, c in h]}}
 
 
 def parse_taifex_quotes(payload: dict, now: dt.datetime) -> dict | None:
@@ -738,11 +850,26 @@ def parse_taifex_quotes(payload: dict, now: dt.datetime) -> dict | None:
             "contract": contract, "volume": vol}
 
 
-def finmind_txf_night(tx, today: dt.date) -> dict | None:
+def txf_night_rows(tx, today: dt.date) -> list[dict]:
+    """FinMind TaiwanFuturesDaily 的 after_market（夜盤）近一年，單一月份（排除價差組合）"""
+    rows = finmind(tx, "TaiwanFuturesDaily", "TX", (today - dt.timedelta(days=400)).isoformat())
+    return [r for r in rows if r.get("trading_session") == "after_market"
+            and "/" not in str(r.get("contract_date", "")) and to_num(r.get("close"))]
+
+
+def txf_night_hist(night: list[dict]) -> dict | None:
+    """每天取成交量最大的月份（近月）收盤 → {dates, close}"""
+    best: dict[str, dict] = {}
+    for r in night:
+        if r["date"] not in best or (to_num(r.get("volume")) or 0) > (to_num(best[r["date"]].get("volume")) or 0):
+            best[r["date"]] = r
+    ds = sorted(best)[-HIST_DAYS:]
+    return {"dates": ds, "close": [to_num(best[d]["close"]) for d in ds]} if ds else None
+
+
+def finmind_txf_night(tx, today: dt.date, night: list[dict] | None = None) -> dict | None:
     """備援：FinMind TaiwanFuturesDaily 的 after_market（夜盤）收盤。每天 16:30 才更新 → 只有「已收盤」的夜盤"""
-    rows = finmind(tx, "TaiwanFuturesDaily", "TX", (today - dt.timedelta(days=14)).isoformat())
-    night = [r for r in rows if r.get("trading_session") == "after_market"
-             and "/" not in str(r.get("contract_date", "")) and to_num(r.get("close"))]
+    night = night if night is not None else txf_night_rows(tx, today)
     if not night:
         return None
     latest = max(r["date"] for r in night)
@@ -794,18 +921,22 @@ def read_bench(out: Path) -> dict:
 
 def fetch_macro(tx, report: SourceReport, today: dt.date, use_finmind: bool) -> list[dict]:
     items: list[dict] = []
+    fed_rows: list[dict] = []
     for key, label, sym in MACRO_YAHOO:
-        res = report.run(f"yahoo_{key}", lambda s=sym: yahoo(tx, s), count=lambda r: 1 if r else 0)
+        res = report.run(f"yahoo_{key}", lambda s=sym: yahoo(tx, s, "1y"), count=lambda r: 1 if r else 0)
         if res:
             items.append({"key": key, "label": label, "source": "Yahoo", **res})
     # 台指期夜盤：期交所即時行情優先（夜盤進行中有盤中價）；失敗時用 FinMind 已收盤的夜盤
     now = clock(today)
+    # 夜盤歷史（點卡片看）與備援收盤共用同一次 FinMind 請求
+    night_rows = (report.run("finmind_txf_hist", lambda: txf_night_rows(tx, today),
+                             count=lambda r: len(r or [])) or []) if use_finmind else []
     night = report.run("taifex_night", lambda: parse_taifex_quotes(tx.post_json(TAIFEX_QUOTES, TAIFEX_NIGHT_BODY), now),
                        count=lambda r: 1 if r else 0)
     if night:
         items.append({"key": "txf_night", "label": "台指期夜盤", "source": f"期交所（{night['contract']}）", **night})
     elif use_finmind:
-        fb = report.run("finmind_txf_night", lambda: finmind_txf_night(tx, today), count=lambda r: 1 if r else 0)
+        fb = report.run("finmind_txf_night", lambda: finmind_txf_night(tx, today, night_rows), count=lambda r: 1 if r else 0)
         if fb:
             items.append({"key": "txf_night", "label": "台指期夜盤", "source": "FinMind（夜盤收盤）", **fb})
             report.items["taifex_night"]["note"] = (report.items["taifex_night"].get("note", "") +
@@ -820,8 +951,8 @@ def fetch_macro(tx, report: SourceReport, today: dt.date, use_finmind: bool) -> 
             if res:
                 items.append({"key": key, "label": label, "source": "FinMind（日收盤）", **res})
         # Fed 利率：FinMind InterestRate（Yahoo 沒有）
-        rows = report.run("finmind_fed", lambda: finmind(
-            tx, "InterestRate", "FED", (today - dt.timedelta(days=900)).isoformat()))
+        rows = fed_rows = report.run("finmind_fed", lambda: finmind(
+            tx, "InterestRate", "FED", (today - dt.timedelta(days=900)).isoformat())) or []
         if rows:
             last = rows[-1]
             prev = next((r for r in reversed(rows) if r.get("interest_rate") != last.get("interest_rate")), None)
@@ -830,7 +961,7 @@ def fetch_macro(tx, report: SourceReport, today: dt.date, use_finmind: bool) -> 
                           "lastChange": prev and {"from": to_num(prev.get("interest_rate")),
                                                   "date": last.get("date")}})
         # Yahoo 匯率失敗時，用台銀即期匯率（FinMind）補
-        if not any(i["key"] == "usdtwd" for i in items):
+        if not any(i["key"] == "usdtwd" for i in items):  # noqa: SIM102
             fx = report.run("finmind_usdtwd", lambda: finmind(
                 tx, "TaiwanExchangeRate", "USD", (today - dt.timedelta(days=30)).isoformat()))
             pts = [r for r in fx or [] if to_num(r.get("spot_sell"))]
@@ -839,7 +970,39 @@ def fetch_macro(tx, report: SourceReport, today: dt.date, use_finmind: bool) -> 
                 items.append({"key": "usdtwd", "label": "美元/台幣", "source": "FinMind(台銀)",
                               "value": v, "prev": p, "change": round(v - p, 4),
                               "changePct": round((v - p) / p * 100, 2), "time": pts[-1]["date"]})
+    nh = txf_night_hist(night_rows)
+    for i in items:
+        if i["key"] == "txf_night" and nh:
+            # 盤中報價（期交所）比 FinMind 的已收盤夜盤新：把今天的盤中價接在歷史最後
+            d = str(i.get("time", ""))[:10]
+            if d and d not in nh["dates"] and d > nh["dates"][-1]:
+                nh = {"dates": nh["dates"] + [d], "close": nh["close"] + [i["value"]]}
+            i["hist"] = nh
+        if i["key"] == "fed" and use_finmind and fed_rows:
+            i["hist"] = {"dates": [r["date"] for r in fed_rows], "close": [to_num(r.get("interest_rate")) for r in fed_rows]}
     return sorted(items, key=lambda x: MACRO_ORDER.index(x["key"]) if x["key"] in MACRO_ORDER else 50)
+
+
+def write_macro(out: Path, items: list[dict], bench: dict) -> dict[str, int]:
+    """
+    macro.json（每次載入網頁都讀，維持精簡）與 macro_hist.json（約一年日線，點總經卡片時才讀）。
+    這次沒抓到歷史的項目沿用上一份 macro_hist.json。
+    """
+    try:
+        hist = json.loads((out / "macro_hist.json").read_text("utf-8")).get("items") or {}
+    except (OSError, ValueError):
+        hist = {}
+    slim = []
+    for i in items:
+        i = dict(i)
+        h = i.pop("hist", None)
+        if h and h.get("dates"):
+            hist[i["key"]] = {"label": i["label"], "source": i.get("source", ""), **h}
+        slim.append(i)
+    keep = {i["key"] for i in slim} | set(MACRO_ORDER)
+    hist = {k: v for k, v in hist.items() if k in keep}
+    return {"macro.json": write_json(out / "macro.json", {"items": slim, "bench": bench}),
+            "macro_hist.json": write_json(out / "macro_hist.json", {"items": hist})}
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1199,7 +1362,7 @@ def main(argv: list[str] | None = None) -> int:
         macro = fetch_macro(tx, report, today, use_finmind=not quota_hit)
     except QuotaExceeded:
         quota_hit, macro = True, []
-    sizes["macro.json"] = write_json(out / "macro.json", {"items": macro, "bench": fetch_bench(tx, report, read_bench(out))})
+    sizes.update(write_macro(out, macro, fetch_bench(tx, report, read_bench(out))))
 
     # 追蹤清單盤中報價（Yahoo）：上市用 .TW、上櫃用 .TWO
     market_of = {r[0]: r[2] for r in stock_list}
@@ -1218,6 +1381,8 @@ def main(argv: list[str] | None = None) -> int:
     fetched = 0
     if todo and not quota_hit:
         fetched, quota_hit = fetch_details(tx, todo, spec, today, out)
+    if not quota_hit:   # 慢速資料遇到額度用完不算「完整更新失敗」（下次會接著補），所以不改 quota_hit
+        refresh_slow(tx, watchlist, spec, today, out, SLOW_BUDGET.get(mode, 0), report)
     files = stock_files(out, watchlist)
     sizes.update(files)
     detail_ok = len(files)
@@ -1289,6 +1454,9 @@ def run_macro_only(tx, out: Path, prev: dict, today: dt.date, token: str | None,
         macro = json.loads((out / "macro.json").read_text("utf-8"))["items"]    # 額度用完：保留舊總經
     missing = [c for c in watchlist if not (out / "stock" / f"{c}.json").exists()]
     fetched, quota = fetch_details(tx, missing, spec, today, out) if missing else (0, False)
+    slow = 0
+    if not quota:
+        slow, quota = refresh_slow(tx, watchlist, spec, today, out, SLOW_BUDGET["macro"], report)
     sizes = {k: v for k, v in prev["bytes"].items() if not k.startswith(("stock/", "us/stock/"))}
     files = stock_files(out, watchlist)
     sizes.update(files)
@@ -1302,15 +1470,15 @@ def run_macro_only(tx, out: Path, prev: dict, today: dt.date, token: str | None,
             f"補抓 {fetched} 檔" if fetched else "",
             f"缺 {len(watchlist) - len(files)} 檔" if len(files) < len(watchlist) else "",
             "FinMind 額度用完 (HTTP 402)，下次執行會補抓" if quota else "") if x)}
-    sizes["macro.json"] = write_json(out / "macro.json", {"items": macro, "bench": fetch_bench(tx, report, read_bench(out))})
+    sizes.update(write_macro(out, macro, fetch_bench(tx, report, read_bench(out))))
     asof = json.loads((out / "market.json").read_text("utf-8")).get("asOf", {})
     market = market_block(tx, report, today, clock(today), asof.get("twse") or asof.get("tpex"), macro,
                           prev.get("market"))
     now = now_tpe().isoformat(timespec="seconds")
     meta = {**prev,
             "macroAt": now,
-            # generatedAt 不變（個股資料仍是上一份）；有補抓個股時才更新，讓瀏覽器重新讀取
-            "generatedAt": now if fetched else prev["generatedAt"],
+            # generatedAt 不變（個股資料仍是上一份）；有補抓個股或更新股利 / 現金流時才更新，讓瀏覽器重新讀取
+            "generatedAt": now if fetched or slow else prev["generatedAt"],
             "watchlist": watchlist,
             "usWatchlist": us_watchlist,
             "usAt": now,

@@ -222,6 +222,42 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
         if not etf:
             fm(f"finmind_TaiwanStockFinancialStatements_{c}.json", inc)
             fm(f"finmind_TaiwanStockBalanceSheet_{c}.json", bal)
+        # 現金流量表：與台灣財報相同，是「年初至今累計」（Q2 = 上半年合計）
+        cf, ytd = [], {}
+        for q in range(9):
+            y, qq = today.year - 2 + (q + 2) // 4, (q + 2) % 4 + 1
+            qe = dt.date(y, qq * 3, 30 if qq in (2, 3) else 31)
+            if qe >= today:
+                continue
+            if qq == 1:
+                ytd = {"ocf": 0.0, "capex": 0.0}
+            elif not ytd:
+                continue                                   # 第一筆不是 Q1：沒有年初累計基準 → 跳過（測試推算邏輯）
+            ytd["ocf"] += qrev * r.uniform(0.25, 0.4)
+            ytd["capex"] += qrev * r.uniform(0.05, 0.15)
+            for t, v, o in [("CashFlowsFromOperatingActivities", ytd["ocf"], "營業活動之淨現金流入（流出）"),
+                            ("PropertyAndPlantAndEquipment", -ytd["capex"], "取得不動產、廠房及設備"),
+                            ("Depreciation", qrev * 0.05, "折舊費用")]:
+                cf.append({"date": str(qe), "stock_id": c, "type": t, "value": round(v, 2), "origin_name": o})
+        if not etf:
+            fm(f"finmind_TaiwanStockCashFlowsStatement_{c}.json", cf)
+        # 股利政策（每年一次）與除權息結果；填息與否由股價決定
+        div, divr = [], []
+        for k, y in enumerate(range(today.year - 6, today.year)):
+            cash_d = round(eps0 * r.uniform(2.2, 3.2) * (1 + 0.05 * k), 2)
+            exd = next((d for d in days if d >= dt.date(y, 7, 15)), None) if dt.date(y, 7, 15) >= days[0] else None
+            div.append({"date": f"{y}-03-10", "stock_id": c, "year": f"{y - 1912}年",
+                        "CashEarningsDistribution": cash_d, "CashStatutorySurplus": 0.0,
+                        "StockEarningsDistribution": 0.5 if k == 2 and not etf else 0.0, "StockStatutorySurplus": 0.0,
+                        "CashExDividendTradingDate": str(exd) if exd else "", "CashDividendPaymentDate": f"{y}-08-10"})
+            if exd:
+                i = days.index(exd)
+                before = cl[i - 1] if i else cl[i]
+                divr.append({"date": str(exd), "stock_id": c, "before_price": before,
+                             "after_price": round(before - cash_d, 2), "stock_and_cache_dividend": cash_d,
+                             "stock_or_cache_dividend": "息"})
+        fm(f"finmind_TaiwanStockDividend_{c}.json", div)
+        fm(f"finmind_TaiwanStockDividendResult_{c}.json", divr)
 
     # ── 總經 ──
     fm("finmind_InterestRate_FED.json", [
@@ -229,13 +265,22 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
         {"country": "FED", "date": "2025-12-10", "full_country_name": "", "interest_rate": 3.75},
         {"country": "FED", "date": "2026-09-16", "full_country_name": "", "interest_rate": 3.5}])
 
+    US_TZ = {"IDX_DJI", "IDX_IXIC", "IDX_GSPC", "IDX_SOX", "IDX_VIX", "IDX_TNX"}
+
     def yahoo(sym: str, base: float, vol: float = 0.01, n: int = 64) -> None:
         n = min(n, len(days))
         ser = walk(random.Random(sym), base, n, 0.0003, vol)
-        ts = [int(dt.datetime.combine(d, dt.time(13, 30)).timestamp()) for d in days[-n:]]
+        if sym in US_TZ:
+            # 美股：K 棒時間 = 紐約 09:30（UTC 14:30），收盤時間 = 16:00（UTC 21:00 = 台北隔天 05:00）
+            utc = dt.timezone.utc
+            ts = [int(dt.datetime.combine(d, dt.time(14, 30), utc).timestamp()) for d in days[-n:]]
+            meta = {"regularMarketPrice": ser[-1], "gmtoffset": -18000,
+                    "regularMarketTime": int(dt.datetime.combine(days[-1], dt.time(21, 0), utc).timestamp())}
+        else:
+            ts = [int(dt.datetime.combine(d, dt.time(13, 30)).timestamp()) for d in days[-n:]]
+            meta = {"regularMarketPrice": ser[-1], "regularMarketTime": ts[-1], "chartPreviousClose": ser[0]}
         w(f"yahoo_{sym}.json", {"chart": {"result": [{
-            "meta": {"regularMarketPrice": ser[-1], "regularMarketTime": ts[-1], "chartPreviousClose": ser[0]},
-            "timestamp": ts, "indicators": {"quote": [{"close": ser}]}}], "error": None}})
+            "meta": meta, "timestamp": ts, "indicators": {"quote": [{"close": ser}]}}], "error": None}})
 
     # 櫃買指數不提供 Yahoo fixture：正式環境 ^TWOII 已 404，改由 FinMind TPEx 提供
     for idx_id, base in [("TAIEX", 27000), ("TPEx", 260)]:
@@ -288,7 +333,11 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
             ("農曆春節前最後交易日", "2027-02-03", "三", "農曆春節前最後交易日"),
             ("農曆除夕", "2027-02-05", "五", "")]])
     # FinMind 備援：TaiwanFuturesDaily（position = 日盤、after_market = 夜盤）
-    fm("finmind_TaiwanFuturesDaily_TX.json", [
+    txs = walk(random.Random("TXN"), 26000, 250, 0.0003, 0.01)
+    tx_hist = [{"date": str(d), "futures_id": "TX", "contract_date": "202611", "open": 0, "max": 0, "min": 0,
+                "close": round(v), "spread": 0, "spread_per": 0, "volume": 30000, "settlement_price": 0,
+                "open_interest": 0, "trading_session": "after_market"} for d, v in zip(days[-251:-1], txs)]
+    fm("finmind_TaiwanFuturesDaily_TX.json", tx_hist + [
         {"date": str(last_day), "futures_id": "TX", "contract_date": cd, "open": 0, "max": 0, "min": 0,
          "close": c, "spread": sp, "spread_per": 0, "volume": v, "settlement_price": 0, "open_interest": 0,
          "trading_session": ses}
@@ -356,6 +405,49 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
                     eps.append({"end": end, "val": round(yeps, 2), "frame": f"CY{y}", "form": "10-K"})
         g = {k: {"units": {"USD": v}} for k, v in {**dur, **inst, **cash}.items()}
         g["EarningsPerShareDiluted"] = {"units": {"USD/shares": eps}}
+        # 內部人交易：submissions（申報清單）+ Form 4 XML
+        forms, accs, filed_d, docs = [], [], [], []
+        for k in range(6):
+            fd = days[-1 - k * 15]
+            acc = f"0001{cik % 10**6:06d}-26-{k:06d}"
+            forms.append("4" if k != 3 else "10-Q")
+            accs.append(acc)
+            filed_d.append(str(fd))
+            docs.append(f"xslF345X05/form4_{k}.xml")
+            if k == 3:
+                continue
+            code, ad, px = ("P", "A", round(base * 0.97, 2)) if k == 1 else ("S", "D", round(base * 1.02, 2))
+            xml = f"""<?xml version="1.0"?>
+<ownershipDocument>
+  <documentType>4</documentType>
+  <aff10b5One>{1 if code == "S" else 0}</aff10b5One>
+  <reportingOwner>
+    <reportingOwnerId><rptOwnerName>Insider {k} &amp; Co</rptOwnerName></reportingOwnerId>
+    <reportingOwnerRelationship><isDirector>{1 if k == 1 else 0}</isDirector><isOfficer>{0 if k == 1 else 1}</isOfficer>
+      <officerTitle>{'' if k == 1 else 'Chief Financial Officer'}</officerTitle></reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <securityTitle><value>Common Stock</value></securityTitle>
+      <transactionDate><value>{fd}</value></transactionDate>
+      <transactionCoding><transactionFormType>4</transactionFormType><transactionCode>{code}</transactionCode></transactionCoding>
+      <transactionAmounts><transactionShares><value>{1000 * (k + 1)}</value></transactionShares>
+        <transactionPricePerShare><value>{px}</value></transactionPricePerShare>
+        <transactionAcquiredDisposedCode><value>{ad}</value></transactionAcquiredDisposedCode></transactionAmounts>
+      <postTransactionAmounts><sharesOwnedFollowingTransaction><value>{50000 + k}</value></sharesOwnedFollowingTransaction></postTransactionAmounts>
+    </nonDerivativeTransaction>
+    <nonDerivativeTransaction>
+      <transactionDate><value>{fd}</value></transactionDate>
+      <transactionCoding><transactionCode>F</transactionCode></transactionCoding>
+      <transactionAmounts><transactionShares><value>120</value></transactionShares>
+        <transactionPricePerShare><value>{px}</value></transactionPricePerShare>
+        <transactionAcquiredDisposedCode><value>D</value></transactionAcquiredDisposedCode></transactionAmounts>
+    </nonDerivativeTransaction>
+  </nonDerivativeTable>
+</ownershipDocument>"""
+            (out / f"Archives_edgar_data_{cik}_{acc.replace('-', '')}_form4_{k}.xml").write_text(xml, "utf-8")
+        w(f"submissions_CIK{cik:010d}.json.json", {"cik": str(cik), "name": name, "filings": {"recent": {
+            "form": forms, "accessionNumber": accs, "filingDate": filed_d, "primaryDocument": docs}}})
         w(f"api_xbrl_companyfacts_CIK{cik:010d}.json.json", {"cik": cik, "entityName": name, "facts": {
             "us-gaap": g, "dei": {"EntityCommonStockSharesOutstanding": {"units": {"shares": [{"end": "2026-07-20", "val": 24_000_000_000}]}}}}})
 

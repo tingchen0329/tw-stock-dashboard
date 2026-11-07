@@ -11,10 +11,10 @@
  *       c. 使用者若在途中改查別檔，前一個請求以 AbortController 取消 → 不會出現「資料錯置」
  */
 
-import { loadBootstrap, loadStock, loadScreen, loadUsOverview, loadUsStock, loadUsScreen, loadAiConfig } from './data.js';
+import { loadBootstrap, loadStock, loadScreen, loadUsOverview, loadUsStock, loadUsScreen, loadAiConfig, loadMacroHist } from './data.js';
 import { buildIndex, search, resolveExact, highlightParts, marketLabel } from './search.js';
-import { summarize, marketRow, usMarketRow } from './analytics.js';
-import { renderFreshness, renderWatchlist, renderMacro, renderStock, renderSetup, h } from './render.js';
+import { summarize, marketRow, usMarketRow, peerStats, insiderStats } from './analytics.js';
+import { renderFreshness, renderWatchlist, renderMacro, renderMacroHistory, renderStock, renderSetup, h } from './render.js';
 import { buildPrompt } from './prompt.js';
 import { marketStatus, marketNotice, usMarketStatus, usMarketNotice } from './market.js';
 import { renderOverview } from './overview.js';
@@ -30,6 +30,8 @@ const state = {
   byCode: new Map(),
   current: null,      // { code, summary, ctrl, cleanup, range, tables, meta }
   range: '1Y',
+  peerData: {},      // 同業比較：{ tw: screen.json, us: us/screen.json }，第一次打開個股頁才下載
+  macroRange: '3M',
   aiUrl: null,        // AI 報告代理網址（assets/ai.json）
 };
 
@@ -175,11 +177,14 @@ async function showStock(code) {
     if (state.current !== cur) return;     // 已經換股票了，丟棄舊結果
     cur.tables = tables;
     cur.summary = summarize({ info, mkt, quote, tables, asOf, bench: state.boot.macro?.bench?.tw });
+    cur.summary.peers = state.peerData.tw ? peerStats(state.peerData.tw, code, 'industry') : null;
+    cur.lastMeta = meta;
     if (!info.name && cur.summary.info) cur.summary.info.name = code;
     cur.cleanup?.();
     cur.cleanup = renderStock($('stock'), cur.summary, {
       range: state.range,
       pending: !meta.done,
+      peersLoading: !state.peerData.tw && !state.peerData.twFailed,
       errors: meta.errors,
       source: meta.source,
       fetchedAt: meta.fetchedAt,
@@ -198,6 +203,11 @@ async function showStock(code) {
 
   // a. 先用全市場資料立即顯示（不等網路）
   draw({}, { done: false, errors: {}, source: 'market' });
+  // 同業比較要全市場選股資料（screen.json，約 80 KB 壓縮後）：背景載入，回來後重畫
+  if (!state.peerData.tw && !state.peerData.twFailed) {
+    loadScreen().then((d) => { state.peerData.tw = d; }, () => { state.peerData.twFailed = true; })
+      .then(() => { if (state.current === cur && cur.lastMeta) draw(cur.tables, cur.lastMeta); });
+  }
   $('stock').scrollIntoView?.({ block: 'nearest' });
 
   // b. 再抓個股詳細資料
@@ -330,9 +340,12 @@ async function showUsStock(sym) {
   const draw = () => {
     cur.tables = detail.tables || {};
     cur.summary = summarize({ info, mkt, quote: null, tables: cur.tables, asOf: { twse: mkt?.date }, bench: state.boot.macro?.bench?.us });
+    cur.summary.insider = insiderStats(detail.insider);
+    cur.summary.peers = state.peerData.us ? peerStats(state.peerData.us, sym, 'sector') : null;
     cur.cleanup?.();
     cur.cleanup = renderStock($('stock'), cur.summary, {
       range: state.range, pending: false, errors: detail.errors, source: 'us', fetchedAt: detail.fetchedAt,
+      peersLoading: !state.peerData.us && !state.peerData.usFailed,
       onRange: (r) => { state.range = r; draw(); },
       onPrompt: openPrompt, onCSV: () => exportFile('csv'), onXLSX: () => exportFile('xlsx'),
       onAi: () => triggerAi(`US:${sym}`),
@@ -341,6 +354,10 @@ async function showUsStock(sym) {
     appendAi(`US:${sym}`, mkt?.date ?? '', () => buildPrompt(cur.summary, state.boot.meta, state.boot.macro?.items));
   };
   draw();
+  if (!state.peerData.us && !state.peerData.usFailed) {
+    loadUsScreen().then((d) => { state.peerData.us = d; }, () => { state.peerData.usFailed = true; })
+      .then(() => { if (state.current === cur) draw(); });
+  }
 }
 
 const route = () => {
@@ -352,6 +369,26 @@ const route = () => {
   else if (c === 'screen') showScreen();
   else if (c) showStock(c);
 };
+
+/* ───────── 總經歷史 ───────── */
+
+async function openMacro(item) {
+  const dlg = $('macro-dialog');
+  const body = $('macro-body');
+  $('macro-title').textContent = `${item.label}｜歷史紀錄`;
+  body.replaceChildren(h('p', { class: 'note' }, '載入中…'));
+  dlg.showModal();
+  let hist = null;
+  try { hist = (await loadMacroHist())?.items?.[item.key] ?? null; } catch { /* 顯示「沒有歷史資料」 */ }
+  let cleanup = () => {};
+  const draw = (range) => {
+    cleanup();
+    state.macroRange = range;
+    cleanup = renderMacroHistory(body, item, hist, { range, onRange: draw });
+  };
+  draw(state.macroRange || '3M');
+  dlg.addEventListener('close', () => cleanup(), { once: true });
+}
 
 /* ───────── 分析指令 / 匯出 ───────── */
 
@@ -424,6 +461,7 @@ async function boot() {
   wireSearch();
   $('prompt-copy').addEventListener('click', () => copy($('prompt-text').value));
   $('prompt-close').addEventListener('click', () => $('prompt-dialog').close());
+  $('macro-close').addEventListener('click', () => $('macro-dialog').close());
   $('freshness').addEventListener('click', () => {
     const p = $('sources');
     p.hidden = !p.hidden;
@@ -462,7 +500,7 @@ async function boot() {
   h('button', {
     class: 'chip ov-chip', type: 'button', dataset: { code: 'screen' }, on: { click: () => pick('screen') },
   }, h('span', { class: 't' }, '選股'), h('span', { class: 'v' }, '全市場')));
-  renderMacro($('macro'), b.macro?.items);
+  renderMacro($('macro'), b.macro?.items, openMacro);
 
   window.addEventListener('hashchange', route);
   if (location.hash.length > 1) route();

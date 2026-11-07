@@ -288,11 +288,11 @@ export function barChart(host) {
 }
 
 /** 圖表下方的「表格檢視」 */
-export function tableView(headers, rowsArr, { maxRows = 400 } = {}) {
+export function tableView(headers, rowsArr, { maxRows = 400, label = '表格檢視' } = {}) {
   const d = document.createElement('details');
   d.className = 'table-view';
   const s = document.createElement('summary');
-  s.textContent = '表格檢視';
+  s.textContent = label;
   d.appendChild(s);
   const wrap = div('scroll', d);
   const t = document.createElement('table');

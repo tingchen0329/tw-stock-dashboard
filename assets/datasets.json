@@ -1,5 +1,5 @@
 {
-  "_comment": "FinMind 個股資料集規格。Python 抓取腳本 (scripts/fetch_data.py) 與網頁 (assets/js/data.js) 共用這份檔案，確保兩邊欄位一致。days = 往回抓幾天；fields = 保留的欄位（其他欄位丟掉以縮小檔案）；wave = 1 先載入並立即顯示，2 背景補齊；skipEtf = ETF 沒有這項資料，不查詢。",
+  "_comment": "FinMind 個股資料集規格。Python 抓取腳本 (scripts/fetch_data.py) 與網頁 (assets/js/data.js) 共用這份檔案，確保兩邊欄位一致。days = 往回抓幾天；fields = 保留的欄位（其他欄位丟掉以縮小檔案）；wave = 1 先載入並立即顯示，2 背景補齊，3 只由伺服器分批更新（網頁不即時查詢，ttlDays 天更新一次，每次執行只更新幾檔以免超過 FinMind 每小時額度）；skipEtf = ETF 沒有這項資料，不查詢。",
   "price":   { "dataset": "TaiwanStockPrice", "days": 1100, "wave": 1,
                "fields": ["date", "open", "max", "min", "close", "Trading_Volume"] },
   "per":     { "skipEtf": true, "dataset": "TaiwanStockPER", "days": 1100, "wave": 1,
@@ -22,5 +22,16 @@
                "keep_types": ["TotalAssets", "Liabilities", "Equity", "CurrentAssets",
                               "CurrentLiabilities", "EquityAttributableToOwnersOfParent"],
                "keep_origin": ["資產總額", "資產總計", "負債總額", "負債總計", "權益總額", "權益總計",
-                               "流動資產合計", "流動負債合計"] }
+                               "流動資產合計", "流動負債合計"] },
+  "cashflow": { "skipEtf": true, "dataset": "TaiwanStockCashFlowsStatement", "days": 800, "wave": 3, "ttlDays": 7,
+               "fields": ["date", "type", "value", "origin_name"],
+               "keep_types": ["CashFlowsFromOperatingActivities", "NetCashInflowFromOperatingActivities",
+                              "PropertyAndPlantAndEquipment"],
+               "keep_origin": ["營業活動之淨現金", "取得不動產、廠房及設備"] },
+  "dividend": { "dataset": "TaiwanStockDividend", "days": 3300, "wave": 3, "ttlDays": 7,
+               "fields": ["date", "year", "CashEarningsDistribution", "CashStatutorySurplus",
+                          "StockEarningsDistribution", "StockStatutorySurplus",
+                          "CashExDividendTradingDate", "CashDividendPaymentDate"] },
+  "divResult": { "dataset": "TaiwanStockDividendResult", "days": 3300, "wave": 3, "ttlDays": 7,
+               "fields": ["date", "before_price", "after_price", "stock_and_cache_dividend", "stock_or_cache_dividend"] }
 }
