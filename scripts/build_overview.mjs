@@ -10,7 +10,7 @@
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { summarize, marketRow, overviewRow, usMarketRow } from '../assets/js/analytics.js';
+import { summarize, marketRow, overviewRow, usMarketRow, insiderStats } from '../assets/js/analytics.js';
 
 const dir = resolve(process.argv[2] || '_site/data');
 const read = (name) => {
@@ -30,15 +30,21 @@ const byCode = new Map((read('stocks.json')?.rows ?? []).map((r) => [r[0], r]));
 
 const rows = [];
 const missing = [];
+const cover = { fcf: 0, div: 0, divRaw: 0, cfRaw: 0, ins: 0, insTx: 0 };   // 新資料集的涵蓋率（寫進 log，確認正式資料欄位對得上）
 for (const code of meta.watchlist ?? []) {
   const r = byCode.get(code);
   const info = { code, name: r?.[1] ?? '', market: r?.[2] ?? '', industry: r?.[3] ?? '' };
   const detail = read(`stock/${code}.json`);
   if (!detail) missing.push(code);
   try {
-    rows.push(overviewRow(summarize({
+    const s = summarize({
       info, mkt: marketRow(market, code), quote: quotes[code] ?? null, tables: detail?.tables ?? {}, asOf: market?.asOf ?? {}, bench: bench.tw,
-    })));
+    });
+    rows.push(overviewRow(s));
+    if (detail?.tables?.cashflow?.rows?.length) cover.cfRaw++;
+    if (detail?.tables?.dividend?.rows?.length) cover.divRaw++;
+    if (Number.isFinite(s.fundamentals?.fcf4)) cover.fcf++;
+    if (s.dividends?.policy?.length) cover.div++;
   } catch (e) {
     // 單一檔資料異常不能讓整個部署失敗：這一列只顯示代號名稱，其餘 N/A
     console.warn(`::warning title=總覽表::${code} 計算失敗：${e.message}`);
@@ -63,6 +69,8 @@ for (const code of meta.usWatchlist ?? []) {
     const mkt = usMarketRow(detail);
     if (mkt?.date && (!usDay || mkt.date > usDay)) usDay = mkt.date;
     usRows.push(overviewRow(summarize({ info, mkt, quote: null, tables: detail?.tables ?? {}, asOf: { twse: mkt?.date }, bench: bench.us })));
+    const ins = insiderStats(detail?.insider);
+    if (ins?.filings) { cover.ins++; cover.insTx += ins.buy.n + ins.sell.n; }
   } catch (e) {
     console.warn(`::warning title=美股總覽::${code} 計算失敗：${e.message}`);
     usRows.push(overviewRow({ info }));
@@ -77,3 +85,5 @@ if (usRows.length) {
 writeFileSync(resolve(dir, 'meta.json'), JSON.stringify(meta));
 console.log(`overview.json: ${rows.length} 檔，${(Buffer.byteLength(body) / 1024).toFixed(0)} KB`
   + (missing.length ? `；缺個股資料：${missing.join(', ')}` : ''));
+console.log(`新資料涵蓋：現金流量表 ${cover.cfRaw} 檔（算出自由現金流 ${cover.fcf} 檔）、股利 ${cover.divRaw} 檔（股利政策 ${cover.div} 檔）、`
+  + `美股內部人 ${cover.ins} 檔（近 6 個月公開市場買賣 ${cover.insTx} 筆）`);
