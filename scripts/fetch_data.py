@@ -1281,7 +1281,9 @@ def update_holders(tx, report: SourceReport, out: Path, today: dt.date, codes: l
     prev, prev_all = _read_json(hp), _read_json(ap)
     sizes = lambda: {p.name: p.stat().st_size for p in (hp, ap) if p.exists()}  # noqa: E731
     last = (prev or {}).get("asOf")
-    if last and (today - dt.date.fromisoformat(last)).days < 7:
+    # 欄位格式變了（v7.2 新增 p10 散戶比例）：同一週重抓一次補上，不用等下一週
+    upgrade = bool(prev) and prev.get("cols") != HOLDER_COLS
+    if last and not upgrade and (today - dt.date.fromisoformat(last)).days < 7:
         report.items["tdcc_holders"] = {"ok": True, "rows": len((prev or {}).get("rows") or {}), "ms": 0,
                                         "note": f"沿用 {last} 的資料（集保每週更新一次）"}
         return sizes()
@@ -1289,10 +1291,11 @@ def update_holders(tx, report: SourceReport, out: Path, today: dt.date, codes: l
     if not res:
         return sizes()
     date, data, src = res
-    if not date or (last and date <= last):
+    if not date or (last and (date < last or (date == last and not upgrade))):
         report.items["tdcc_holders"]["note"] = f"集保尚未公布新的一週（目前最新 {last or date}）"
         return sizes()
-    report.items["tdcc_holders"]["note"] = f"{src}，資料日期 {date}"
+    same = date == last                                  # 同一週重寫（格式升級）
+    report.items["tdcc_holders"]["note"] = f"{src}，資料日期 {date}" + ("（補上新欄位）" if same else "")
     old_rows = (prev or {}).get("rows") or {}
     rows = {}
     for c in codes:
@@ -1308,6 +1311,9 @@ def update_holders(tx, report: SourceReport, out: Path, today: dt.date, codes: l
         if not re.fullmatch(r"\d{4,6}[A-Z]?", c):       # 只留股票與 ETF（權證、債券等代號不同）
             continue
         o = pm.get(c)
+        if same:                    # 週變化的比較對象是「前一週」→ 沿用上一份算好的值；散戶變化要等下一週
+            all_rows[c] = [x["p1000"], o[1] if o else None, x["holders"], o[3] if o else None, x["p10"], None]
+            continue
         all_rows[c] = [x["p1000"],
                        round(x["p1000"] - o[0], 2) if o and isinstance(o[0], (int, float)) else None,
                        x["holders"],
@@ -1315,7 +1321,7 @@ def update_holders(tx, report: SourceReport, out: Path, today: dt.date, codes: l
                        x["p10"],
                        round(x["p10"] - o[4], 2) if o and len(o) > 4 and isinstance(o[4], (int, float)) else None]
     write_json(hp, {"asOf": date, "source": src, "cols": HOLDER_COLS, "rows": rows})
-    write_json(ap, {"asOf": date, "prevDate": (prev_all or {}).get("asOf"), "source": src,
+    write_json(ap, {"asOf": date, "prevDate": (prev_all or {}).get("prevDate" if same else "asOf"), "source": src,
                     "cols": HOLDER_ALL_COLS, "rows": all_rows})
     return sizes()
 

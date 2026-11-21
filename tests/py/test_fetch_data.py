@@ -957,6 +957,31 @@ class Holders(unittest.TestCase):
             self.assertIn("尚未公布", r4.items["tdcc_holders"]["note"])
             self.assertEqual(json.loads((out / "holders.json").read_text())["rows"]["2330"][-1][1], 81.5)
 
+    def test_upgrade_old_format_same_week(self):
+        """v7.1 的 holders.json（5 欄）：同一週內也重抓一次補上散戶比例，週變化沿用上一份"""
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            (out / "holders.json").write_text(json.dumps({"asOf": "2026-11-20", "cols": HOLDER5,
+                                                          "rows": {"2330": [["2026-11-13", 80.0, 88, 9, 1000], ["2026-11-20", 81.5, 89, 10, 990]]}}))
+            (out / "holders_all.json").write_text(json.dumps({"asOf": "2026-11-20", "prevDate": "2026-11-13",
+                                                              "rows": {"2330": [81.5, 1.5, 990, -1.0]}}))
+            tx = self.Tx(self.rows("2026-11-20", "2330", 81.5, 990))
+            r = fd.SourceReport()
+            fd.update_holders(tx, r, out, dt.date(2026, 11, 22), ["2330"])
+            self.assertEqual(len(tx.calls), 1)
+            self.assertIn("補上新欄位", r.items["tdcc_holders"]["note"])
+            h = json.loads((out / "holders.json").read_text())
+            self.assertEqual(h["cols"], fd.HOLDER_COLS)
+            self.assertEqual([x[0] for x in h["rows"]["2330"]], ["2026-11-13", "2026-11-20"])
+            self.assertEqual(h["rows"]["2330"][-1][5], 13.5)
+            a = json.loads((out / "holders_all.json").read_text())
+            self.assertEqual(a["prevDate"], "2026-11-13")                       # 不是自己跟自己比
+            self.assertEqual(a["rows"]["2330"], [81.5, 1.5, 990, -1.0, 13.5, None])
+            # 升級後同一週不再重抓
+            tx2 = self.Tx(self.rows("2026-11-20", "2330", 81.5, 990))
+            fd.update_holders(tx2, fd.SourceReport(), out, dt.date(2026, 11, 23), ["2330"])
+            self.assertEqual(tx2.calls, [])
+
     def test_screen_columns_idempotent(self):
         with tempfile.TemporaryDirectory() as d:
             out = Path(d)
@@ -968,6 +993,9 @@ class Holders(unittest.TestCase):
             # 舊版 holders_all（4 欄，沒有散戶）→ retail10Chg 為 None
             self.assertEqual(sc["rows"], [["2330", "台積電", 84.1, 0.2, -1.0, None], ["2317", "鴻海", None, None, None, None]])
             self.assertEqual(sc["asOf"]["holders"], "2026-11-20")
+
+
+HOLDER5 = ["date", "p1000", "p400", "n1000", "holders"]
 
 
 class Credit(unittest.TestCase):
