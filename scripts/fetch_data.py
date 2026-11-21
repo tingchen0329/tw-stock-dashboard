@@ -1091,18 +1091,56 @@ CORP_ACTIONS = [
 CORP_DAYS = 3 * 366 + 30
 
 
-def fetch_corp_actions(tx, report: SourceReport, today: dt.date, prev: dict | None) -> dict:
+def unexplained_jumps(out: Path, codes: list[str], known: dict[str, list]) -> list[str]:
+    """追蹤清單中，日線有「單日漲跌超過 10.5% 且不是除權息日 / 已知股本變動日」的代號（疑似減資等事件）"""
+    found = []
+    for c in codes:
+        try:
+            t = json.loads((out / "stock" / f"{c}.json").read_text("utf-8")).get("tables") or {}
+        except (OSError, ValueError):
+            continue
+        skip = {e[0] for e in known.get(c, [])}
+        dr = t.get("divResult") or {}
+        if "date" in (dr.get("cols") or []):
+            i = dr["cols"].index("date")
+            skip |= {r[i] for r in dr.get("rows") or []}
+        pt = t.get("price") or {}
+        cols = pt.get("cols") or []
+        if "date" not in cols or "close" not in cols:
+            continue
+        di, ci = cols.index("date"), cols.index("close")
+        pts = [(r[di], to_num(r[ci])) for r in pt.get("rows") or [] if to_num(r[ci])]
+        if any(p and abs(c2 / p - 1) > 0.105 and d not in skip for (_, p), (d, c2) in zip(pts, pts[1:])):
+            found.append(c)
+    return found
+
+
+def fetch_corp_actions(tx, report: SourceReport, today: dt.date, prev: dict | None,
+                       suspects: list[str] | None = None) -> dict:
     """
     → {"asOf", "rows": {代號: [[恢復買賣日, 參考價, 停止前收盤 | None, 類別], ...]}}
     單一資料集失敗沿用上一份同類別的事件（不讓還原股價突然少掉一段）。
+    全市場查詢被拒（減資資料集曾回 HTTP 400）時，改為只查 suspects（日線有異常跳動的追蹤清單個股，最多 15 檔）。
     """
     start = (today - dt.timedelta(days=CORP_DAYS)).isoformat()
     old = (prev or {}).get("rows") or {}
     rows: dict[str, list] = {}
     for dataset, kind, after_col, before_col in CORP_ACTIONS:
         got = report.run(f"finmind_{kind}", lambda d=dataset: finmind(tx, d, None, start), count=lambda r: len(r or []))
+        if got is None and suspects:
+            per: list[dict] = []
+            for code in suspects[:15]:
+                try:
+                    per.extend(finmind(tx, dataset, code, start))
+                except QuotaExceeded:
+                    raise
+                except Exception:  # noqa: BLE001
+                    continue
+            got = per
+            report.items[f"finmind_{kind}"] = {"ok": True, "rows": len(per), "ms": 0,
+                                               "note": f"全市場查詢被拒，改查 {min(len(suspects), 15)} 檔有異常跳動的個股"}
         if got == []:                       # 三年內沒有這類事件是正常的，不算來源失敗
-            report.items[f"finmind_{kind}"].update(ok=True, note="期間內沒有事件")
+            report.items[f"finmind_{kind}"].update(ok=True, note=report.items[f"finmind_{kind}"].get("note") or "期間內沒有事件")
         if got is None:
             for code, evs in old.items():
                 rows.setdefault(code, []).extend(e for e in evs if e[3] == kind)
@@ -1512,7 +1550,8 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError):
             prev_act = None
         try:
-            sizes["actions.json"] = write_json(act_path, fetch_corp_actions(tx, report, today, prev_act))
+            suspects = unexplained_jumps(out, watchlist, (prev_act or {}).get("rows") or {})
+            sizes["actions.json"] = write_json(act_path, fetch_corp_actions(tx, report, today, prev_act, suspects))
         except QuotaExceeded:
             quota_hit = True
     if act_path.exists():

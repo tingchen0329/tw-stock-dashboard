@@ -118,7 +118,7 @@ export function checkStock({ info, mkt = null, asOf = {}, quote = null, tables =
     // ETF（含海外成分，無漲跌幅限制）、股利資料還沒載入、美股 → 只提示；一般台股 → 警告
     const level = us || etf || !tables.divResult ? 'info' : 'warn';
     add(level, 'jump', '單日漲跌異常', `${jumps.length} 天單日漲跌超過 ${limit}%：${jumps.slice(-3).join('、')}。`
-      + (us ? '可能是財報或重大消息，請確認。' : '不是除權息日，可能是減資、分割、恢復買賣或資料錯誤。'));
+      + (us ? '可能是財報或重大消息，請確認。' : '不是除權息日：可能是興櫃期間或新上市前 5 日（無漲跌幅限制）、減資、恢復買賣，或資料錯誤。'));
   } else add('ok', 'jump', '單日漲跌', `近 ${n} 個交易日沒有超過 ${limit}% 的異常跳動${us ? '' : '（已排除除權息日）'}`);
 
   /* ── 2b. OHLC 一致性、重複日期、成交量 0 ── */

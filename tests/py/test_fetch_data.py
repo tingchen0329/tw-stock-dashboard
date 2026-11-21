@@ -819,3 +819,40 @@ class TotalReturnBench(unittest.TestCase):
     def test_parse_mfi94u_roc_dates(self):
         self.assertEqual(fd.parse_mfi94u({"data": [["115/11/03", "63,123.45"], ["bad", "1"], ["115/11/04", "--"]]}),
                          {"2026-11-03": 63123.45})
+
+
+class CorpActionsFallback(unittest.TestCase):
+    """減資資料集全市場查詢被拒（HTTP 400）→ 只查日線有異常跳動的追蹤清單個股"""
+
+    def test_suspects_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            (out / "stock").mkdir()
+            days = [f"2025-01-{i:02d}" for i in range(1, 11)]
+            close = [10, 10, 10, 10, 15, 15, 15, 15, 15, 15]          # 01-05 +50%：疑似減資
+            for code, cl in (("3041", close), ("2330", [10] * 10)):
+                (out / "stock" / f"{code}.json").write_text(json.dumps({"tables": {
+                    "price": {"cols": ["date", "close"], "rows": [[a, b] for a, b in zip(days, cl)]}}}))
+            sus = fd.unexplained_jumps(out, ["3041", "2330", "9999"], {})
+            self.assertEqual(sus, ["3041"])
+            self.assertEqual(fd.unexplained_jumps(out, ["3041"], {"3041": [["2025-01-05", 15, 10, "減資"]]}), [])
+
+            calls = []
+
+            class Tx:
+                finmind_requests = 0
+
+                def get_json(self, url, params=None, kind="public"):
+                    calls.append(dict(params))
+                    if params["dataset"] == "TaiwanStockCapitalReductionReferencePrice":
+                        if "data_id" not in params:
+                            raise RuntimeError("GET failed: /api/v4/data (HTTP Error 400: Bad Request)")
+                        return {"status": 200, "data": [{"date": "2025-01-05", "stock_id": params["data_id"],
+                                                         "ClosingPriceonLastTradingDay": 10, "PostReductionReferencePrice": 15}]}
+                    return {"status": 200, "data": []}
+
+            report = fd.SourceReport()
+            act = fd.fetch_corp_actions(Tx(), report, dt.date(2026, 11, 22), None, sus)
+            self.assertEqual(act["rows"], {"3041": [["2025-01-05", 15.0, 10.0, "減資"]]})
+            self.assertTrue(report.items["finmind_減資"]["ok"])
+            self.assertEqual(sum(1 for c in calls if c.get("data_id")), 1)

@@ -47,10 +47,13 @@ export function percentileRank(values, v) {
 
 /* ───────────── 股價序列與技術指標 ───────────── */
 
+const pos0 = (v) => (isNum(v) && v > 0 ? v : null);
+
 /** FinMind TaiwanStockPrice 表 → 依日期排序的平行陣列（過濾停牌 / 無成交的 0 價） */
 export function priceSeries(table) {
   const rs = rows(table)
-    .map((r) => ({ d: r.date, o: toNum(r.open), h: toNum(r.max), l: toNum(r.min), c: toNum(r.close), v: toNum(r.Trading_Volume) }))
+    // 開高低為 0：當天沒有開盤成交等情況，資料源以 0 表示 → 視為缺值（否則 K 線會畫到 0）
+    .map((r) => ({ d: r.date, o: pos0(toNum(r.open)), h: pos0(toNum(r.max)), l: pos0(toNum(r.min)), c: toNum(r.close), v: toNum(r.Trading_Volume) }))
     .filter((r) => r.d && isNum(r.c) && r.c > 0)
     .sort((a, b) => (a.d < b.d ? -1 : a.d > b.d ? 1 : 0));
   return {
