@@ -102,6 +102,9 @@ body.us-mode #watchlist, body.us-mode .tw-notice, body:not(.us-mode) #us-watchli
   padding: 10px 14px; margin-bottom: 12px; font-size: 13px;
 }
 .sources table { width: 100%; border-collapse: collapse; }
+.checks-summary { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--hair); }
+.checks-summary p { margin: 0 0 4px; }
+.checks-summary ul { margin: 0; padding-left: 18px; }
 .sources td { padding: 3px 8px 3px 0; border-top: 1px solid var(--hair); }
 .sources tr:first-child td { border-top: 0; }
 
@@ -239,6 +242,14 @@ body.us-mode #watchlist, body.us-mode .tw-notice, body:not(.us-mode) #us-watchli
 .completeness { font-size: 13px; color: var(--ink-2); margin: 6px 0 14px; }
 .completeness summary { cursor: pointer; }
 .completeness ul { margin: 6px 0 0; padding-left: 18px; columns: 2; }
+/* 資料驗證 */
+.checks ul.check-list { columns: 1; list-style: none; padding-left: 0; }
+.check-list li { display: flex; gap: 6px; align-items: baseline; padding: 2px 0; }
+.check-list .ck-icon { flex: none; width: 1.2em; text-align: center; font-weight: 700; }
+.check-list .ck-ok .ck-icon { color: var(--ok); }
+.check-list .ck-warn .ck-icon { color: var(--warn); }
+.check-list .ck-info .ck-icon { color: var(--muted); }
+.checks.has-warn > summary { color: var(--warn); font-weight: 600; }
 
 .tiles { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); border: 1px solid var(--hair); border-radius: var(--radius); background: var(--surface); }
 .tile { padding: 10px 14px; border-left: 1px solid var(--hair); min-width: 0; }
@@ -370,3 +381,12 @@ footer.foot { margin-top: 40px; font-size: 12px; color: var(--muted); }
 .ai-table th, .ai-table td { border: 1px solid var(--hair); padding: 6px 10px; text-align: left; vertical-align: top; }
 .ai-table th { background: var(--surface-2); }
 a.btn { display: inline-flex; align-items: center; text-decoration: none; color: var(--ink); }
+
+/* K 線圖（assets/js/kline.js） */
+.panel-tools { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; }
+.kline { position: relative; height: 360px; margin-top: 4px; }
+.kline-legend { min-height: 1.4em; margin: 6px 0 0; font-size: 12px; color: var(--ink-2); white-space: nowrap; overflow-x: auto; }
+.kline-legend[data-dir="up"] { color: var(--up); }
+.kline-legend[data-dir="down"] { color: var(--down); }
+.kline-credit { font-size: 11px; margin: 4px 0 0; }
+@media (max-width: 640px) { .kline { height: 300px; } }

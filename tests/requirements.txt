@@ -1,0 +1,5 @@
+# 只在測試使用（GitHub Actions 安裝）；抓資料的 scripts/ 仍然只用 Python 標準函式庫。
+# 本機沒裝時，相關測試會自動跳過。
+TA-Lib==0.8.3        # 技術指標對照業界標準實作（tests/py/test_indicators_talib.py）；已內含 C 函式庫，不必另外安裝
+numpy==2.5.3
+hypothesis==6.170.17 # 性質測試：自動產生大量隨機輸入找邊界錯誤（tests/py/test_properties.py）

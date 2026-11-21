@@ -115,15 +115,16 @@ class Dashboard(unittest.TestCase):
     # ── 測試 ──
     def test_initial_load_watchlist_stock(self):
         self.open("#2330")
-        self.page.wait_for_selector(".panel .chart svg")
+        self.page.wait_for_selector(".panel .chart svg, .kline canvas")
         self.assertIn("2330", self.title())
-        self.assertIn("100%", self.page.locator(".completeness summary").inner_text())
+        self.assertIn("100%", self.page.locator(".completeness:not(.checks) summary").inner_text())
         self.page.locator(".peer-table tr.me").wait_for()          # 同業資料回來後會重畫一次
-        self.page.locator(".chart svg").nth(4).wait_for()
-        # 股價、河流圖、月營收、季度 EPS、歷年股利（股利資料分批更新，這檔有）
-        self.assertEqual(self.page.locator(".chart svg").count(), 5)
+        self.page.locator(".chart svg").nth(3).wait_for()
+        # SVG：河流圖、月營收、季度 EPS、歷年股利（股利資料分批更新，這檔有）；股價改為 K 線（canvas）
+        self.assertEqual(self.page.locator(".chart svg").count(), 4)
+        self.page.locator(".kline canvas").first.wait_for()
         txt = self.page.locator("#stock").inner_text()
-        for t in ("相對大盤與風險", "股利政策與填息", "自由現金流"):
+        for t in ("相對大盤與風險", "股利政策與填息", "自由現金流", "（含息）", "報酬指數"):
             self.assertIn(t, txt)
         # 同業比較：背景載入 screen.json 後出現，自己那一列標示
         self.page.locator(".peer-table tr.me").wait_for()
@@ -132,6 +133,42 @@ class Dashboard(unittest.TestCase):
         for label in ("台指期夜盤", "道瓊工業", "那斯達克", "櫃買指數"):
             self.assertIn(label, macro)
         self.assertEqual(self.errors, [])
+
+    def test_kline_chart_adjusted_toggle_and_credit(self):
+        """K 線圖：游標圖例、原始 / 還原切換、TradingView 姓名標示（授權要求）"""
+        self.open("#2330")
+        self.page.locator(".kline canvas").first.wait_for()
+        legend = self.page.locator(".kline-legend")
+        self.assertRegex(legend.inner_text(), r"開 [\d,.]+　高 [\d,.]+　低 [\d,.]+　收 [\d,.]+")
+        last = legend.inner_text()
+        box = self.page.locator(".kline").bounding_box()
+        self.page.mouse.move(box["x"] + box["width"] * 0.3, box["y"] + 100)
+        self.assertNotEqual(legend.inner_text(), last)                   # 游標所在日的數字
+        raw = legend.inner_text()
+        self.page.get_by_role("button", name="還原股價").click()
+        self.page.mouse.move(box["x"] + box["width"] * 0.3 + 1, box["y"] + 100)
+        self.assertNotEqual(legend.inner_text(), raw)                    # 除權息前的價格往下調整
+        self.assertEqual(self.page.get_by_role("button", name="還原股價").get_attribute("aria-pressed"), "true")
+        self.page.get_by_role("button", name="原始股價").click()
+        credit = self.page.locator(".kline-credit a")
+        self.assertEqual(credit.get_attribute("href"), "https://www.tradingview.com/")
+        self.assertIn("TradingView", self.page.locator(".kline-credit").inner_text())
+        self.assertEqual(self.errors, [])                                 # 沒有被 CSP 擋下的行內樣式
+
+    def test_data_checks_shown(self):
+        """資料驗證：2454 的月營收在合成資料裡故意與官方差 5 個百分點 → 顯示需確認並自動展開"""
+        self.open("#2454")
+        checks = self.page.locator("details.checks")
+        checks.wait_for()
+        self.assertEqual(checks.get_attribute("open"), "")
+        self.assertIn("需確認", checks.locator("summary").inner_text())
+        self.assertIn("年增率", checks.locator(".ck-warn").first.inner_text())
+        self.open("#2330")
+        self.page.locator("details.checks").wait_for()
+        self.assertIsNone(self.page.locator("details.checks").get_attribute("open"))     # 全部通過 → 收合
+        self.page.locator("#freshness").click()
+        self.assertIn("資料驗證", self.page.locator(".checks-summary").inner_text())
+        self.assertIn("2454", self.page.locator(".checks-summary").inner_text())
 
     def test_macro_chip_opens_history(self):
         self.open("#2330")
@@ -179,7 +216,7 @@ class Dashboard(unittest.TestCase):
         self.open("#2330")
         self.search("上市測試005")
         self.page.wait_for_selector("text=FinMind 即時查詢")
-        self.page.wait_for_selector(".panel .chart svg")
+        self.page.wait_for_selector(".panel .chart svg, .kline canvas")
         self.assertIn("上市測試005", self.title())
 
     def test_xss_in_stock_name_is_not_executed(self):
@@ -199,7 +236,7 @@ class Dashboard(unittest.TestCase):
 
     def test_excel_download_opens(self):
         self.open("#2330")
-        self.page.wait_for_selector(".panel .chart svg")
+        self.page.wait_for_selector(".panel .chart svg, .kline canvas")
         with self.page.expect_download() as dl:
             self.page.get_by_role("button", name="下載 Excel").click()
         path = Path(self.tmp.name) / "out.xlsx"
@@ -214,7 +251,7 @@ class Dashboard(unittest.TestCase):
 
     def test_prompt_dialog_contains_real_numbers(self):
         self.open("#2330")
-        self.page.wait_for_selector(".panel .chart svg")
+        self.page.wait_for_selector(".panel .chart svg, .kline canvas")
         self.page.get_by_role("button", name="產生分析指令").click()
         text = self.page.locator("#prompt-text").input_value()
         self.assertIn("2330 台積電", text)
@@ -293,8 +330,9 @@ class Dashboard(unittest.TestCase):
         self.assertIn("#us/NVDA", self.page.url)
         # 同業資料（us/screen.json）回來後整頁會重畫一次 → 等重畫完成、圖表畫好再數
         self.page.locator(".peer-table tr.me").wait_for()
-        self.page.locator(".chart svg").nth(2).wait_for()
-        self.assertEqual(self.page.locator(".chart svg").count(), 3)           # 股價、河流圖、季度 EPS（沒有月營收）
+        self.page.locator(".chart svg").nth(1).wait_for()
+        self.assertEqual(self.page.locator(".chart svg").count(), 2)           # 河流圖、季度 EPS（股價是 K 線 canvas；沒有月營收）
+        self.page.locator(".kline canvas").first.wait_for()
         txt = self.page.locator("#stock").inner_text()
         self.assertIn("S&P 500", txt)
         self.assertIn("自由現金流", txt)
@@ -302,7 +340,7 @@ class Dashboard(unittest.TestCase):
         self.assertIn("公開市場賣出", txt)
         self.page.locator(".peer-table tr.me").wait_for()
         self.assertTrue(self.page.locator(".us-notice").is_visible())
-        self.assertIn("100%", self.page.locator(".completeness summary").inner_text())
+        self.assertIn("100%", self.page.locator(".completeness:not(.checks) summary").inner_text())
         tv = self.page.get_by_role("link", name="TradingView ↗")
         self.assertIn("symbol=NVDA", tv.get_attribute("href"))
         self.page.get_by_role("button", name="產生分析指令").click()
@@ -337,6 +375,7 @@ class Dashboard(unittest.TestCase):
         self.page.locator("#search").press("Enter")
         self.page.wait_for_url("**#us/TSLA")
         self.page.get_by_role("link", name="Finviz ↗").wait_for()
+        self.page.wait_for_timeout(300)
         self.errors.clear()          # TSLA 沒有資料檔：瀏覽器記錄的 404 是預期的
         # 回台股：台股追蹤列與台股搜尋恢復
         self.page.get_by_role("link", name="台股").click()
@@ -425,7 +464,7 @@ class Dashboard(unittest.TestCase):
 
     def test_no_unexpected_third_party_requests(self):
         self.open("#2330")
-        self.page.wait_for_selector(".panel .chart svg")
+        self.page.wait_for_selector(".panel .chart svg, .kline canvas")
         self.assertTrue(self.hosts <= {"127.0.0.1", "api.finmindtrade.com"}, self.hosts)
 
     def test_token_not_in_published_site(self):

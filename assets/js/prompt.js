@@ -86,7 +86,7 @@ function insiderLine(x) {
 function riskLine(rk) {
   if (!rk) return '【相對大盤】N/A';
   const p = (x) => (x ? `${pct(x.stock)} vs ${pct(x.bench)}` : 'N/A');
-  return `【相對大盤，比 ${rk.label}】${join([
+  return `【相對大盤，比 ${rk.label}${rk.kind === 'tr' ? '（含息）' : '（價格指數）'}；個股報酬為還原股價】${join([
     `1月 ${p(rk.periods.m1)}`, `3月 ${p(rk.periods.m3)}`, `6月 ${p(rk.periods.m6)}`, `1年 ${p(rk.periods.y1)}`,
   ])}\n　${join([`Beta ${F.num(rk.beta, 2)}`, `年化波動 ${F.pct(rk.vol, 1)}（大盤 ${F.pct(rk.benchVol, 1)}）`, `近一年最大回撤 ${F.pct(rk.mdd, 1)}`])}`;
 }
@@ -105,7 +105,7 @@ function buildPromptUS(s, macro) {
   L.push(`【總經】${macroLine(macro)}`);
   L.push(`【股價】${join([
     px ? `${F.price(px.price)}（${pct(px.changePct, 2)}）` : 'N/A',
-    r && `5日 ${pct(r.d5)}、20日 ${pct(r.d20)}、60日 ${pct(r.d60)}、YTD ${pct(r.ytd)}、1年 ${pct(r.y1)}`,
+    r && `報酬（含息）5日 ${pct(r.d5)}、20日 ${pct(r.d20)}、60日 ${pct(r.d60)}、YTD ${pct(r.ytd)}、1年 ${pct(r.y1)}`,
     t && `位階 1年 ${F.num(t.pct1y, 0)}%、3年 ${F.num(t.pct3y, 0)}%`,
   ])}`);
   L.push(`【估值】${join([`本益比（近四季）${F.num(v.pe)}`, `股價淨值比 ${F.num(v.pb)}`])}（推估：收盤 ÷ SEC 財報）`);
@@ -150,7 +150,7 @@ export function buildPrompt(s, meta, macro = []) {
   const r = t?.returns;
   L.push(`【股價】${join([
     px ? `${F.price(px.price)}（${pct(px.changePct, 2)}${px.kind === '盤中' ? `，盤中 ${F.when(px.asOf)}` : dateIf(px.asOf, dataDay)}）` : 'N/A',
-    r && `5日 ${pct(r.d5)}、20日 ${pct(r.d20)}、60日 ${pct(r.d60)}、YTD ${pct(r.ytd)}、1年 ${pct(r.y1)}`,
+    r && `報酬（含息）5日 ${pct(r.d5)}、20日 ${pct(r.d20)}、60日 ${pct(r.d60)}、YTD ${pct(r.ytd)}、1年 ${pct(r.y1)}`,
     t && `位階 1年 ${F.num(t.pct1y, 0)}%、3年 ${F.num(t.pct3y, 0)}%`,
   ])}`);
   L.push(`【估值】${join([`本益比 ${F.num(v.pe)}`, `股價淨值比 ${F.num(v.pb)}`, `殖利率 ${F.pct(v.yield)}`])}${dateIf(v.asOf, dataDay)}`);

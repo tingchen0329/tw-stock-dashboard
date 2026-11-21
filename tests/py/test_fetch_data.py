@@ -437,9 +437,10 @@ class EndToEnd(unittest.TestCase):
     def test_macro_has_benchmarks_for_relative_strength(self):
         bench = json.loads((self.out / "macro.json").read_text())["bench"]
         self.assertEqual(sorted(bench), ["tw", "us"])
-        for key, label in (("tw", "加權指數"), ("us", "S&P 500")):
+        for key, label in (("tw", "加權報酬指數"), ("us", "S&P 500 報酬指數")):
             b = bench[key]
             self.assertEqual(b["label"], label)
+            self.assertEqual(b["kind"], "tr")                  # 報酬指數（股利再投入），個股也用還原股價
             self.assertGreaterEqual(len(b["dates"]), 250)
             self.assertEqual(len(b["dates"]), len(b["close"]))
             self.assertEqual(b["dates"], sorted(b["dates"]))
@@ -644,8 +645,8 @@ class MacroOnly(unittest.TestCase):
             self.assertFalse((out / "stock/2330.json").exists())                # 移除的：刪掉
             self.assertNotIn("stock/2330.json", meta["bytes"])
             self.assertEqual((out / "stock/3189.json").read_bytes(), (self.site / "data/stock/3189.json").read_bytes())
-            # 只抓 2454 一檔（8 個資料集）+ 股票清單 1 + 總經 3（櫃買、夜盤歷史、Fed）
-            self.assertEqual(meta["finmindRequests"], 8 + 1 + 3)
+            # 只抓 2454 一檔（8 個資料集）+ 股票清單 1 + 總經 3（櫃買、夜盤歷史、Fed）+ 加權報酬指數 1
+            self.assertEqual(meta["finmindRequests"], 8 + 1 + 3 + 1)
             self.assertIn("本次更新 1 檔", meta["sources"]["finmind_watchlist"]["note"])
             self.assertTrue(meta["sources"]["finmind_watchlist"]["ok"])
 
@@ -674,7 +675,7 @@ class MacroOnly(unittest.TestCase):
             self.assertEqual(meta["mode"], "macro")
             self.assertTrue((out / "stock/6669.json").exists())
             self.assertIn("stock/6669.json", meta["bytes"])
-            self.assertEqual(meta["macroFinmindRequests"], 3 + 8)
+            self.assertEqual(meta["macroFinmindRequests"], 3 + 1 + 8)
             wl = meta["sources"]["finmind_watchlist"]
             self.assertTrue(wl["ok"])
             self.assertEqual(wl["note"], "補抓 1 檔")
@@ -773,3 +774,40 @@ class MacroHistory(unittest.TestCase):
             self.assertNotIn("hist", macro["items"][0])                      # macro.json 保持精簡
             hist = json.loads((out / "macro_hist.json").read_text())["items"]
             self.assertEqual(sorted(hist), ["dji", "spx"])                    # dji 沿用上一份；不在清單的移除
+
+
+class TotalReturnBench(unittest.TestCase):
+    """加權報酬指數：FinMind 不能用時改抓證交所 MFI94U（每月一次），已有的月份不重抓"""
+
+    class Tx:
+        def __init__(self, finmind_ok=False):
+            self.finmind_ok, self.twse = finmind_ok, []
+            self.finmind_requests = 0
+
+        def get_json(self, url, params=None, kind="public"):
+            if kind == "finmind":
+                raise RuntimeError("FinMind TaiwanStockTotalReturnIndex: 此資料集需要升級會員")
+            if url == fd.TWSE_MFI94U:
+                self.twse.append(params["date"])
+                y, m = int(params["date"][:4]), int(params["date"][4:6])
+                days = [dt.date(y, m, d) for d in range(1, 29) if dt.date(y, m, d).weekday() < 5]
+                return {"stat": "OK", "data": [[f"{d.year - 1911}/{d.month:02d}/{d.day:02d}", f"{60000 + d.toordinal() % 1000:,}.12"]
+                                               for d in days]}
+            raise RuntimeError("unexpected " + url)
+
+    def test_twse_fallback_and_incremental(self):
+        today = dt.date(2026, 11, 20)
+        tx = self.Tx()
+        r = fd.tw_total_return(tx, today, None, use_finmind=True)
+        self.assertEqual(r["kind"], "tr")
+        self.assertEqual(r["source"], "證交所 MFI94U")
+        self.assertEqual(r["dates"], sorted(r["dates"]))
+        self.assertGreater(len(r["dates"]), 400)
+        self.assertEqual(len(tx.twse), 25)                         # 第一次：兩年 25 個月
+        tx2 = self.Tx()
+        fd.tw_total_return(tx2, today, r, use_finmind=False)
+        self.assertEqual(tx2.twse, ["20261001", "20261101"])        # 之後只補最近 2 個月
+
+    def test_parse_mfi94u_roc_dates(self):
+        self.assertEqual(fd.parse_mfi94u({"data": [["115/11/03", "63,123.45"], ["bad", "1"], ["115/11/04", "--"]]}),
+                         {"2026-11-03": 63123.45})

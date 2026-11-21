@@ -14,6 +14,7 @@
 import { loadBootstrap, loadStock, loadScreen, loadUsOverview, loadUsStock, loadUsScreen, loadAiConfig, loadMacroHist } from './data.js';
 import { buildIndex, search, resolveExact, highlightParts, marketLabel } from './search.js';
 import { summarize, marketRow, usMarketRow, peerStats, insiderStats } from './analytics.js';
+import { checkStock, screenIndex } from './checks.js';
 import { renderFreshness, renderWatchlist, renderMacro, renderMacroHistory, renderStock, renderSetup, h } from './render.js';
 import { buildPrompt } from './prompt.js';
 import { marketStatus, marketNotice, usMarketStatus, usMarketNotice } from './market.js';
@@ -203,6 +204,8 @@ async function showStock(code) {
     cur.tables = tables;
     cur.summary = summarize({ info, mkt, quote, tables, asOf, bench: state.boot.macro?.bench?.tw });
     cur.summary.peers = state.peerData.tw ? peerStats(state.peerData.tw, code, 'industry') : null;
+    if (state.peerData.tw && !state.screenIdx) state.screenIdx = screenIndex(state.peerData.tw);
+    cur.summary.checks = checkStock({ info, mkt, asOf, quote, tables, screen: state.screenIdx?.get(code) ?? null });
     cur.lastMeta = meta;
     if (!info.name && cur.summary.info) cur.summary.info.name = code;
     cur.cleanup?.();
@@ -406,8 +409,9 @@ async function showUsStock(sym) {
   const info = { code: sym, name: detail.name || sym, market: 'us', industry: detail.exchange || '', etf: !hasFin, shares: detail.shares ?? null };
   const draw = () => {
     cur.tables = detail.tables || {};
-    cur.summary = summarize({ info, mkt, quote: null, tables: cur.tables, asOf: { twse: mkt?.date }, bench: state.boot.macro?.bench?.us });
+    cur.summary = summarize({ info, mkt, quote: null, tables: cur.tables, asOf: { twse: mkt?.date }, bench: state.boot.macro?.bench?.us, dividends: detail.dividends });
     cur.summary.insider = insiderStats(detail.insider);
+    cur.summary.checks = checkStock({ info, tables: cur.tables });
     cur.summary.peers = state.peerData.us ? peerStats(state.peerData.us, sym, 'sector') : null;
     cur.cleanup?.();
     cur.cleanup = renderStock($('stock'), cur.summary, {

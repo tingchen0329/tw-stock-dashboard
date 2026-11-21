@@ -790,8 +790,14 @@ MACRO_YAHOO = [
     ("vix", "VIX 恐慌指數", "^VIX"),
 ]
 
-# 個股「相對大盤與風險」用的大盤日線（約 2 年）：台股比加權指數、美股比 S&P 500
+# 個股「相對大盤與風險」用的大盤日線（約 2 年）。用「報酬指數」（股利再投入），個股也用還原股價，
+# 兩邊都含息才公平；拿不到報酬指數時退回價格指數並標示 kind="price"。
+#   台股：FinMind TaiwanStockTotalReturnIndex（TAIEX）→ 證交所 MFI94U（每月一次請求）→ Yahoo ^TWII（價格）
+#   美股：Yahoo ^SP500TR → ^GSPC（價格）
 BENCH = {"tw": ("加權指數", "^TWII"), "us": ("S&P 500", "^GSPC")}
+BENCH_TR = {"tw": "加權報酬指數", "us": "S&P 500 報酬指數"}
+TWSE_MFI94U = "https://www.twse.com.tw/rwd/zh/TAIEX/MFI94U"       # 發行量加權股價報酬指數（每月）
+BENCH_DAYS = 2 * 366
 
 
 # FinMind 的台股指數（TaiwanStockPrice 的 data_id）：只有日收盤，沒有盤中
@@ -900,15 +906,83 @@ def parse_bench(payload: dict, label: str) -> dict | None:
     return {"label": label, "dates": ds, "close": [pts[d] for d in ds]}
 
 
-def fetch_bench(tx, report: SourceReport, prev: dict | None = None) -> dict:
-    """台股 / 美股大盤 2 年日線；失敗時沿用上一份"""
-    out = dict(prev or {})
-    for key, (label, sym) in BENCH.items():
-        res = report.run(f"bench_{key}", lambda s=sym, l=label: parse_bench(
-            tx.get_json(f"{YAHOO_CHART}{urllib.parse.quote(s, safe='')}", {"range": "2y", "interval": "1d"}), l),
-            count=lambda r: len(r["dates"]) if r else 0)
+def _yahoo_bench(tx, sym: str, label: str, kind: str) -> dict | None:
+    r = parse_bench(tx.get_json(f"{YAHOO_CHART}{urllib.parse.quote(sym, safe='')}", {"range": "2y", "interval": "1d"}), label)
+    return {**r, "kind": kind, "source": f"Yahoo {sym}"} if r else None
+
+
+def parse_mfi94u(payload: dict) -> dict[str, float]:
+    """證交所 MFI94U（一個月）→ {西元日期: 報酬指數}。日期是民國年：115/11/03"""
+    out = {}
+    for row in (payload or {}).get("data") or []:
+        try:
+            y, m, d = (int(x) for x in str(row[0]).strip().split("/"))
+            v = to_num(row[1])
+        except (ValueError, IndexError, TypeError):
+            continue
+        if v:
+            out[dt.date(y + 1911 if y < 1911 else y, m, d).isoformat()] = v
+    return out
+
+
+def tw_total_return(tx, today: dt.date, prev: dict | None, use_finmind: bool) -> dict | None:
+    """
+    加權報酬指數 2 年日線。先試 FinMind（1 次請求）；不行就用證交所 MFI94U：
+    上一份已有的月份不重抓（只補最近 2 個月與缺的月份），第一次約 25 次請求（每次間隔 1.2 秒）。
+    """
+    start = today - dt.timedelta(days=BENCH_DAYS)
+    if use_finmind:
+        try:
+            rows = finmind(tx, "TaiwanStockTotalReturnIndex", "TAIEX", start.isoformat())
+            pts = {r["date"]: to_num(r.get("price")) for r in rows if r.get("date") and to_num(r.get("price"))}
+            if len(pts) >= 120:
+                ds = sorted(pts)
+                return {"label": BENCH_TR["tw"], "dates": ds, "close": [pts[d] for d in ds],
+                        "kind": "tr", "source": "FinMind TaiwanStockTotalReturnIndex"}
+        except QuotaExceeded:
+            raise
+        except Exception:  # noqa: BLE001  （免費方案不提供或暫時失敗 → 改用證交所）
+            pass
+    pts: dict[str, float] = {}
+    if prev and prev.get("kind") == "tr":
+        pts = {d: c for d, c in zip(prev.get("dates", []), prev.get("close", [])) if d >= start.isoformat()}
+    have = {d[:7] for d in pts}
+    months, m = [], dt.date(start.year, start.month, 1)
+    while m <= today:
+        months.append(m)
+        m = dt.date(m.year + (m.month == 12), m.month % 12 + 1, 1)
+    recent = {x.isoformat()[:7] for x in months[-2:]}
+    for m in months:
+        key = m.isoformat()[:7]
+        if key in have and key not in recent:
+            continue
+        try:
+            pts.update(parse_mfi94u(tx.get_json(TWSE_MFI94U, {"date": m.strftime("%Y%m%d"), "response": "json"}, kind="twse_www")))
+        except Exception:  # noqa: BLE001
+            continue
+    ds = sorted(d for d in pts if d >= start.isoformat())
+    if len(ds) < 120:
+        return None
+    return {"label": BENCH_TR["tw"], "dates": ds, "close": [pts[d] for d in ds], "kind": "tr", "source": "證交所 MFI94U"}
+
+
+def fetch_bench(tx, report: SourceReport, prev: dict | None = None, today: dt.date | None = None,
+                use_finmind: bool = True) -> dict:
+    """台股 / 美股大盤 2 年日線（優先報酬指數）；全部失敗時沿用上一份"""
+    today = today or now_tpe().date()
+    prev = prev or {}
+    out = dict(prev)
+    tw = report.run("bench_tw", lambda: tw_total_return(tx, today, prev.get("tw"), use_finmind)
+                    or _yahoo_bench(tx, BENCH["tw"][1], BENCH["tw"][0], "price"),
+                    count=lambda r: len(r["dates"]) if r else 0)
+    us = report.run("bench_us", lambda: _yahoo_bench(tx, "^SP500TR", BENCH_TR["us"], "tr")
+                    or _yahoo_bench(tx, BENCH["us"][1], BENCH["us"][0], "price"),
+                    count=lambda r: len(r["dates"]) if r else 0)
+    for key, res in (("tw", tw), ("us", us)):
         if res:
             out[key] = res
+            if res.get("kind") != "tr":
+                report.items[f"bench_{key}"]["note"] = "報酬指數取不到，暫用價格指數（不含息，個股相對大盤會偏高）"
     return out
 
 
@@ -1362,7 +1436,7 @@ def main(argv: list[str] | None = None) -> int:
         macro = fetch_macro(tx, report, today, use_finmind=not quota_hit)
     except QuotaExceeded:
         quota_hit, macro = True, []
-    sizes.update(write_macro(out, macro, fetch_bench(tx, report, read_bench(out))))
+    sizes.update(write_macro(out, macro, fetch_bench(tx, report, read_bench(out), today, use_finmind=not quota_hit)))
 
     # 追蹤清單盤中報價（Yahoo）：上市用 .TW、上櫃用 .TWO
     market_of = {r[0]: r[2] for r in stock_list}
@@ -1470,7 +1544,7 @@ def run_macro_only(tx, out: Path, prev: dict, today: dt.date, token: str | None,
             f"補抓 {fetched} 檔" if fetched else "",
             f"缺 {len(watchlist) - len(files)} 檔" if len(files) < len(watchlist) else "",
             "FinMind 額度用完 (HTTP 402)，下次執行會補抓" if quota else "") if x)}
-    sizes.update(write_macro(out, macro, fetch_bench(tx, report, read_bench(out))))
+    sizes.update(write_macro(out, macro, fetch_bench(tx, report, read_bench(out), today, use_finmind=not quota)))
     asof = json.loads((out / "market.json").read_text("utf-8")).get("asOf", {})
     market = market_block(tx, report, today, clock(today), asof.get("twse") or asof.get("tpex"), macro,
                           prev.get("market"))

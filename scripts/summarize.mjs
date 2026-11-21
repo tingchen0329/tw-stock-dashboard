@@ -86,14 +86,15 @@ if (!tables) {
 }
 
 const market = readLocal('market.json');
-const s = summarize({ info, mkt: marketRow(market, code), quote: readLocal('quotes.json')?.rows?.[code] ?? null, tables, asOf: market?.asOf ?? {} });
+const s = summarize({ info, mkt: marketRow(market, code), quote: readLocal('quotes.json')?.rows?.[code] ?? null, tables, asOf: market?.asOf ?? {},
+  bench: readLocal('macro.json')?.bench?.tw ?? null });
 const meta = readLocal('meta.json') ?? { generatedAt: new Date().toISOString() };
 
 if (flag('--prompt')) {
   console.log(buildPrompt(s, meta, readLocal('macro.json')?.items ?? []));
 } else {
   // series（每日價格陣列）太長，JSON 摘要中省略；河流圖只留最新值
-  const { series, river, tech, ...rest } = s;
+  const { series, seriesAdj, river, tech, ...rest } = s;
   const out = {
     ...rest,
     tech: tech && { ...tech, maSeries: undefined },

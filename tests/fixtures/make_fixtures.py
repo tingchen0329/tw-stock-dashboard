@@ -150,6 +150,8 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
       {"stat": "OK", "date": f"{last_day:%Y%m%d}", "fields": t86_fields, "data": t86})
 
     # ── FinMind 個股（追蹤清單）──
+    truth: dict[str, dict] = {}          # 追蹤清單個股的 FinMind 營收 / EPS → 全市場彙總表用同一份數字（交叉比對應一致）
+
     def fm(name, data):
         w(name, {"msg": "success", "status": 200, "data": data})
 
@@ -182,6 +184,7 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
                         "revenue_month": mth, "revenue_year": y, "create_time": ""})
         if not etf:
             fm(f"finmind_TaiwanStockMonthRevenue_{c}.json", rev)
+        truth[c] = {"rev": rev, "inc": None}
         inst = [{"date": str(d), "stock_id": c, "name": nm, "buy": r.randint(0, 9000) * 1000,
                  "sell": r.randint(0, 9000) * 1000} for d in days[-40:] for nm in INST_NAMES]
         fm(f"finmind_TaiwanStockInstitutionalInvestorsBuySell_{c}.json", inst)
@@ -199,6 +202,7 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
                             "ForeignInvestmentSharesRatio": round(ratio, 2)})
         fm(f"finmind_TaiwanStockShareholding_{c}.json", holding)
         inc, bal = [], []
+        truth[c]["inc"] = inc
         qrev = base_rev * 3
         for q in range(9):
             y, qq = today.year - 2 + (q + 2) // 4, (q + 2) % 4 + 1
@@ -243,9 +247,11 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
             fm(f"finmind_TaiwanStockCashFlowsStatement_{c}.json", cf)
         # 股利政策（每年一次）與除權息結果；填息與否由股價決定
         div, divr = [], []
-        for k, y in enumerate(range(today.year - 6, today.year)):
-            cash_d = round(eps0 * r.uniform(2.2, 3.2) * (1 + 0.05 * k), 2)
+        for k, y in enumerate(range(today.year - 6, today.year + (dt.date(today.year, 7, 15) < today))):
             exd = next((d for d in days if d >= dt.date(y, 7, 15)), None) if dt.date(y, 7, 15) >= days[0] else None
+            # 現金股利約為除息前股價的 2–5%（殖利率合理範圍；還原股價的測試依此計算）
+            ref = cl[days.index(exd) - 1] if exd and days.index(exd) else (cl[0] if cl else 100)
+            cash_d = round(ref * r.uniform(0.02, 0.05), 2)
             div.append({"date": f"{y}-03-10", "stock_id": c, "year": f"{y - 1912}年",
                         "CashEarningsDistribution": cash_d, "CashStatutorySurplus": 0.0,
                         "StockEarningsDistribution": 0.5 if k == 2 and not etf else 0.0, "StockStatutorySurplus": 0.0,
@@ -265,7 +271,7 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
         {"country": "FED", "date": "2025-12-10", "full_country_name": "", "interest_rate": 3.75},
         {"country": "FED", "date": "2026-09-16", "full_country_name": "", "interest_rate": 3.5}])
 
-    US_TZ = {"IDX_DJI", "IDX_IXIC", "IDX_GSPC", "IDX_SOX", "IDX_VIX", "IDX_TNX"}
+    US_TZ = {"IDX_DJI", "IDX_IXIC", "IDX_GSPC", "IDX_SOX", "IDX_VIX", "IDX_TNX", "IDX_SP500TR"}
 
     def yahoo(sym: str, base: float, vol: float = 0.01, n: int = 64) -> None:
         n = min(n, len(days))
@@ -297,6 +303,12 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
          "CDiff": "-70.00", "CTotalVolume": "512", "CTime": "215801"},
         {"SymbolID": "TXFK6/L6-M", "DispCName": "臺指期116/126", "CLastPrice": "40.00", "CRefPrice": "40.00",
          "CTotalVolume": "99999", "CTime": "215700"}]}})
+    def cum_eps(c: str) -> float:
+        """今年 Q1 + Q2 單季 EPS 加總（全市場綜合損益表是年度累計）"""
+        qs = [x["value"] for x in truth[c]["inc"] if x["type"] == "EPS"
+              and x["date"] in (f"{today.year}-03-31", f"{today.year}-06-30")]
+        return round(sum(qs), 2)
+
     # 全市場選股：月營收彙總表與綜合損益表（上市 opendata、上櫃 mopsfin，欄位名稱相同）
     rr = random.Random(7)
     pm = dt.date(today.year, today.month, 1) - dt.timedelta(days=1)          # 上個月
@@ -307,6 +319,13 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
         if m not in revs or c.startswith("00"):
             continue
         yoy = round(rr.uniform(-35, 70), 2)
+        t = truth.get(c)
+        if t:
+            # 追蹤清單：與 FinMind fixture 相同的年增率（2454 故意差 5 個百分點，測試交叉比對會抓到）
+            cur = next((x["revenue"] for x in t["rev"] if (x["revenue_year"], x["revenue_month"]) == (pm.year, pm.month)), None)
+            ly = next((x["revenue"] for x in t["rev"] if (x["revenue_year"], x["revenue_month"]) == (pm.year - 1, pm.month)), None)
+            if cur and ly:
+                yoy = round((cur / ly - 1) * 100 + (5 if c == "2454" else 0), 2)
         revs[m].append({"出表日期": roc(today), "資料年月": ym, "公司代號": c, "公司名稱": n, "產業別": ind,
                         "營業收入-當月營收": str(rr.randint(10**5, 10**8)), "營業收入-上月比較增減(%)": str(round(rr.uniform(-20, 25), 2)),
                         "營業收入-去年同月增減(%)": str(yoy), "累計營業收入-前期比較增減(%)": str(round(yoy * rr.uniform(0.5, 1.1), 2)),
@@ -315,7 +334,7 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
         incs[m].append({"出表日期": roc(today), "年度": str(today.year - 1911), "季別": "2", "公司代號": c, "公司名稱": n,
                         "營業收入": str(rv), "營業毛利（毛損）淨額": str(int(rv * rr.uniform(0.05, 0.6))),
                         "營業利益（損失）": str(int(rv * rr.uniform(-0.1, 0.35))),
-                        "基本每股盈餘（元）": str(round(rr.uniform(-2, 18), 2))})
+                        "基本每股盈餘（元）": str(cum_eps(c) if truth.get(c) and truth[c]["inc"] else round(rr.uniform(-2, 18), 2))})
     w("v1_opendata_t187ap05_L.json", revs["twse"])
     w("openapi_v1_mopsfin_t187ap05_O.json", revs["tpex"])
     for k in ["ci", "basi", "bd", "fh", "ins", "mim"]:
@@ -345,9 +364,14 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
                                   ("202612", 26950, -42, 300, "after_market"),
                                   ("202611/202612", 40, 0, 50000, "after_market")]])
     for sym, base in [("IDX_TWII", 27000), ("TWD_X", 30.6), ("DX-Y.NYB", 98.2), ("IDX_DJI", 46000), ("IDX_IXIC", 22800),
-                      ("IDX_TNX", 4.1), ("GC_F", 3900), ("IDX_SOX", 6200), ("IDX_GSPC", 6500), ("IDX_VIX", 16)]:
-        # 加權指數、S&P 500 兼做「相對大盤」的 2 年日線 → 給長一點
-        yahoo(sym, base, n=520 if sym in ("IDX_TWII", "IDX_GSPC") else 64)
+                      ("IDX_TNX", 4.1), ("GC_F", 3900), ("IDX_SOX", 6200), ("IDX_GSPC", 6500), ("IDX_VIX", 16),
+                      ("IDX_SP500TR", 14000)]:
+        # 加權指數、S&P 500（含報酬指數）兼做「相對大盤」的 2 年日線 → 給長一點
+        yahoo(sym, base, n=520 if sym in ("IDX_TWII", "IDX_GSPC", "IDX_SP500TR") else 64)
+    # 加權報酬指數（FinMind TaiwanStockTotalReturnIndex，欄位 price）
+    tr = walk(random.Random("TAIEXTR"), 60000, 520, 0.0004, 0.01)
+    fm("finmind_TaiwanStockTotalReturnIndex_TAIEX.json",
+       [{"date": str(d), "stock_id": "TAIEX", "price": v} for d, v in zip(days[-520:], tr)])
     for c, (n, m, _, base) in WATCH.items():
         yahoo(f"{c}.{'TWO' if m == 'tpex' else 'TW'}", closes[c][-1] if c in closes else base)
     # ── 美股：Yahoo 3 年日線 + SEC companyfacts（NVDA、AAPL 有財報；SPY 是 ETF，SEC 查無）──
@@ -360,7 +384,10 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
                      "regularMarketPrice": ser[-1], "regularMarketTime": ts[-1], "chartPreviousClose": ser[-2]},
             "timestamp": ts, "indicators": {"quote": [{"open": ser, "high": [round(x * 1.01, 2) for x in ser],
                                                         "low": [round(x * 0.99, 2) for x in ser], "close": ser,
-                                                        "volume": [rng.randint(10**6, 10**8) for _ in ser]}]}}], "error": None}})
+                                                        "volume": [rng.randint(10**6, 10**8) for _ in ser]}]},
+            # 季配息（每季約 0.4% 殖利率），測試還原股價；NVDA 不配息
+            **({"events": {"dividends": {str(ts[i]): {"amount": round(ser[i - 1] * 0.004, 4), "date": ts[i]}
+                                         for i in range(40, 760, 63)}}} if sym != "NVDA" else {})}], "error": None}})
     w("files_company_tickers.json.json", {str(i): {"cik_str": c, "ticker": t, "title": n.upper()}
                                           for i, (t, (n, _, c)) in enumerate(us.items()) if c})
     for sym, (name, base, cik) in us.items():

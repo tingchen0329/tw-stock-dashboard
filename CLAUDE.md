@@ -7,6 +7,7 @@
 python -m unittest discover -s tests/py        # Python 測試（資料管線）
 node --test "tests/js/*.test.mjs"              # JS 測試（搜尋、指標、匯出）
 python tests/e2e/test_dashboard.py             # 瀏覽器端對端測試（需 playwright）
+pip install -r tests/requirements.txt          # TA-Lib（指標對照）、Hypothesis（性質測試）；沒裝則這些測試跳過
 ./scripts/preview.sh                           # 本機預覽（合成資料）→ http://localhost:8000
 ./scripts/preview.sh --live                    # 本機預覽（真實資料，需 FINMIND_TOKEN）
 node scripts/summarize.mjs 2330 --prompt       # 終端機版個股摘要 / 分析指令
@@ -28,6 +29,9 @@ python tests/bench/run_bench.py                # 新舊版效能比較
 - 慢速資料集（`datasets.json` 的 `wave: 3`：股利、除權息、現金流量表）：網頁不即時查；`refresh_slow()` 每次執行只更新 `SLOW_BUDGET` 檔（最久沒更新優先、7 天內不重抓），避免超過 FinMind 每小時 600 次。
 - 美股內部人：`us_data.fetch_insider()`（SEC submissions + Form 4 XML，依 accession 快取，只在 full 抓）→ us/stock 檔的 `insider`。
 - 同業比較：`analytics.peerStats()` 用 screen.json（產業別）/ us/screen.json（GICS sector），個股頁背景載入。
+- 還原股價：`analytics.adjustEvents()` + `adjustedSeries()`（台股 divResult、美股 Yahoo 配息）。報酬率 / 相對大盤 / 風險用還原；技術指標、K 線預設用原始價。大盤 bench 優先報酬指數（`fetch_data.tw_total_return()`：FinMind → 證交所 MFI94U；美股 ^SP500TR），`kind: "tr" | "price"`。
+- 資料驗證：`assets/js/checks.js`（跨來源比對 + 異常值規則），個股頁即時算；`build_overview.mjs` 對清單逐檔算 → `checks.json`、`meta.checks`、`::warning::`。
+- K 線：`assets/js/kline.js` 包 `assets/vendor/lightweight-charts/`（本地檔，CSP 不允許 CDN）。`attributionLogo` 必須關閉（會插行內 style 被 CSP 擋），改在圖下方顯示 NOTICE 文字與連結（授權要求，不可移除）。
 - `scripts/build_overview.mjs`：fetch 之後執行，用 analytics.js 產生 `overview.json`（網頁首頁總覽表）。
 - `config/watchlist.csv`：追蹤清單（Yahoo 自選股 CSV，順序即顯示順序）。約 70 檔是 FinMind 免費額度上限（`test_repo_watchlist_is_valid` 會檢查）。
 - 測試用清單是 `tests/fixtures/watchlist.json`（對應 fixtures 的合成資料），不是正式清單。

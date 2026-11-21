@@ -63,6 +63,50 @@ export function priceSeries(table) {
   };
 }
 
+/**
+ * 除權息事件 → 還原因子（還原股價用；FinMind 的還原股價只限付費會員，所以自己算）
+ *   台股：FinMind 除權息結果 → 因子 = 除權息參考價 ÷ 除權息前收盤（含股票股利）
+ *   美股：Yahoo 配息 [[日期, 每股股利]] → 因子 = 1 − 股利 ÷ 除息前一日收盤（股票分割 Yahoo 已調整）
+ * @returns {{date:string, factor:number, note:string}[]} 依日期排序；不合理的事件（因子 ≤ 0 或 ≥ 1）略過
+ */
+export function adjustEvents(ps, { divResult = null, dividends = null } = {}) {
+  const ev = [];
+  for (const r of rows(divResult)) {
+    const b = toNum(r.before_price);
+    const a = toNum(r.after_price);
+    if (r.date && isNum(a) && isNum(b) && b > 0 && a > 0 && a < b) ev.push({ date: r.date, factor: a / b, note: `除${r.stock_or_cache_dividend || '權息'} ${fmt2(toNum(r.stock_and_cache_dividend))}` });
+  }
+  for (const [d, amt] of dividends || []) {
+    const i = ps.dates.findIndex((x) => x >= d);
+    const prev = i > 0 ? ps.close[i - 1] : null;
+    if (isNum(amt) && amt > 0 && isNum(prev) && amt < prev) ev.push({ date: d, factor: 1 - amt / prev, note: `配息 ${fmt2(amt)}` });
+  }
+  return ev.sort((x, y) => (x.date < y.date ? -1 : x.date > y.date ? 1 : 0));
+}
+
+const fmt2 = (v) => (isNum(v) ? (Math.round(v * 100) / 100).toString() : '?');
+
+/**
+ * 還原股價：除權息日「之前」的價格乘上之後所有事件的因子（最新價格不變）。
+ * 用途：報酬率、相對大盤、Beta、最大回撤（含息才公平）；技術指標與 K 線維持原始價格（與券商軟體相同）。
+ */
+export function adjustedSeries(ps, events) {
+  const n = ps.dates.length;
+  const f = new Array(n).fill(1);
+  let cum = 1;
+  let k = events.length - 1;
+  let applied = 0;
+  for (let i = n - 1; i >= 0; i--) {
+    while (k >= 0 && events[k].date > ps.dates[i]) {
+      if (events[k].date <= ps.dates[n - 1] && events[k].date > ps.dates[0]) { cum *= events[k].factor; applied++; }
+      k--;
+    }
+    f[i] = cum;
+  }
+  const mul = (arr) => arr.map((v, i) => (isNum(v) ? v * f[i] : v));
+  return { dates: ps.dates, open: mul(ps.open), high: mul(ps.high), low: mul(ps.low), close: mul(ps.close), volume: ps.volume, factor: f, applied };
+}
+
 /** 簡單移動平均；資料不足的位置為 null。O(n) 滑動視窗 */
 export function sma(values, n) {
   const out = new Array(values.length).fill(null);
@@ -195,6 +239,7 @@ export function riskStats(ps, bench) {
   };
   return {
     label: bench.label || '大盤',
+    kind: bench.kind || 'price',
     date: lastP[0],
     periods: { m1: period(21), m3: period(63), m6: period(126), y1: period(250) },
     beta: vb > 0 ? cov / vb : null,
@@ -690,9 +735,23 @@ export function marketRow(market, code) {
  */
 const SOURCE = { twse: '證交所', tpex: '櫃買中心', us: 'Yahoo + SEC 推算' };
 
-export function summarize({ info, mkt, quote, tables = {}, asOf = {}, bench = null }) {
+export function summarize({ info, mkt, quote, tables = {}, asOf = {}, bench = null, dividends = null }) {
   const ps = priceSeries(tables.price);
   const tech = technicals(ps);
+  // 還原股價：台股用除權息結果（分批更新，還沒抓到前 available = false）、美股用 Yahoo 配息
+  const us = info.market === 'us';
+  const events = adjustEvents(ps, { divResult: tables.divResult, dividends: us ? dividends : null });
+  const adj = adjustedSeries(ps, events);
+  const adjusted = {
+    available: us ? Array.isArray(dividends) : !!tables.divResult,
+    applied: adj.applied,
+    events: events.filter((e) => e.date > (ps.dates[0] ?? '') && e.date <= (last(ps.dates) ?? '')),
+    source: us ? 'Yahoo 配息紀錄' : 'FinMind 除權息結果',
+  };
+  if (tech) {
+    tech.returnsRaw = tech.returns;
+    tech.returns = returns(adj.dates, adj.close);       // 報酬率含息（還原股價）
+  }
   const fmLast = ps.close.length ? { date: last(ps.dates), close: last(ps.close), prev: ps.close[ps.close.length - 2] } : null;
   const per = rows(tables.per);
   const perLast = per.length ? per[per.length - 1] : null;
@@ -742,7 +801,9 @@ export function summarize({ info, mkt, quote, tables = {}, asOf = {}, bench = nu
     holding: holdingStats(tables.holding),
     fundamentals: fund,
     dividends: dividendStats(tables.dividend, tables.divResult, ps, fund?.quarters),
-    risk: riskStats(ps, bench),
+    risk: riskStats(adj, bench),
+    adjusted,
+    seriesAdj: adj.applied ? adj : null,
     shares: info.shares ?? null,
     series: ps,
   };

@@ -11,6 +11,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { summarize, marketRow, overviewRow, usMarketRow, insiderStats } from '../assets/js/analytics.js';
+import { checkStock, countChecks, screenIndex } from '../assets/js/checks.js';
 
 const dir = resolve(process.argv[2] || '_site/data');
 const read = (name) => {
@@ -27,6 +28,9 @@ const market = read('market.json');
 const quotes = read('quotes.json')?.rows ?? {};
 const bench = read('macro.json')?.bench ?? {};      // 相對大盤：台股比加權指數、美股比 S&P 500
 const byCode = new Map((read('stocks.json')?.rows ?? []).map((r) => [r[0], r]));
+const screen = screenIndex(read('screen.json'));     // 交叉比對：官方月營收 / EPS 彙總表
+const checks = [];                                   // [{ code, name, market, items }]
+const adjCount = { tw: 0, us: 0 };
 
 const rows = [];
 const missing = [];
@@ -41,6 +45,10 @@ for (const code of meta.watchlist ?? []) {
       info, mkt: marketRow(market, code), quote: quotes[code] ?? null, tables: detail?.tables ?? {}, asOf: market?.asOf ?? {}, bench: bench.tw,
     });
     rows.push(overviewRow(s));
+    if (s.adjusted?.available) adjCount.tw++;
+    checks.push({ code, name: info.name, market: 'tw', items: checkStock({
+      info, mkt: marketRow(market, code), asOf: market?.asOf ?? {}, quote: quotes[code] ?? null, tables: detail?.tables ?? {}, screen: screen.get(code) ?? null,
+    }) });
     if (detail?.tables?.cashflow?.rows?.length) cover.cfRaw++;
     if (detail?.tables?.dividend?.rows?.length) cover.divRaw++;
     if (Number.isFinite(s.fundamentals?.fcf4)) cover.fcf++;
@@ -68,7 +76,10 @@ for (const code of meta.usWatchlist ?? []) {
   try {
     const mkt = usMarketRow(detail);
     if (mkt?.date && (!usDay || mkt.date > usDay)) usDay = mkt.date;
-    usRows.push(overviewRow(summarize({ info, mkt, quote: null, tables: detail?.tables ?? {}, asOf: { twse: mkt?.date }, bench: bench.us })));
+    const us = summarize({ info, mkt, quote: null, tables: detail?.tables ?? {}, asOf: { twse: mkt?.date }, bench: bench.us, dividends: detail?.dividends ?? null });
+    usRows.push(overviewRow(us));
+    if (us.adjusted?.applied) adjCount.us++;
+    checks.push({ code, name: info.name, market: 'us', items: checkStock({ info, tables: detail?.tables ?? {}, today: null }) });
     const ins = insiderStats(detail?.insider);
     if (ins?.filings) { cover.ins++; cover.insTx += ins.buy.n + ins.sell.n; }
   } catch (e) {
@@ -82,8 +93,26 @@ if (usRows.length) {
   meta.bytes['us/overview.json'] = Buffer.byteLength(usBody);
   console.log(`us/overview.json: ${usRows.length} 檔`);
 }
+// ── 資料驗證：checks.json（個股頁讀）＋ meta.checks 摘要（頁首資料來源清單顯示）──
+const total = { ok: 0, warn: 0, info: 0 };
+const warnList = [];
+for (const c of checks) {
+  const n = countChecks(c.items);
+  for (const k of Object.keys(total)) total[k] += n[k] || 0;
+  for (const x of c.items.filter((i) => i.level === 'warn')) {
+    warnList.push({ code: c.code, name: c.name, market: c.market, label: x.label, msg: x.msg });
+    // GitHub Actions 的執行頁面會把 ::warning:: 顯示成黃色提示
+    console.log(`::warning title=資料驗證 ${c.code}::${x.label}：${x.msg}`);
+  }
+}
+const checksBody = JSON.stringify({ generatedAt: meta.generatedAt, stocks: Object.fromEntries(checks.map((c) => [`${c.market === 'us' ? 'US:' : ''}${c.code}`, c.items])) });
+writeFileSync(resolve(dir, 'checks.json'), checksBody);
+meta.bytes['checks.json'] = Buffer.byteLength(checksBody);
+meta.checks = { stocks: checks.length, ...total, warnStocks: new Set(warnList.map((w) => w.code)).size, warns: warnList.slice(0, 30) };
 writeFileSync(resolve(dir, 'meta.json'), JSON.stringify(meta));
 console.log(`overview.json: ${rows.length} 檔，${(Buffer.byteLength(body) / 1024).toFixed(0)} KB`
   + (missing.length ? `；缺個股資料：${missing.join(', ')}` : ''));
+console.log(`資料驗證：${checks.length} 檔，一致 ${total.ok} 項、需確認 ${total.warn} 項（${meta.checks.warnStocks} 檔）、無法比對 ${total.info} 項；`
+  + `還原股價：台股 ${adjCount.tw} 檔、美股 ${adjCount.us} 檔有除權息資料`);
 console.log(`新資料涵蓋：現金流量表 ${cover.cfRaw} 檔（算出自由現金流 ${cover.fcf} 檔）、股利 ${cover.divRaw} 檔（股利政策 ${cover.div} 檔）、`
   + `美股內部人 ${cover.ins} 檔（近 6 個月公開市場買賣 ${cover.insTx} 筆）`);

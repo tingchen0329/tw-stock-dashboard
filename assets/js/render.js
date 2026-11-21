@@ -6,7 +6,11 @@
  */
 
 import * as F from './format.js';
-import { completeness, INSIDER_CODES } from './analytics.js';
+import { completeness, INSIDER_CODES, sma } from './analytics.js';
+import { klineChart } from './kline.js';
+
+/** K 線圖顯示原始股價或還原股價（切換後保留到下一檔） */
+let priceMode = 'raw';
 import { lineChart, barChart, tableView } from './charts.js';
 import { marketLabel } from './search.js';
 
@@ -44,13 +48,20 @@ export function renderFreshness(btn, panel, meta) {
     `，${ok}/${src.length} 個來源正常`,
   );
   btn.setAttribute('aria-label', `資料更新於 ${meta.generatedAt}，${ok} 個來源正常，共 ${src.length} 個。按此查看各來源狀態`);
+  const ck = meta.checks;
   panel.replaceChildren(h('table', {},
     h('tbody', {}, src.map(([name, s]) => h('tr', {},
       h('td', {}, s.ok ? '正常' : '失敗'),
       h('td', {}, name),
       h('td', { class: 'num' }, `${s.rows} 筆`),
       h('td', { class: 'muted' }, s.note || ''),
-    )))));
+    )))),
+  // 資料驗證摘要（scripts/build_overview.mjs 用 checks.js 對追蹤清單逐檔檢查）
+  ck ? h('div', { class: 'checks-summary' },
+    h('p', {}, h('b', {}, '資料驗證'), `：${ck.stocks} 檔，${ck.ok} 項通過（跨來源比對與異常值規則）`,
+      ck.warn ? `、${ck.warn} 項需確認（${ck.warnStocks} 檔）` : '，沒有需確認的項目', ck.info ? `、${ck.info} 項無法比對` : ''),
+    ck.warns?.length ? h('ul', {}, ck.warns.map((w) => h('li', {},
+      h('a', { href: w.market === 'us' ? `#us/${w.code}` : `#${w.code}` }, `${w.code} ${w.name}`), `｜${w.label}：${w.msg}`))) : null) : null);
 }
 
 /* ───────── 追蹤清單 / 總經 ───────── */
@@ -323,6 +334,22 @@ export function renderStock(host, s, state) {
     Object.keys(state.errors || {}).length ? h('p', { class: 'muted' }, `失敗的資料集：${Object.entries(state.errors).map(([k, e]) => `${k}（${e}）`).join('；')}`) : null,
   );
 
+  // 資料驗證（跨來源比對 + 異常值規則，assets/js/checks.js）
+  const ck = s.checks || [];
+  const nWarn = ck.filter((x) => x.level === 'warn').length;
+  const nOk = ck.filter((x) => x.level === 'ok').length;
+  const nInfo = ck.length - nWarn - nOk;
+  const icon = { ok: '✓', warn: '⚠', info: 'ⓘ' };
+  const checksEl = ck.length ? h('details', { class: `completeness checks ${nWarn ? 'has-warn' : ''}`, open: nWarn ? true : undefined },
+    h('summary', {}, `資料驗證：${nOk} 項通過${nWarn ? `、${nWarn} 項需確認` : ''}${nInfo ? `、${nInfo} 項無法比對` : ''}`),
+    h('ul', { class: 'check-list' }, ck.map((x) => h('li', { class: `ck-${x.level}` },
+      h('span', { class: 'ck-icon', 'aria-label': { ok: '一致', warn: '需確認', info: '提示' }[x.level] }, icon[x.level]),
+      h('span', {}, h('b', {}, x.label), `：${x.msg}`)))),
+    h('p', { class: 'muted' }, us
+      ? '美股只有 Yahoo 一個股價來源：檢查漲跌異常、開高低收矛盾與停更。'
+      : '比對來源：證交所 / 櫃買中心（收盤、月營收、EPS 彙總表）、FinMind（個股資料）、Yahoo（報價）。'),
+  ) : null;
+
   const tile = (l, val, sub, cls = '') => h('div', { class: 'tile' }, h('div', { class: 'l' }, l), h('div', { class: `v num ${cls}` }, val), h('div', { class: 's' }, sub));
   const instSub = it ? `${it.source}，${F.when(it.date)}，張` : '無資料';
   const tiles = us ? h('div', { class: 'tiles' },
@@ -341,32 +368,63 @@ export function renderStock(host, s, state) {
     tile('自營商', F.lots(it?.dealer), instSub, F.dir(it?.dealer)),
   );
 
-  /* 股價圖 */
-  const priceChart = h('div');
+  /* 股價圖：K 線 + 均線 + 成交量（Lightweight Charts），可切換原始 / 還原股價 */
   const range = RANGES.find((r) => r[0] === state.range) || RANGES[2];
   const ps = s.series;
+  const adjPs = s.seriesAdj;
+  if (!adjPs) priceMode = priceMode === 'adj' ? 'raw' : priceMode;
   const from = Math.max(0, ps.close.length - range[1]);
+  const kHost = h('div', { class: 'kline', role: 'img',
+    'aria-label': `${info.name} K 線圖，${range[2]}，最新收盤 ${F.price(t?.close)}；完整數字見下方表格` });
+  const kLegend = h('p', { class: 'kline-legend num', 'aria-live': 'off' });
+  const volFmt = us ? (v) => `${F.twd(v)}股` : (v) => `${F.num(v / 1000, 0)} 張`;
+  const modeBtns = adjPs ? h('div', { class: 'seg', role: 'group', 'aria-label': '股價' },
+    [['raw', '原始股價'], ['adj', '還原股價']].map(([k, label]) => h('button', {
+      type: 'button', 'aria-pressed': String(k === priceMode),
+      title: k === 'adj' ? `除權息前的價格往下調整（${s.adjusted.source}，${s.adjusted.applied} 次），看長期真實報酬` : '與券商報價相同',
+      on: { click: (e) => {
+        priceMode = k;
+        e.currentTarget.parentElement.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b === e.currentTarget)));
+        drawK();
+      } },
+    }, label))) : null;
   const pricePanel = panel('股價與均線', null,
-    h('div', { class: 'seg', role: 'group', 'aria-label': '期間' }, RANGES.map(([k, , label]) =>
-      h('button', { type: 'button', 'aria-pressed': String(k === range[0]), on: { click: () => state.onRange(k) } }, label))),
-    legend([['收盤價', 'var(--s1)'], ['MA20', 'var(--s2)'], ['MA60', 'var(--s3)']]),
-    priceChart,
-    t ? tableView(['日期', '收盤', 'MA20', 'MA60'], ps.dates.slice(from).map((d, i) => [d, F.price(ps.close[from + i]), F.price(t.maSeries[20][from + i]), F.price(t.maSeries[60][from + i])])) : null,
+    h('div', { class: 'panel-tools' },
+      h('div', { class: 'seg', role: 'group', 'aria-label': '期間' }, RANGES.map(([k, , label]) =>
+        h('button', { type: 'button', 'aria-pressed': String(k === range[0]), on: { click: () => state.onRange(k) } }, label))),
+      modeBtns),
+    legend([['K 線（紅漲綠跌）', 'var(--up)'], ['MA20', 'var(--s2)'], ['MA60', 'var(--s3)']]),
+    kLegend,
+    kHost,
+    h('p', { class: 'kline-credit muted' }, '圖表：TradingView Lightweight Charts™ Copyright (c) 2025 TradingView, Inc. ',
+      h('a', { href: 'https://www.tradingview.com/', target: '_blank', rel: 'noopener' }, 'https://www.tradingview.com/'),
+      '｜滑鼠滾輪或兩指縮放、拖曳平移；下方成交量區可拖曳調整高度'),
+    t ? tableView(['日期', '開盤', '最高', '最低', '收盤', 'MA20', 'MA60'], ps.dates.slice(from).map((d, i) => [d, F.price(ps.open[from + i]), F.price(ps.high[from + i]),
+      F.price(ps.low[from + i]), F.price(ps.close[from + i]), F.price(t.maSeries[20][from + i]), F.price(t.maSeries[60][from + i])])) : null,
   );
-  if (ps.close.length > 1 && t) {
-    const ch = lineChart(priceChart);
-    ch.update({
-      dates: ps.dates.slice(from),
-      series: [
-        { name: '收盤價', values: ps.close.slice(from), color: 'var(--s1)', endLabel: true },
-        { name: 'MA20', values: t.maSeries[20].slice(from), color: 'var(--s2)' },
-        { name: 'MA60', values: t.maSeries[60].slice(from), color: 'var(--s3)' },
-      ],
-      fmt: F.price, axisFmt: F.axis, height: 270,
-      ariaLabel: `${info.name}${range[2]}收盤價走勢，最新 ${F.price(t.close)}，用左右方向鍵逐日查看`,
+  let kc = null;
+  function drawK() {
+    if (!kc) return;
+    const src = priceMode === 'adj' && adjPs ? adjPs : ps;
+    kc.update({
+      dates: src.dates, open: src.open, high: src.high, low: src.low, close: src.close, volume: ps.volume,
+      ma20: src === ps ? t.maSeries[20] : sma(src.close, 20), ma60: src === ps ? t.maSeries[60] : sma(src.close, 60),
+      visible: range[1],
     });
-    charts.push(ch);
-  } else priceChart.append(h('p', { class: 'note' }, state.pending ? '股價資料載入中…' : '沒有股價歷史資料'));
+  }
+  if (ps.close.length > 1 && t) {
+    // 圖表在元素放進頁面後才建立（需要量得到寬度）
+    queueMicrotask(() => {
+      if (!kHost.isConnected) return;
+      try {
+        kc = klineChart(kHost, kLegend, { fmt: F.price, volFmt });
+        drawK();
+        charts.push(kc);
+      } catch (e) {
+        kHost.replaceChildren(h('p', { class: 'note' }, `K 線圖載入失敗（${e.message}），請看下方表格`));
+      }
+    });
+  } else kHost.append(h('p', { class: 'note' }, state.pending ? '股價資料載入中…' : '沒有股價歷史資料'));
 
   /* 技術指標 */
   const crossText = (x) => (x === 'golden' ? '，近 3 日黃金交叉' : x === 'dead' ? '，近 3 日死亡交叉' : '');
@@ -378,8 +436,8 @@ export function renderStock(host, s, state) {
     ['RSI (14)', F.num(t.rsi, 1)],
     ['MACD 柱狀', h('span', { class: F.dir(t.osc) }, `${F.signed(t.osc)}${crossText(t.macdCross)}`)],
     ['量 / 20 日均量', `${F.num(t.volRatio, 2)} 倍`],
-    ['5 日 / 20 日', [signedSpan(F.pct(t.returns.d5, 1, true), t.returns.d5), ' / ', signedSpan(F.pct(t.returns.d20, 1, true), t.returns.d20)]],
-    ['年初至今 / 一年', [signedSpan(F.pct(t.returns.ytd, 1, true), t.returns.ytd), ' / ', signedSpan(F.pct(t.returns.y1, 1, true), t.returns.y1)]],
+    ['5 日 / 20 日（含息）', [signedSpan(F.pct(t.returns.d5, 1, true), t.returns.d5), ' / ', signedSpan(F.pct(t.returns.d20, 1, true), t.returns.d20)]],
+    ['年初至今 / 一年（含息）', [signedSpan(F.pct(t.returns.ytd, 1, true), t.returns.ytd), ' / ', signedSpan(F.pct(t.returns.y1, 1, true), t.returns.y1)]],
     ['一年價格位階', `${F.num(t.pct1y, 0)} 百分位`],
     ['60 日高 / 低', `${F.price(t.levels.high60)} / ${F.price(t.levels.low60)}`],
     ['52 週高 / 低', `${F.price(t.levels.high250)} / ${F.price(t.levels.low250)}`],
@@ -448,7 +506,10 @@ export function renderStock(host, s, state) {
   const relRow = (label, x) => [label, x ? [signedSpan(F.pct(x.stock, 1, true), x.stock), h('span', { class: 'muted' }, ` vs ${F.pct(x.bench, 1, true)}，`),
     signedSpan(`${x.excess >= 0 ? '贏' : '輸'} ${F.num(Math.abs(x.excess), 1)} 點`, x.excess)] : 'N/A'];
   const betaText = (b) => (!F.isNum(b) ? 'N/A' : `${F.num(b, 2)}（${b > 1.2 ? '大盤漲跌時，漲跌幅通常更大' : b < 0.8 ? '與大盤連動較低' : '與大盤大致同步'}）`);
-  const riskPanel = panel('相對大盤與風險', rk ? `比較對象：${rk.label}，至 ${rk.date}；報酬為「個股 vs 大盤」` : null, rk ? kv([
+  const adjNote = !s.adjusted?.available ? '個股股利資料尚未載入，報酬暫未含息'
+    : `個股用還原股價（${s.adjusted.source}，期間內 ${s.adjusted.applied} 次除權息）`;
+  const benchNote = rk?.kind === 'tr' ? '大盤用報酬指數（股利再投入）' : '大盤暫用價格指數（不含息，個股會略占優勢）';
+  const riskPanel = panel('相對大盤與風險', rk ? `比較對象：${rk.label}，至 ${rk.date}；${adjNote}，${benchNote}` : null, rk ? kv([
     relRow('近 1 個月', rk.periods.m1),
     relRow('近 3 個月', rk.periods.m3),
     relRow('近 6 個月', rk.periods.m6),
@@ -506,7 +567,7 @@ export function renderStock(host, s, state) {
   const insPanel = us ? renderInsider(s.insider, state) : null;
 
   host.replaceChildren(
-    head, quote, comp, tiles,
+    head, quote, comp, checksEl, tiles,
     h('div', { class: 'grid' }, pricePanel, techPanel),
     // 美股沒有月營收、法人籌碼 → 河流圖 + 財報、季度趨勢 + 相對大盤、內部人 + 同業
     ...(us ? [h('div', { class: 'grid even' }, riverPanel, fundPanel), h('div', { class: 'grid even' }, qPanel, riskPanel),
