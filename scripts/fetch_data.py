@@ -803,7 +803,7 @@ BENCH_DAYS = 2 * 366
 # FinMind 的台股指數（TaiwanStockPrice 的 data_id）：只有日收盤，沒有盤中
 FINMIND_INDEX = {"taiex": ("加權指數", "TAIEX"), "otc": ("櫃買指數", "TPEx")}
 # 顯示順序：台股 → 美股 → 匯率 / 利率 / 商品
-MACRO_ORDER = ["taiex", "otc", "txf_night", "dji", "ixic", "spx", "sox", "vix", "usdtwd", "dxy", "us10y", "gold", "fed"]
+MACRO_ORDER = ["taiex", "otc", "txf_night", "keep", "margin", "dji", "ixic", "spx", "sox", "vix", "usdtwd", "dxy", "us10y", "gold", "fed"]
 
 
 def finmind_index(tx, data_id: str, today: dt.date) -> dict | None:
@@ -1054,6 +1054,10 @@ def fetch_macro(tx, report: SourceReport, today: dt.date, use_finmind: bool) -> 
             i["hist"] = nh
         if i["key"] == "fed" and use_finmind and fed_rows:
             i["hist"] = {"dates": [r["date"] for r in fed_rows], "close": [to_num(r.get("interest_rate")) for r in fed_rows]}
+    return sort_macro(items)
+
+
+def sort_macro(items: list[dict]) -> list[dict]:
     return sorted(items, key=lambda x: MACRO_ORDER.index(x["key"]) if x["key"] in MACRO_ORDER else 50)
 
 
@@ -1152,6 +1156,235 @@ def fetch_corp_actions(tx, report: SourceReport, today: dt.date, prev: dict | No
     for evs in rows.values():
         evs.sort(key=lambda e: e[0])
     return {"asOf": today.isoformat(), "rows": rows}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 集保戶股權分散表（千張大戶）：集保結算所開放資料，每週最後一個營業日盤後更新
+#   只提供「最新一週」的全市場檔案（約 6 MB）→ 每週抓一次，自己累積歷史
+#   FinMind 同一份資料（TaiwanStockHoldingSharesPer）是付費會員資料集，所以直接用集保的免費檔
+#   持股分級：1–15 由小到大（15 = 1,000,001 股以上 = 千張以上），16 = 差異數調整，17 = 合計
+# 輸出：holders.json（追蹤清單逐週歷史，個股頁讀）、holders_all.json（全市場最新一週，併入選股表用）
+# ──────────────────────────────────────────────────────────────────────
+TDCC_API = "https://openapi.tdcc.com.tw/v1/opendata/1-5"            # JSON（欄位名稱是中文，第一欄帶 BOM）
+TDCC_CSV = "https://opendata.tdcc.com.tw/getOD.ashx?id=1-5"         # 同內容的 CSV（備援）
+HOLDER_WEEKS = 60
+HOLDER_COLS = ["date", "p1000", "p400", "n1000", "holders"]
+HOLDER_ALL_COLS = ["p1000", "p1000Chg", "holders", "holdersChgPct"]
+
+
+def _tdcc_key(k: Any) -> str:
+    k = str(k).lstrip("﻿").replace(" ", "").replace("　", "")
+    for word, key in (("日期", "date"), ("代號", "code"), ("分級", "level"), ("人數", "people"), ("股數", "shares"), ("比例", "pct")):
+        if word in k:
+            return key
+    return k
+
+
+def parse_tdcc(rows: list[dict]) -> tuple[str | None, dict[str, dict]]:
+    """
+    集保 1-5 → (資料日期 ISO, {代號: {p1000, p400, n1000, holders}})
+      p1000 = 千張以上（分級 15）持股比例 %、p400 = 400 張以上（分級 12–15）
+      比例用股數重算（官方「占集保庫存數比例」只有 2 位小數，加總會有誤差）
+    """
+    by: dict[str, dict[int, tuple]] = {}
+    date = None
+    for raw in rows or []:
+        r = {_tdcc_key(k): v for k, v in raw.items()}
+        code, lv = str(r.get("code") or "").strip(), to_num(r.get("level"))
+        if not code or lv is None:
+            continue
+        d = re.sub(r"\D", "", str(r.get("date") or ""))
+        if len(d) == 8:
+            date = max(date or "", f"{d[:4]}-{d[4:6]}-{d[6:]}")
+        by.setdefault(code, {})[int(lv)] = (to_num(r.get("people")) or 0, to_num(r.get("shares")) or 0)
+    out = {}
+    for code, lv in by.items():
+        people, total = lv.get(17, (0, 0))
+        if not total:
+            continue
+        sh = lambda levels: sum(lv.get(i, (0, 0))[1] for i in levels)  # noqa: E731
+        out[code] = {"p1000": round(sh([15]) / total * 100, 2), "p400": round(sh(range(12, 16)) / total * 100, 2),
+                     "n1000": int(lv.get(15, (0, 0))[0]), "holders": int(people)}
+    return date, out
+
+
+def fetch_tdcc(tx) -> tuple[str | None, dict[str, dict], str]:
+    """JSON 優先、CSV 備援 → (資料日期, 各股統計, 來源說明)"""
+    try:
+        rows = tx.get_json(TDCC_API)
+        if isinstance(rows, list) and rows:
+            date, data = parse_tdcc(rows)
+            if data:
+                return date, data, "集保 OpenAPI"
+    except Exception as e:  # noqa: BLE001
+        log(f"集保 OpenAPI 失敗（{str(e)[:80]}）→ 改用 CSV")
+    date, data = parse_tdcc(list(csv.DictReader(io.StringIO(tx.get_text(TDCC_CSV)))))
+    return date, data, "集保開放資料 CSV"
+
+
+def _read_json(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text("utf-8")) if path.exists() else None
+    except (OSError, ValueError):
+        return None
+
+
+def update_holders(tx, report: SourceReport, out: Path, today: dt.date, codes: list[str]) -> dict[str, int]:
+    """
+    距上次資料日期滿 7 天才抓（集保每週更新一次；週五盤後還沒公布時，下次執行會再試）。
+    回傳寫出的檔案大小（沒更新就回傳現有檔案大小，讓 meta.bytes 保留、下次取回）。
+    """
+    hp, ap = out / "holders.json", out / "holders_all.json"
+    prev, prev_all = _read_json(hp), _read_json(ap)
+    sizes = lambda: {p.name: p.stat().st_size for p in (hp, ap) if p.exists()}  # noqa: E731
+    last = (prev or {}).get("asOf")
+    if last and (today - dt.date.fromisoformat(last)).days < 7:
+        report.items["tdcc_holders"] = {"ok": True, "rows": len((prev or {}).get("rows") or {}), "ms": 0,
+                                        "note": f"沿用 {last} 的資料（集保每週更新一次）"}
+        return sizes()
+    res = report.run("tdcc_holders", lambda: fetch_tdcc(tx), count=lambda r: len(r[1]) if r else 0)
+    if not res:
+        return sizes()
+    date, data, src = res
+    if not date or (last and date <= last):
+        report.items["tdcc_holders"]["note"] = f"集保尚未公布新的一週（目前最新 {last or date}）"
+        return sizes()
+    report.items["tdcc_holders"]["note"] = f"{src}，資料日期 {date}"
+    old_rows = (prev or {}).get("rows") or {}
+    rows = {}
+    for c in codes:
+        hist = [r for r in old_rows.get(c, []) if r[0] != date]
+        x = data.get(c)
+        if x:
+            hist.append([date, x["p1000"], x["p400"], x["n1000"], x["holders"]])
+        if hist:
+            rows[c] = sorted(hist)[-HOLDER_WEEKS:]
+    pm = (prev_all or {}).get("rows") or {}
+    all_rows = {}
+    for c, x in data.items():
+        if not re.fullmatch(r"\d{4,6}[A-Z]?", c):       # 只留股票與 ETF（權證、債券等代號不同）
+            continue
+        o = pm.get(c)
+        all_rows[c] = [x["p1000"],
+                       round(x["p1000"] - o[0], 2) if o and isinstance(o[0], (int, float)) else None,
+                       x["holders"],
+                       round((x["holders"] / o[2] - 1) * 100, 2) if o and o[2] else None]
+    write_json(hp, {"asOf": date, "source": src, "cols": HOLDER_COLS, "rows": rows})
+    write_json(ap, {"asOf": date, "prevDate": (prev_all or {}).get("asOf"), "source": src,
+                    "cols": HOLDER_ALL_COLS, "rows": all_rows})
+    return sizes()
+
+
+def add_holder_cols(screen: dict, out: Path) -> dict:
+    """選股表加上千張大戶持股、週變化、股東人數週增減（集保沒有資料的股票填 None）"""
+    ha = _read_json(out / "holders_all.json")
+    extra = ["big1000", "big1000Chg", "holdersChgPct"]
+    rows = (ha or {}).get("rows") or {}
+    keep = [i for i, c in enumerate(screen["cols"]) if c not in extra]      # 重複執行時先拿掉舊的欄位
+    code_i = screen["cols"].index("code")
+    screen["cols"] = [screen["cols"][i] for i in keep] + extra
+    for n, r in enumerate(screen["rows"]):
+        x = rows.get(r[code_i])
+        screen["rows"][n] = [r[i] for i in keep] + ([x[0], x[1], x[3]] if x else [None, None, None])
+    if ha:
+        screen["asOf"] = {**screen.get("asOf", {}), "holders": ha.get("asOf"), "holdersPrev": ha.get("prevDate")}
+    return screen
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 信用交易（證交所「臺股儀表板」，2026-09-23 上線；資料自 2026-08-03 起）
+#   BFIJ3U_TREND：全市場擔保維持率（融資融券整戶合併）、追繳戶數、處分金額
+#   MI_MARGN_TREND：上市融資金額、融券張數、上市總市值
+#   兩者一次最多回傳 60 個交易日 → 與上一份 macro_hist.json 合併，自己累積更長的歷史
+# ──────────────────────────────────────────────────────────────────────
+TWSE_KEEP_TREND = "https://www.twse.com.tw/rwd/zh/marginTrading/BFIJ3U_TREND"
+TWSE_MARGIN_TREND = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN_TREND"
+CREDIT_START = "2026-08-03"
+CREDIT_BACKFILL = 2          # 每次執行最多往前補幾段（每段 60 個交易日）
+
+
+def _ymd(s: Any) -> str | None:
+    d = re.sub(r"\D", "", str(s or ""))
+    return f"{d[:4]}-{d[4:6]}-{d[6:]}" if len(d) == 8 else None
+
+
+def _credit_rows(tx, url: str, before: str | None = None) -> list[dict]:
+    params = {"response": "json", "days": 60}
+    if before:
+        params["date"] = before.replace("-", "")
+    p = tx.get_json(url, params, kind="twse_www")
+    if str(p.get("stat", "")).upper() != "OK":
+        raise RuntimeError(f"stat={p.get('stat')}")
+    return [r for r in p.get("data") or [] if _ymd(r.get("date"))]
+
+
+def _merge_hist(old: dict | None, new: dict[str, float]) -> dict:
+    pts = dict(zip((old or {}).get("dates") or [], (old or {}).get("close") or []))
+    pts.update(new)
+    ds = sorted(d for d, v in pts.items() if v is not None)[-750:]
+    return {"dates": ds, "close": [pts[d] for d in ds]}
+
+
+def fetch_credit(tx, report: SourceReport, out: Path) -> list[dict]:
+    """→ 總經列的兩張卡片（keep：全市場擔保維持率、margin：上市融資餘額），各帶合併後的歷史"""
+    old = ((_read_json(out / "macro_hist.json") or {}).get("items") or {})
+    items = []
+
+    def series(url: str, key: str, value: Callable[[dict], float | None]) -> tuple[dict, list[dict]]:
+        rows = _credit_rows(tx, url)
+        pts = {_ymd(r["date"]): value(r) for r in rows}
+        hist = _merge_hist(old.get(key), pts)
+        for _ in range(CREDIT_BACKFILL):                # 第一次執行：往前補到儀表板資料起點
+            first = hist["dates"][0] if hist["dates"] else None
+            if not first or first <= CREDIT_START:
+                break
+            more = _credit_rows(tx, url, (dt.date.fromisoformat(first) - dt.timedelta(days=1)).isoformat())
+            if not more:
+                break
+            hist = _merge_hist(hist, {_ymd(r["date"]): value(r) for r in more})
+        return hist, rows
+
+    def card(key: str, label: str, hist: dict, extra: dict, unit: str = "") -> dict | None:
+        d, c = hist["dates"], hist["close"]
+        if not c:
+            return None
+        v, p = c[-1], (c[-2] if len(c) > 1 else None)
+        return {"key": key, "label": label, "source": "證交所臺股儀表板", "value": v, "prev": p,
+                "change": round(v - p, 2) if p is not None else None,
+                "changePct": round((v / p - 1) * 100, 2) if p else None,
+                "time": d[-1], "day": d[-1], "unit": unit, "hist": hist, **extra}
+
+    res = report.run("twse_keep_rate", lambda: series(TWSE_KEEP_TREND, "keep", lambda r: to_num(r.get("keepRate"))),
+                     count=lambda r: len(r[0]["dates"]) if r else 0)
+    if res:
+        hist, rows = res
+        last = rows[-1] if rows else {}
+        item = card("keep", "擔保維持率", hist, {
+            "calls": to_num(last.get("callAccNum")),          # 整戶維持率低於 130% 的戶數
+            "callAmt": to_num(last.get("callAmt")),           # 當日通知追繳金額（元）
+            "exeAmt": to_num(last.get("exeAmt")),             # 次一營業日處分金額（元）
+            "note": "全市場（上市＋上櫃）融資融券整戶合併計算；低於 130% 券商會通知追繳",
+        }, "%")
+        if item:
+            items.append(item)
+    res = report.run("twse_margin_trend", lambda: series(
+        TWSE_MARGIN_TREND, "margin", lambda r: round(to_num(r.get("marginAmt")) / 1e5, 2) if to_num(r.get("marginAmt")) else None),
+        count=lambda r: len(r[0]["dates"]) if r else 0)
+    if res:
+        hist, rows = res
+        last = rows[-1] if rows else {}
+        amt, mv = to_num(last.get("marginAmt")), to_num(last.get("marketValue"))
+        item = card("margin", "上市融資(億)", hist, {
+            "ratio": round(amt / 1e5 / mv * 100, 3) if amt and mv else None,    # 融資餘額占上市市值 %
+            "note": "上市股票融資金額餘額（億元）",
+        })
+        if item:
+            items.append(item)
+    # 證交所 www 站偶爾限流失敗：沿用上一份的卡片（日資料，晚一次更新影響不大）
+    prev_items = {i.get("key"): i for i in (_read_json(out / "macro.json") or {}).get("items", [])}
+    have = {i["key"] for i in items}
+    items += [prev_items[k] for k in ("keep", "margin") if k not in have and k in prev_items]
+    return items
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1511,6 +1744,7 @@ def main(argv: list[str] | None = None) -> int:
         macro = fetch_macro(tx, report, today, use_finmind=not quota_hit)
     except QuotaExceeded:
         quota_hit, macro = True, []
+    macro = sort_macro(macro + fetch_credit(tx, report, out))
     sizes.update(write_macro(out, macro, fetch_bench(tx, report, read_bench(out), today, use_finmind=not quota_hit)))
 
     # 追蹤清單盤中報價（Yahoo）：上市用 .TW、上櫃用 .TWO
@@ -1560,7 +1794,9 @@ def main(argv: list[str] | None = None) -> int:
     # 全市場選股資料（證交所 / 櫃買開放資料，免 FinMind）
     screen = build_screen(tx, report, market_rows, stock_list,
                           {"twse": twse_date, "tpex": tpex_date, "inst": t86_date}, out / "screen.json")
-    sizes["screen.json"] = write_json(out / "screen.json", screen)
+    # 集保股權分散（千張大戶）：每週一次，免 FinMind；併入選股表
+    sizes.update(update_holders(tx, report, out, today, watchlist))
+    sizes["screen.json"] = write_json(out / "screen.json", add_holder_cols(screen, out))
 
     # 美股：股價每次更新，SEC 財報只在 full 時重抓
     sizes.update(us_data.fetch_us(tx, report, out, us_watchlist, mode == "full", write_json,
@@ -1615,13 +1851,20 @@ def run_macro_only(tx, out: Path, prev: dict, today: dt.date, token: str | None,
     try:
         macro = fetch_macro(tx, report, today, use_finmind=True)
     except QuotaExceeded:
-        macro = json.loads((out / "macro.json").read_text("utf-8"))["items"]    # 額度用完：保留舊總經
+        macro = [i for i in json.loads((out / "macro.json").read_text("utf-8"))["items"]
+                 if i.get("key") not in ("keep", "margin")]                    # 額度用完：保留舊總經
+    macro = sort_macro(macro + fetch_credit(tx, report, out))
     missing = [c for c in watchlist if not (out / "stock" / f"{c}.json").exists()]
     fetched, quota = fetch_details(tx, missing, spec, today, out) if missing else (0, False)
     slow = 0
     if not quota:
         slow, quota = refresh_slow(tx, watchlist, spec, today, out, SLOW_BUDGET["macro"], report)
     sizes = {k: v for k, v in prev["bytes"].items() if not k.startswith(("stock/", "us/stock/"))}
+    held = (_read_json(out / "holders.json") or {}).get("asOf")
+    sizes.update(update_holders(tx, report, out, today, watchlist))   # 週五晚上的夜間更新可能剛好抓到新一週
+    new_holders = (_read_json(out / "holders.json") or {}).get("asOf") != held
+    if new_holders and (out / "screen.json").exists():
+        sizes["screen.json"] = write_json(out / "screen.json", add_holder_cols(_read_json(out / "screen.json"), out))
     files = stock_files(out, watchlist)
     sizes.update(files)
     # 美股收盤在台北凌晨（冬令 05:00、夏令 04:00）→ 夜間也更新美股股價
@@ -1642,7 +1885,7 @@ def run_macro_only(tx, out: Path, prev: dict, today: dt.date, token: str | None,
     meta = {**prev,
             "macroAt": now,
             # generatedAt 不變（個股資料仍是上一份）；有補抓個股或更新股利 / 現金流時才更新，讓瀏覽器重新讀取
-            "generatedAt": now if fetched or slow else prev["generatedAt"],
+            "generatedAt": now if fetched or slow or new_holders else prev["generatedAt"],
             "watchlist": watchlist,
             "usWatchlist": us_watchlist,
             "usAt": now,

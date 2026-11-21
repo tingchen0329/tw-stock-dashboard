@@ -88,6 +88,16 @@ jobs:
       - name: Build overview table
         run: node scripts/build_overview.mjs _site/data
 
+      - name: Price alerts (Discord / Telegram)
+        # 規則與推播管道都放 Secrets（不公開）；沒設定就略過。失敗只會出現 warning，不影響部署
+        env:
+          ALERT_RULES: ${{ secrets.ALERT_RULES }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          SITE_URL="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/" node scripts/alerts.mjs _site/data
+
       - name: Annotate failed sources
         if: always()
         # 失敗的資料源以 warning 註記顯示在執行頁面上方（也可由 API 讀取，方便遠端檢查）
@@ -110,6 +120,12 @@ jobs:
               if us:
                   fin = m["sources"].get("us_financials", {})
                   print(f"::notice title=美股 {len(m.get('usWatchlist', []))} 檔::股價 {us['rows']} 檔、SEC 財報 {fin.get('rows', 0)} 檔{('；' + fin['note']) if fin.get('note') else ''}")
+              hs = m["sources"].get("tdcc_holders")
+              mp = pathlib.Path("_site/data/macro.json")
+              keep = next((i for i in json.loads(mp.read_text())["items"] if i["key"] == "keep"), None) if mp.exists() else None
+              if hs or keep:
+                  print(f"::notice title=集保與信用交易::千張大戶 {hs.get('note', '') if hs else 'N/A'}；"
+                        f"全市場擔保維持率 {keep['value'] if keep else 'N/A'}%（{keep.get('day') if keep else ''}，低於 130% {keep.get('calls') if keep else 'N/A'} 戶）")
               sp = pathlib.Path("_site/data/screen.json")
               if sp.exists():
                   sc = json.loads(sp.read_text())

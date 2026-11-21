@@ -11,7 +11,8 @@
  *       c. 使用者若在途中改查別檔，前一個請求以 AbortController 取消 → 不會出現「資料錯置」
  */
 
-import { loadBootstrap, loadStock, loadScreen, loadUsOverview, loadUsStock, loadUsScreen, loadAiConfig, loadMacroHist } from './data.js';
+import { loadBootstrap, loadStock, loadScreen, loadUsOverview, loadUsStock, loadUsScreen, loadAiConfig, loadMacroHist, loadHolders, loadBacktest } from './data.js';
+import { renderPortfolio, loadHoldings } from './portfolio.js';
 import { buildIndex, search, resolveExact, highlightParts, marketLabel } from './search.js';
 import { summarize, marketRow, usMarketRow, peerStats, insiderStats } from './analytics.js';
 import { checkStock, screenIndex } from './checks.js';
@@ -203,7 +204,7 @@ async function showStock(code) {
     if (state.current !== cur) return;     // 已經換股票了，丟棄舊結果
     cur.tables = tables;
     const actions = state.boot.actions?.rows?.[code] ?? null;
-    cur.summary = summarize({ info, mkt, quote, tables, asOf, bench: state.boot.macro?.bench?.tw, actions });
+    cur.summary = summarize({ info, mkt, quote, tables, asOf, bench: state.boot.macro?.bench?.tw, actions, holders: state.holders });
     cur.summary.peers = state.peerData.tw ? peerStats(state.peerData.tw, code, 'industry') : null;
     if (state.peerData.tw && !state.screenIdx) state.screenIdx = screenIndex(state.peerData.tw);
     cur.summary.checks = checkStock({ info, mkt, asOf, quote, tables, screen: state.screenIdx?.get(code) ?? null, actions });
@@ -235,6 +236,12 @@ async function showStock(code) {
   // 同業比較要全市場選股資料（screen.json，約 80 KB 壓縮後）：背景載入，回來後重畫
   if (!state.peerData.tw && !state.peerData.twFailed) {
     loadScreen().then((d) => { state.peerData.tw = d; }, () => { state.peerData.twFailed = true; })
+      .then(() => { if (state.current === cur && cur.lastMeta) draw(cur.tables, cur.lastMeta); });
+  }
+  // 集保千張大戶（每週累積，約 100 KB）：背景載入，回來後重畫
+  if (state.holders === undefined) {
+    state.holders = null;
+    loadHolders().then((d) => { state.holders = d; }, () => {})
       .then(() => { if (state.current === cur && cur.lastMeta) draw(cur.tables, cur.lastMeta); });
   }
   $('stock').scrollIntoView?.({ block: 'nearest' });
@@ -279,9 +286,53 @@ async function showScreen() {
   markMarket(false);
   $('stock').replaceChildren(h('p', { class: 'note' }, '載入全市場資料中…'));
   let data = null;
+  const backtest = loadBacktest().catch(() => null);         // 回測資料：與選股資料平行下載，回來後才畫回測區塊
   try { data = await loadScreen(); } catch { /* 顯示「尚未產生」 */ }
   if (state.current !== cur) return;
-  renderScreen($('stock'), data, { watchlist: boot.meta.watchlist, onPick: pick });
+  cur.cleanup = renderScreen($('stock'), data, { watchlist: boot.meta.watchlist, onPick: pick, backtest });
+}
+
+/* ───────── 持股損益 ───────── */
+
+async function showPortfolio() {
+  const { boot } = state;
+  if (!boot?.meta) return;
+  state.current?.ctrl.abort();
+  state.current?.cleanup?.();
+  const cur = { code: 'portfolio', ctrl: new AbortController(), cleanup: null, summary: null };
+  state.current = cur;
+  markCurrentChip('portfolio');
+  document.title = '持股損益｜台股研究台';
+  markMarket(false);
+  const twOv = new Map((boot.overview?.rows ?? []).map((r) => [r.code, r]));
+  let usOv = new Map();
+  let usSc = new Map();
+  const fx = boot.macro?.items?.find((m) => m.key === 'usdtwd');
+  const priceOf = (x) => {
+    if (x.mkt === 'us') {
+      const o = usOv.get(x.code);
+      if (o) return { price: o.price, chgPct: o.chgPct, name: o.name, kind: '收盤' };
+      const s = usSc.get(x.code);
+      return s ? { price: s.close, chgPct: s.chgPct, name: s.name, kind: '收盤' } : null;
+    }
+    const o = twOv.get(x.code);
+    if (o) return { price: o.price, chgPct: o.chgPct, name: o.name, kind: o.priceKind };
+    const m = marketRow(boot.market, x.code);
+    if (!m) return null;
+    const prev = F.isNum(m.close) && F.isNum(m.change) ? m.close - m.change : null;
+    return { price: m.close, chgPct: prev ? (m.change / prev) * 100 : null, name: state.byCode.get(x.code)?.name ?? '', kind: '收盤' };
+  };
+  cur.cleanup = renderPortfolio($('stock'), {
+    priceOf, fx: fx?.value ?? null, fxDay: fx?.day ?? null, meta: boot.meta,
+    onPick: (mkt, code) => { location.hash = mkt === 'us' ? `us/${code}` : code; },
+  });
+  // 有美股持股才載入美股價格（總覽 + S&P 500），回來後只重算表格（不清掉正在輸入的規則）
+  if (loadHoldings().some((x) => x.mkt === 'us')) {
+    const [ov, sc] = await Promise.all([loadUsOverview().catch(() => null), loadUsScreen().catch(() => null)]);
+    usOv = new Map((ov?.rows ?? []).map((r) => [r.code, r]));
+    usSc = new Map((sc?.rows ?? []).map((r) => { const o = Object.fromEntries(sc.cols.map((c, i) => [c, r[i]])); return [o.code, o]; }));
+    if (state.current === cur) cur.cleanup?.refresh?.();
+  }
 }
 
 /* ───────── 美股 ───────── */
@@ -439,6 +490,7 @@ const route = () => {
   else if (c.startsWith('us/')) showUsStock(c.slice(3).toUpperCase());
   else if (c === 'overview') showOverview();
   else if (c === 'screen') showScreen();
+  else if (c === 'portfolio') showPortfolio();
   else if (c) showStock(c);
 };
 
@@ -571,7 +623,10 @@ async function boot() {
   }, h('span', { class: 't' }, '總覽'), h('span', { class: 'v' }, `${wl.length} 檔`)),
   h('button', {
     class: 'chip ov-chip', type: 'button', dataset: { code: 'screen' }, on: { click: () => pick('screen') },
-  }, h('span', { class: 't' }, '選股'), h('span', { class: 'v' }, '全市場')));
+  }, h('span', { class: 't' }, '選股'), h('span', { class: 'v' }, '全市場')),
+  h('button', {
+    class: 'chip ov-chip', type: 'button', dataset: { code: 'portfolio' }, on: { click: () => pick('portfolio') },
+  }, h('span', { class: 't' }, '持股'), h('span', { class: 'v' }, '損益')));
   renderMacro($('macro'), b.macro?.items, openMacro);
 
   window.addEventListener('hashchange', route);

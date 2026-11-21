@@ -18,10 +18,20 @@ const quarter = (d) => (d ? `${d.slice(2, 4)}Q${Math.ceil(Number(d.slice(5, 7)) 
 /** 與資料日相同就不重複標日期 */
 const dateIf = (d, dataDay) => (d && String(d).slice(0, 10) !== dataDay ? `（${F.when(d)}）` : '');
 
+/** 集保千張大戶（每週）；週變化需要兩週以上的累積資料 */
+function holderLine(hs) {
+  if (!hs) return '千張大戶 N/A';
+  const wk = F.isNum(hs.p1000Chg) ? `，週 ${F.signed(hs.p1000Chg)} 百分點` : '';
+  const ppl = F.isNum(hs.holdersChgPct) ? `，股東人數週 ${pct(hs.holdersChgPct, 2)}` : '';
+  return `千張大戶持股 ${F.pct(hs.p1000)}（集保 ${F.when(hs.date)}${wk}${ppl}）`;
+}
+
 function macroLine(macro) {
   if (!macro.length) return 'N/A';
   return join(macro.map((m) => {
     if (m.key === 'fed') return `Fed ${F.pct(m.value, 2)}`;
+    if (m.key === 'keep') return `全市場擔保維持率 ${F.pct(m.value, 2)}（${F.signed(m.change, 2)} 個百分點${F.isNum(m.calls) ? `，低於 130% ${F.num(m.calls, 0)} 戶` : ''}）`;
+    if (m.key === 'margin') return `上市融資餘額 ${F.num(m.value, 0)} 億（${pct(m.changePct, 2)}${F.isNum(m.ratio) ? `，占市值 ${F.pct(m.ratio, 2)}` : ''}）`;
     const val = m.key === 'us10y' ? F.pct(m.value, 2) : F.num(m.value, m.key === 'usdtwd' ? 3 : m.value > 1000 ? 0 : 2);
     const when = m.key === 'txf_night' ? `，${F.when(m.time)}` : '';
     return `${m.label} ${val}（${pct(m.changePct, 2)}${when}）`;
@@ -182,6 +192,7 @@ export function buildPrompt(s, meta, macro = []) {
   ]) || 'N/A'}\n　${join([
     holding ? `外資持股 ${F.pct(holding.ratio)}（20日 ${F.signed(holding.chg20)}、60日 ${F.signed(holding.chg60)} 百分點）` : '外資持股 N/A',
     margin ? `融資 ${F.num(margin.margin, 0)}（20日 ${F.signed(margin.marginChg20, 0)}）、融券 ${F.num(margin.short, 0)}（20日 ${F.signed(margin.shortChg20, 0)}）、券資比 ${F.pct(margin.shortRatio)}` : '融資券 N/A',
+    holderLine(s.holders),
   ])}`);
 
   L.push(riskLine(s.risk));

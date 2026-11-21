@@ -79,7 +79,8 @@ export function renderWatchlist(host, items, onPick) {
 
 /** 總經數值的顯示格式（卡片與歷史視窗共用） */
 export function macroFmt(key, v) {
-  if (key === 'fed' || key === 'us10y') return F.pct(v, 2);
+  if (key === 'fed' || key === 'us10y' || key === 'keep') return F.pct(v, 2);
+  if (key === 'margin') return F.num(v, 0);
   if (key === 'usdtwd') return F.num(v, 3);
   return F.num(v, Math.abs(v) > 1000 ? 0 : 2);
 }
@@ -100,11 +101,30 @@ export function renderMacro(host, items, onOpen) {
       h('span', { class: 't' }, m.label),
       h('span', { class: 'v' }, macroFmt(m.key, m.value)),
       h('span', { class: `d ${m.key === 'fed' ? 'flat' : F.dir(m.changePct)}` },
-        m.key === 'fed' ? `自 ${F.when(m.time)}` : F.isNum(m.changePct) ? `${m.changePct >= 0.005 ? '▲' : m.changePct <= -0.005 ? '▼' : ''} ${F.pct(m.changePct, 2, true)}` : '—',
+        m.key === 'fed' ? `自 ${F.when(m.time)}` : macroDelta(m),
         // 資料日期：夜盤顯示報價時間（盤中為時:分）；其他顯示收盤日（美股用美國日期）
         m.key === 'fed' ? null : h('span', { class: 'when' }, macroDay(m))),
     ))),
   );
+}
+
+/** 卡片上的漲跌：一般顯示 %；本身就是百分比的項目（擔保維持率）顯示差幾「點」（百分點），避免「%的%」 */
+const isPP = (m) => m.unit === '%';
+function macroDelta(m) {
+  const v = isPP(m) ? m.change : m.changePct;
+  if (!F.isNum(v)) return '—';
+  const arrow = v >= 0.005 ? '▲' : v <= -0.005 ? '▼' : '';
+  return `${arrow} ${isPP(m) ? `${F.signed(v, 2)} 點` : F.pct(v, 2, true)}`;
+}
+
+/** 歷史視窗的補充說明（擔保維持率：追繳戶數與金額；融資：占市值比） */
+function macroExtra(item) {
+  const yi = (v) => (F.isNum(v) ? `${F.num(v / 1e8, 1)} 億元` : 'N/A');
+  if (item.key === 'keep') {
+    return [`整戶維持率低於 130% 的戶數 ${F.isNum(item.calls) ? F.num(item.calls, 0) : 'N/A'} 戶`, `當日通知追繳 ${yi(item.callAmt)}`, `次一營業日處分 ${yi(item.exeAmt)}`].join('｜');
+  }
+  if (item.key === 'margin' && F.isNum(item.ratio)) return `融資餘額占上市市值 ${F.pct(item.ratio, 2)}`;
+  return null;
 }
 
 /** 卡片上的日期：日線收盤顯示 MM/DD；台指期夜盤顯示 MM/DD HH:MM */
@@ -135,8 +155,11 @@ export function renderMacroHistory(host, item, hist, state) {
     h('div', { class: 'mh-price' },
       h('span', { class: 'v' }, macroFmt(item.key, item.value)),
       item.key === 'fed' ? h('span', { class: 'muted' }, `自 ${F.when(item.time)} 起`)
-        : h('span', { class: `d ${F.dir(item.changePct)}` }, `${F.signed(item.change, item.key === 'usdtwd' ? 3 : 2)}（${F.pct(item.changePct, 2, true)}）`)),
-    h('p', { class: 'note' }, `最後${item.key === 'txf_night' ? '報價' : '收盤'}：${lastWhen(item)}｜來源：${item.source || hist?.source || 'N/A'}`));
+        : h('span', { class: `d ${F.dir(item.changePct)}` }, isPP(item) ? macroDelta(item)
+          : `${F.signed(item.change, item.key === 'usdtwd' ? 3 : 2)}（${F.pct(item.changePct, 2, true)}）`)),
+    h('p', { class: 'note' }, `最後${item.key === 'txf_night' ? '報價' : isPP(item) || item.key === 'margin' ? '資料' : '收盤'}：${lastWhen(item)}｜來源：${item.source || hist?.source || 'N/A'}`),
+    item.note ? h('p', { class: 'note' }, item.note) : null,
+    macroExtra(item) ? h('p', { class: 'note' }, macroExtra(item)) : null);
   if (!hist?.dates?.length || hist.dates.length < 2) {
     host.replaceChildren(head, h('p', { class: 'note' }, '這一項目前沒有歷史資料（下次資料更新後會出現）。'));
     return () => {};
@@ -150,20 +173,24 @@ export function renderMacroHistory(host, item, hist, state) {
   const lo = Math.min(...valid);
   const first = close.find(F.isNum);
   const lastV = [...close].reverse().find(F.isNum);
-  const chg = F.isNum(first) && F.isNum(lastV) && first ? ((lastV / first) - 1) * 100 : null;
+  // 百分比項目（擔保維持率）的區間變化用「點」；其餘用 %
+  const pp = isPP(item);
+  const delta = (a, b) => (F.isNum(a) && F.isNum(b) && b ? (pp ? a - b : ((a / b) - 1) * 100) : null);
+  const dfmt = (v) => (pp ? (F.isNum(v) ? `${F.signed(v, 2)} 點` : 'N/A') : F.pct(v, 2, true));
+  const chg = delta(lastV, first);
   const box = h('div');
   const fmt = (v) => macroFmt(item.key, v);
   const stats = h('dl', { class: 'kv mh-stats' },
-    h('dt', {}, '區間漲跌'), h('dd', { class: F.dir(chg) }, F.pct(chg, 2, true)),
+    h('dt', {}, '區間漲跌'), h('dd', { class: F.dir(chg) }, dfmt(chg)),
     h('dt', {}, '區間最高'), h('dd', {}, `${fmt(hi)}（${F.when(dates[close.indexOf(hi)])}）`),
     h('dt', {}, '區間最低'), h('dd', {}, `${fmt(lo)}（${F.when(dates[close.indexOf(lo)])}）`),
-    h('dt', {}, '距區間高點'), h('dd', {}, F.pct(hi ? ((lastV / hi) - 1) * 100 : null, 2, true)));
-  const rowsDesc = dates.map((d, i) => [d, fmt(close[i]), i ? F.pct(F.isNum(close[i]) && F.isNum(close[i - 1]) && close[i - 1] ? ((close[i] / close[i - 1]) - 1) * 100 : null, 2, true) : '—']);
+    h('dt', {}, '距區間高點'), h('dd', {}, dfmt(delta(lastV, hi))));
+  const rowsDesc = dates.map((d, i) => [d, fmt(close[i]), i ? dfmt(delta(close[i], close[i - 1])) : '—']);
   host.replaceChildren(head,
     h('div', { class: 'seg', role: 'group', 'aria-label': '期間' }, MACRO_RANGES.map(([k, , label]) =>
       h('button', { type: 'button', 'aria-pressed': String(k === state.range), title: label, on: { click: () => state.onRange(k) } }, k))),
     box, stats,
-    tableView(['日期', item.key === 'fed' ? '利率' : '收盤', '日漲跌'], rowsDesc, { label: '每日紀錄（表格）' }));
+    tableView(['日期', item.key === 'fed' ? '利率' : pp || item.key === 'margin' ? '數值' : '收盤', '日漲跌'], rowsDesc, { label: '每日紀錄（表格）' }));
   const ch = lineChart(box);
   ch.update({
     dates, series: [{ name: item.label, values: close, color: 'var(--s1)', endLabel: true }],
@@ -179,6 +206,37 @@ const panel = (title, note, ...body) => h('section', { class: 'panel' }, h('h3',
 
 function kv(pairs) {
   return h('dl', { class: 'kv' }, pairs.filter(Boolean).map(([k, v]) => [h('dt', {}, k), h('dd', {}, v)]));
+}
+
+/** 集保股權分散（千張大戶）：kv 列 */
+function holderRows(hs) {
+  if (!hs) return [['千張大戶持股', h('span', { class: 'muted' }, 'N/A（集保資料每週五盤後更新）')]];
+  const wk = (v, unit, dp = 2) => (F.isNum(v)
+    ? [h('span', { class: 'muted' }, '（週 '), signedSpan(`${F.signed(v, dp)}${unit}`, v), h('span', { class: 'muted' }, '）')]
+    : h('span', { class: 'muted' }, '（首週資料，下週起顯示變化）'));
+  return [
+    [`千張大戶持股（集保 ${F.when(hs.date)}）`, [F.pct(hs.p1000), ' ', wk(hs.p1000Chg, ' 百分點')]],
+    ['400 張以上大戶', F.pct(hs.p400)],
+    ['千張大戶人數', F.isNum(hs.n1000) ? `${F.num(hs.n1000, 0)} 人` : 'N/A'],
+    // 股東人數減少、大戶比例增加 = 籌碼集中（常見解讀；仍要搭配股價與法人動向）
+    ['股東人數', F.isNum(hs.holders) ? [F.num(hs.holders, 0), ' ', wk(hs.holdersChgPct, '%')] : 'N/A'],
+  ];
+}
+
+/** 千張大戶持股比例的週線（累積滿 3 週才畫） */
+function holderChart(hs, info, charts) {
+  if (!hs) return null;
+  if (hs.weeks < 3) return h('p', { class: 'note' }, `集保股權分散表每週只公布最新一週，本站從 ${hs.series.dates[0]} 起逐週累積（目前 ${hs.weeks} 週），滿 3 週後顯示趨勢圖。`);
+  const box = h('div', { class: 'chart-sm' });
+  const ch = lineChart(box);
+  ch.update({
+    dates: hs.series.dates, height: 150,
+    series: [{ name: '千張大戶持股 %', values: hs.series.p1000, color: 'var(--s1)', endLabel: true }],
+    fmt: (v) => F.pct(v, 2), axisFmt: (v) => `${F.num(v, 1)}%`,
+    ariaLabel: `${info.name}千張大戶持股比例，近 ${hs.weeks} 週`,
+  });
+  charts.push(ch);
+  return h('div', {}, h('p', { class: 'note' }, `千張大戶持股比例（近 ${hs.weeks} 週，集保結算所）`), box);
 }
 
 function legend(items) {
@@ -499,7 +557,8 @@ export function renderStock(host, s, state) {
     ['融資餘額', mg ? `${F.num(mg.margin, 0)}（20 日 ${F.signed(mg.marginChg20, 0)}）` : 'N/A'],
     ['融券餘額', mg ? `${F.num(mg.short, 0)}（20 日 ${F.signed(mg.shortChg20, 0)}）` : 'N/A'],
     ['券資比', mg ? F.pct(mg.shortRatio) : 'N/A'],
-  ]), !inst && !mg && !hd && state.pending ? h('p', { class: 'note' }, '載入中…') : null);
+    ...holderRows(s.holders),
+  ]), !inst && !mg && !hd && state.pending ? h('p', { class: 'note' }, '載入中…') : null, holderChart(s.holders, info, charts));
 
   /* 相對大盤與風險（台股比加權指數、美股比 S&P 500） */
   const rk = s.risk;

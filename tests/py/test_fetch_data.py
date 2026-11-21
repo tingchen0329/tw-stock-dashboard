@@ -430,9 +430,33 @@ class EndToEnd(unittest.TestCase):
     def test_macro_has_night_futures_dow_nasdaq_in_order(self):
         items = json.loads((self.out / "macro.json").read_text())["items"]
         keys = [m["key"] for m in items]
-        self.assertEqual(keys, ["taiex", "otc", "txf_night", "dji", "ixic", "spx", "sox", "vix", "usdtwd", "dxy", "us10y", "gold", "fed"])
+        self.assertEqual(keys, ["taiex", "otc", "txf_night", "keep", "margin", "dji", "ixic", "spx", "sox", "vix", "usdtwd", "dxy", "us10y", "gold", "fed"])
         night = items[2]
         self.assertEqual((night["label"], night["value"], night["source"]), ("台指期夜盤", 27050.0, "期交所（臺指期116）"))
+
+    def test_holders_and_credit_outputs(self):
+        h = json.loads((self.out / "holders.json").read_text())
+        self.assertEqual(h["asOf"], "2026-10-16")                    # 最近的週五
+        self.assertEqual(h["cols"], fd.HOLDER_COLS)
+        row = h["rows"]["2330"][-1]
+        self.assertEqual(row[0], "2026-10-16")
+        self.assertTrue(0 < row[1] <= row[2] <= 100)                 # 千張以上 ≤ 400 張以上
+        sc = json.loads((self.out / "screen.json").read_text())
+        self.assertEqual(sc["cols"][-3:], ["big1000", "big1000Chg", "holdersChgPct"])
+        x = dict(zip(sc["cols"], next(r for r in sc["rows"] if r[0] == "2330")))
+        self.assertEqual(x["big1000"], row[1])
+        self.assertIsNone(x["big1000Chg"])                            # 第一週沒有變化
+        items = {i["key"]: i for i in json.loads((self.out / "macro.json").read_text())["items"]}
+        keep = items["keep"]
+        self.assertEqual((keep["unit"], keep["label"]), ("%", "擔保維持率"))
+        self.assertAlmostEqual(keep["change"], round(keep["value"] - keep["prev"], 2))
+        self.assertGreater(items["margin"]["ratio"], 0)
+        hist = json.loads((self.out / "macro_hist.json").read_text())["items"]
+        self.assertEqual(len(hist["keep"]["dates"]), 60)
+        self.assertNotIn("hist", keep)                                # 歷史只放 macro_hist.json
+        meta = json.loads((self.out / "meta.json").read_text())
+        for f in ("holders.json", "holders_all.json"):
+            self.assertIn(f, meta["bytes"])                           # 下次執行會取回
 
     def test_corporate_actions_whole_market(self):
         act = json.loads((self.out / "actions.json").read_text())
@@ -856,3 +880,129 @@ class CorpActionsFallback(unittest.TestCase):
             self.assertEqual(act["rows"], {"3041": [["2025-01-05", 15.0, 10.0, "減資"]]})
             self.assertTrue(report.items["finmind_減資"]["ok"])
             self.assertEqual(sum(1 for c in calls if c.get("data_id")), 1)
+
+
+class Holders(unittest.TestCase):
+    """集保股權分散表：BOM 欄位、補空白的代號、每週只抓一次、逐週累積、全市場週變化"""
+
+    @staticmethod
+    def rows(date, code, big_pct, holders):
+        total = 10_000_000
+        out = []
+        for lv in range(1, 18):
+            sh = {15: total * big_pct / 100, 12: total * 0.05, 1: total * (0.95 - big_pct / 100)}.get(lv, 0)
+            if lv == 17:
+                sh = total
+            out.append({"\ufeff資料日期": date.replace("-", ""), "證券代號": f"{code}  ", "持股分級": str(lv),
+                        "人  數": str(holders if lv == 17 else 10), "股數": str(int(sh)), "占集保庫存數比例%": "0.00"})
+        return out
+
+    class Tx:
+        def __init__(self, payload, fail_json=False):
+            self.payload, self.fail_json, self.calls = payload, fail_json, []
+
+        def get_json(self, url, params=None, kind="public"):
+            self.calls.append(url)
+            if self.fail_json:
+                raise RuntimeError("HTTP 503")
+            return self.payload
+
+        def get_text(self, url, kind="public"):
+            self.calls.append(url)
+            import csv as _csv
+            buf = io.StringIO()
+            w = _csv.DictWriter(buf, fieldnames=list(self.payload[0].keys()))
+            w.writeheader()
+            w.writerows(self.payload)
+            return buf.getvalue()
+
+    def test_parse_and_percentages_from_shares(self):
+        date, data = fd.parse_tdcc(self.rows("2026-11-20", "2330", 84.14, 3329043))
+        self.assertEqual(date, "2026-11-20")
+        self.assertEqual(data["2330"], {"p1000": 84.14, "p400": 89.14, "n1000": 10, "holders": 3329043})
+
+    def test_weekly_accumulation_and_csv_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            r = fd.SourceReport()
+            tx = self.Tx(self.rows("2026-11-13", "2330", 80.0, 1000))
+            fd.update_holders(tx, r, out, dt.date(2026, 11, 14), ["2330"])
+            self.assertEqual(len(tx.calls), 1)
+            # 6 天內不重抓
+            tx2 = self.Tx(self.rows("2026-11-20", "2330", 81.5, 990))
+            fd.update_holders(tx2, fd.SourceReport(), out, dt.date(2026, 11, 19), ["2330"])
+            self.assertEqual(tx2.calls, [])
+            # 滿 7 天：JSON 失敗 → CSV 備援；新的一週累積
+            tx3 = self.Tx(self.rows("2026-11-20", "2330", 81.5, 990), fail_json=True)
+            r3 = fd.SourceReport()
+            sizes = fd.update_holders(tx3, r3, out, dt.date(2026, 11, 20), ["2330"])
+            self.assertEqual(tx3.calls, [fd.TDCC_API, fd.TDCC_CSV])
+            self.assertIn("CSV", r3.items["tdcc_holders"]["note"])
+            self.assertEqual(set(sizes), {"holders.json", "holders_all.json"})
+            h = json.loads((out / "holders.json").read_text())
+            self.assertEqual([x[0] for x in h["rows"]["2330"]], ["2026-11-13", "2026-11-20"])
+            a = json.loads((out / "holders_all.json").read_text())
+            self.assertEqual(a["prevDate"], "2026-11-13")
+            self.assertEqual(a["rows"]["2330"][1], 1.5)                # 千張大戶週 +1.5 百分點
+            self.assertEqual(a["rows"]["2330"][3], -1.0)               # 股東人數週 -1%
+            # 集保還沒公布新的一週：資料日期沒變 → 不寫檔、註記
+            tx4 = self.Tx(self.rows("2026-11-20", "2330", 99.0, 1))
+            r4 = fd.SourceReport()
+            fd.update_holders(tx4, r4, out, dt.date(2026, 11, 27), ["2330"])
+            self.assertIn("尚未公布", r4.items["tdcc_holders"]["note"])
+            self.assertEqual(json.loads((out / "holders.json").read_text())["rows"]["2330"][-1][1], 81.5)
+
+    def test_screen_columns_idempotent(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            (out / "holders_all.json").write_text(json.dumps({"asOf": "2026-11-20", "prevDate": "2026-11-13",
+                                                              "rows": {"2330": [84.1, 0.2, 100, -1.0]}}))
+            sc = {"cols": ["code", "name"], "rows": [["2330", "台積電"], ["2317", "鴻海"]]}
+            sc = fd.add_holder_cols(fd.add_holder_cols(sc, out), out)
+            self.assertEqual(sc["cols"], ["code", "name", "big1000", "big1000Chg", "holdersChgPct"])
+            self.assertEqual(sc["rows"], [["2330", "台積電", 84.1, 0.2, -1.0], ["2317", "鴻海", None, None, None]])
+            self.assertEqual(sc["asOf"]["holders"], "2026-11-20")
+
+
+class Credit(unittest.TestCase):
+    """臺股儀表板：一次最多 60 個交易日 → 與上一份歷史合併、往前補到資料起點；失敗沿用上一份卡片"""
+
+    class Tx:
+        def __init__(self, fail=False):
+            self.fail, self.calls = fail, []
+
+        def get_json(self, url, params=None, kind="public"):
+            self.calls.append((url.rsplit("/", 1)[-1], (params or {}).get("date")))
+            if self.fail:
+                raise RuntimeError("HTTP 403")
+            end = dt.date.fromisoformat(f"{params['date'][:4]}-{params['date'][4:6]}-{params['date'][6:]}") if params.get("date") else dt.date(2026, 11, 20)
+            days = [end - dt.timedelta(days=i) for i in range(120) if (end - dt.timedelta(days=i)).weekday() < 5]
+            days = [d for d in days if d >= dt.date(2026, 8, 3)][:60][::-1]
+            if "BFIJ3U" in url:
+                return {"stat": "OK", "data": [{"date": f"{d:%Y%m%d}", "keepRate": 150 + d.day / 10, "callAccNum": 6186,
+                                                "callAmt": 6.46e9, "exeAmt": 1.5e9} for d in days]}
+            return {"stat": "OK", "data": [{"date": f"{d:%Y%m%d}", "marginAmt": 435227267, "marketValue": 1180992.45} for d in days]}
+
+    def test_backfill_merge_and_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            tx = self.Tx()
+            items = {i["key"]: i for i in fd.fetch_credit(tx, fd.SourceReport(), out)}
+            keep = items["keep"]
+            self.assertEqual(keep["hist"]["dates"][0], "2026-08-03")   # 往前補到儀表板資料起點
+            self.assertEqual(keep["day"], "2026-11-20")
+            self.assertEqual(keep["calls"], 6186)
+            self.assertEqual(items["margin"]["value"], 4352.27)        # 千元 → 億元
+            self.assertEqual(items["margin"]["ratio"], 0.369)          # 融資占上市市值 %
+            self.assertEqual(sum(1 for c in tx.calls if c[0] == "BFIJ3U_TREND"), 2)
+            # 寫成 macro_hist.json 後：下次只抓最新一段（已經有起點的資料）
+            fd.write_macro(out, fd.sort_macro(list(items.values())), {})
+            tx2 = self.Tx()
+            again = {i["key"]: i for i in fd.fetch_credit(tx2, fd.SourceReport(), out)}
+            self.assertEqual(tx2.calls, [("BFIJ3U_TREND", None), ("MI_MARGN_TREND", None)])
+            self.assertEqual(again["keep"]["hist"]["dates"][0], "2026-08-03")
+            # 證交所限流失敗：沿用上一份卡片，來源標示失敗
+            r = fd.SourceReport()
+            kept = {i["key"]: i for i in fd.fetch_credit(self.Tx(fail=True), r, out)}
+            self.assertEqual(kept["keep"]["value"], keep["value"])
+            self.assertFalse(r.items["twse_keep_rate"]["ok"])

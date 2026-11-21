@@ -39,22 +39,33 @@
 | TA-Lib / Hypothesis | 指標與業界標準逐筆比對；性質測試找邊界錯誤 |
 | K 線圖 | TradingView Lightweight Charts™（Apache 2.0） |
 
+## v7.1.0 新增
+| 功能 | 說明 |
+|---|---|
+| 千張大戶 | 集保 OpenAPI（每週、免費）；追蹤清單自己累積歷史，全市場週變化併入選股 |
+| 全市場擔保維持率 | 證交所臺股儀表板 `BFIJ3U_TREND`（全市場）、`MI_MARGN_TREND`（上市融資） |
+| 持股損益、到價通知 | localStorage；GitHub Actions + Discord / Telegram，規則放 Secret |
+| 選股條件回測 | 點時資料、含交易成本、與清單等權比較（量化倖存者偏差） |
+
 ## 後續可做（依價值排序）
 | 功能 | 參考網站 | 免費資料源 | 難度 / 注意 |
 |---|---|---|---|
 | 美股機構持股（13F） | Yahoo Finance、WhaleWisdom | SEC 13F | 高：資料量大，季更新 |
 | 財報公布日 / 法說會日期 | Yahoo Finance、MOPS | 證交所 OpenAPI（法說會）；美股無免費官方日曆 | 中 |
 | 分析師目標價、EPS 預估 | Yahoo Finance、Finviz | 無可靠免費 API | 不做（只放外部連結） |
-| 千張大戶（股權分散表） | Goodinfo、神秘金字塔 | 集保結算所開放資料（每週一次，免費；FinMind 的同資料集要付費） | 中：每週更新，要確認 API 欄位 |
-| 全市場擔保維持率、融資占比 | 證交所「臺股儀表板」（2026-09-23 上線） | 證交所網站（是否有 API 待確認） | 中：可加進總經列 |
-| 持股損益（庫存股） | 券商 App、CMoney | 本機輸入成本與股數（存在瀏覽器） | 低 |
-| 到價 / 條件提醒（手機通知） | 券商 App | GitHub Actions + Discord webhook / Telegram（LINE Notify 已停止服務） | 低：金鑰放 Secrets |
-| 選股條件回測 | Finviz、Portfolio123 | 現有 3 年日線；要注意倖存者偏差（只用現在的清單回測會高估） | 高 |
 | 手機安裝（PWA） | — | manifest + service worker，離線可看上一份資料 | 低 |
+| 期貨 / 選擇權法人未平倉、Put/Call Ratio | 期交所、玩股網 | 期交所 OpenAPI（openapi.taifex.com.tw，每日、免費） | 低：加進總經列（外資台指期淨未平倉） |
+| 借券賣出餘額 | 玩股網、Goodinfo | 證交所 TWT93U、櫃買 OpenAPI（每日、免費） | 低：籌碼區與選股欄位 |
+| 大額交易人未沖銷部位 | 期交所 | 期交所（每日） | 中：前十大非特定法人 = 前十大 − 特定法人 |
+| 注意股 / 處置股提醒 | 券商 App | 證交所、櫃買公告 | 低：追蹤清單有處置時在頁首橫幅提示 |
+| 千張大戶歷史回補 | 神秘金字塔 | 集保網站逐週查詢（要模擬表單，約 52 週 × 70 檔次請求） | 中：只做一次，之後每週累積 |
 
 ## 參考
 - 證交所「臺股儀表板」（全市場擔保維持率、違約、營收）：2026-09-23 上線
 - 集保結算所開放資料 API（股權分散表）：https://openapi.tdcc.com.tw/tdcc-opendata-api-docs
+- 證交所臺股儀表板 API（網站本身使用）：`/rwd/zh/marginTrading/BFIJ3U_TREND`、`MI_MARGN_TREND`、`MI_MARGN_HISTORY`
+- 期交所 OpenAPI：https://openapi.taifex.com.tw/（三大法人期貨 / 選擇權未平倉、買賣權分計）
+- 櫃買 OpenAPI（融券借券賣出餘額）：https://www.tpex.org.tw/openapi/
 - 證交所發行量加權股價報酬指數：https://www.twse.com.tw/rwd/zh/TAIEX/MFI94U
 - TradingView Lightweight Charts™：https://www.tradingview.com/lightweight-charts/
 - TA-Lib Python：https://pypi.org/project/TA-Lib/；Hypothesis：https://hypothesis.readthedocs.io/

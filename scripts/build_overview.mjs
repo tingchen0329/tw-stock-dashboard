@@ -12,6 +12,8 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { summarize, marketRow, overviewRow, usMarketRow, insiderStats } from '../assets/js/analytics.js';
 import { checkStock, countChecks, screenIndex } from '../assets/js/checks.js';
+import { buildPanel, runBacktest } from '../assets/js/backtest.js';
+import { TW_PRESETS } from '../assets/js/presets.js';
 
 const dir = resolve(process.argv[2] || '_site/data');
 const read = (name) => {
@@ -30,6 +32,8 @@ const bench = read('macro.json')?.bench ?? {};      // 相對大盤：台股比�
 const byCode = new Map((read('stocks.json')?.rows ?? []).map((r) => [r[0], r]));
 const screen = screenIndex(read('screen.json'));     // 交叉比對：官方月營收 / EPS 彙總表
 const actions = read('actions.json')?.rows ?? {};   // 減資 / 變更面額 / 分割（還原股價、異常值排除）
+const holders = read('holders.json');                 // 集保千張大戶（每週累積）
+const btStocks = [];                                  // 回測用：追蹤清單個股的歷史資料
 const checks = [];                                   // [{ code, name, market, items }]
 const adjCount = { tw: 0, us: 0 };
 
@@ -44,9 +48,10 @@ for (const code of meta.watchlist ?? []) {
   try {
     const s = summarize({
       info, mkt: marketRow(market, code), quote: quotes[code] ?? null, tables: detail?.tables ?? {}, asOf: market?.asOf ?? {}, bench: bench.tw,
-      actions: actions[code] ?? null,
+      actions: actions[code] ?? null, holders,
     });
     rows.push(overviewRow(s));
+    if (detail?.tables) btStocks.push({ code, name: info.name, industry: info.industry, tables: detail.tables, actions: actions[code] ?? null });
     if (s.adjusted?.available) adjCount.tw++;
     checks.push({ code, name: info.name, market: 'tw', items: checkStock({
       info, mkt: marketRow(market, code), asOf: market?.asOf ?? {}, quote: quotes[code] ?? null, tables: detail?.tables ?? {}, screen: screen.get(code) ?? null,
@@ -67,6 +72,25 @@ const body = JSON.stringify({ generatedAt: meta.generatedAt, dataDay: meta.marke
 writeFileSync(resolve(dir, 'overview.json'), body);
 // 記進 meta.bytes：夜間 / 增量模式取回上一份資料時會一起取回
 meta.bytes = { ...(meta.bytes || {}), 'overview.json': Buffer.byteLength(body) };
+
+// ── 選股條件回測（backtest.json，選股頁讀；網頁依目前門檻即時重算）──
+try {
+  const panel = buildPanel(btStocks, bench.tw, { generatedAt: meta.generatedAt });
+  if (panel) {
+    const btBody = JSON.stringify(panel);
+    writeFileSync(resolve(dir, 'backtest.json'), btBody);
+    meta.bytes['backtest.json'] = Buffer.byteLength(btBody);
+    const show = (k) => {
+      const r = runBacktest(panel, TW_PRESETS[k].criteria);
+      const f = (v) => (Number.isFinite(v) ? `${v >= 0 ? '+' : ''}${v.toFixed(1)}%` : 'N/A');
+      return `${k} 累積 ${f(r.stats.strat.total)}（清單等權 ${f(r.stats.univ.total)}、大盤 ${f(r.stats.bench.total)}）平均 ${r.stats.strat.avgPicks?.toFixed(1)} 檔`;
+    };
+    console.log(`backtest.json: ${panel.stocks.length} 檔、${panel.dates.length} 期（${panel.dates[0]}～${panel.end}），`
+      + `${(Buffer.byteLength(btBody) / 1024).toFixed(0)} KB；預設條件：${show('growth')}；${show('yield')}`);
+  } else console.log('backtest.json: 大盤資料不足，略過');
+} catch (e) {
+  console.warn(`::warning title=回測::${e.message}`);
+}
 
 // ── 美股總覽（us/overview.json）──
 const usRows = [];

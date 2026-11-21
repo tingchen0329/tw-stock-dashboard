@@ -64,6 +64,11 @@ export const loadAiConfig = () => fetchJSON('./assets/ai.json', { ttl: DAY, time
 /** 總經歷史（約一年日線，點總經卡片才下載）；版本跟著 macro.json */
 export const loadMacroHist = () => fetchJSON(v('macro_hist.json', macroVersion), { ttl: 10 * 60 * 1000, persist: true, timeout: 15000 });
 
+/** 集保千張大戶（追蹤清單逐週累積，約 100 KB）：個股頁背景載入 */
+export const loadHolders = () => fetchJSON(v('holders.json'), { ttl: 10 * 60 * 1000, persist: true, timeout: 15000 });
+/** 選股條件回測資料（約 100 KB）：打開台股選股頁才下載 */
+export const loadBacktest = () => fetchJSON(v('backtest.json'), { ttl: 10 * 60 * 1000, persist: true, timeout: 20000 });
+
 /** 全市場選股資料（約 300 KB，壓縮後約 80 KB）：第一次打開選股頁才下載 */
 export const loadScreen = () => fetchJSON(v('screen.json'), { ttl: 10 * 60 * 1000, persist: true, timeout: 20000 });
 

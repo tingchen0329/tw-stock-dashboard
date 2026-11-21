@@ -190,6 +190,84 @@ class Dashboard(unittest.TestCase):
         self.assertFalse(dlg.is_visible())
         self.assertEqual(self.errors, [])
 
+    def test_keep_rate_chip_and_holders_rows(self):
+        """全市場擔保維持率（百分比，漲跌顯示「點」）、千張大戶（第一週沒有變化）"""
+        self.open("#2330")
+        chip = self.page.locator('#macro .chip[data-key="keep"]')
+        chip.wait_for()
+        self.assertRegex(chip.inner_text(), r"擔保維持率\s+\d+\.\d\d%\s+[▲▼]?\s*[+-]?\d+\.\d\d 點")
+        chip.click()
+        dlg = self.page.locator("#macro-dialog")
+        dlg.locator(".chart svg").wait_for()
+        self.assertIn("低於 130% 的戶數", dlg.inner_text())
+        self.assertRegex(dlg.inner_text(), r"區間漲跌\s+[+-]?\d+\.\d\d 點")
+        self.page.locator("#macro-close").click()
+        chips = self.page.locator(".panel", has_text="外資 5 / 20 日")
+        chips.filter(has_text="千張大戶持股（集保 10/16）").wait_for()
+        self.assertIn("首週資料", chips.inner_text())
+        self.assertIn("400 張以上大戶", chips.inner_text())
+        self.assertEqual(self.errors, [])
+
+    def test_portfolio_holdings_and_alert_rules(self):
+        self.page.goto(self.base + "#portfolio")
+        self.page.locator(".portfolio h2").wait_for()
+        self.assertEqual(self.page.locator('#watchlist .chip[data-code="portfolio"]').get_attribute("aria-current"), "true")
+        form = self.page.locator(".portfolio form").first
+        form.get_by_label("代號").fill("2330")
+        form.get_by_label("股數（台股 1 張 = 1,000 股）").fill("1000")
+        form.get_by_label("平均成本（每股）").fill("800")
+        form.get_by_role("button", name="新增 / 更新").click()
+        row = self.page.locator(".pf-table tbody tr", has_text="2330")
+        row.wait_for()
+        self.assertIn("台積電", row.inner_text())
+        self.assertNotIn("N/A", row.locator("td").nth(3).inner_text())          # 現價
+        # 美股：有美股持股才載入美股價格
+        form.get_by_label("市場").select_option("us")
+        form.get_by_label("代號").fill("nvda")
+        form.get_by_label("股數（台股 1 張 = 1,000 股）").fill("10")
+        form.get_by_label("平均成本（每股）").fill("100")
+        form.get_by_role("button", name="新增 / 更新").click()
+        self.page.reload()
+        nv = self.page.locator(".pf-table tbody tr", has_text="NVDA")
+        nv.wait_for()
+        self.page.wait_for_function("() => !document.querySelector('.pf-table tbody tr:nth-child(2) td:nth-child(4)').innerText.includes('N/A')")
+        self.assertIn("$", nv.inner_text())
+        self.assertIn("共 2 檔", self.page.locator(".pf-tiles").inner_text())
+        # 到價通知：依成本產生規則 → 格式檢查
+        self.page.get_by_role("button", name="依持股成本產生停損 −10% / 停利 +20%").click()
+        box = self.page.get_by_label("到價通知規則（貼到 GitHub Secret ALERT_RULES）")
+        self.assertIn("2330,價格<=,720,停損 -10%", box.input_value())
+        self.assertIn("US:NVDA,價格>=,120", box.input_value())
+        self.assertIn("✓ 4 條規則格式正確", self.page.locator(".pf-alerts").inner_text())
+        box.fill("2330,價格<=,abc")
+        self.assertIn("1 行格式錯誤", self.page.locator(".pf-alerts").inner_text())
+        self.assertIn("尚未啟用", self.page.locator(".pf-alerts").inner_text())
+        # 刪除
+        row.get_by_role("button", name="刪除 2330").click()
+        self.assertEqual(self.page.locator(".pf-table tbody tr", has_text="2330").count(), 0)
+        self.assertEqual(self.errors, [])
+
+    def test_screener_backtest(self):
+        self.page.goto(self.base + "#screen")
+        bt = self.page.locator(".backtest")
+        bt.wait_for()
+        self.assertIn("條件回測：成長型（追蹤清單）", bt.inner_text())
+        self.assertIn("倖存者", bt.inner_text())
+        bt.locator(".chart svg").wait_for()
+        self.assertNotIn("回測時不使用", bt.inner_text())
+        self.page.get_by_label("千張大戶週增減 ≥").fill("0")                 # 沒有歷史資料的條件：註明不使用
+        self.assertIn("回測時不使用的條件：千張大戶週增減", self.page.locator(".backtest").inner_text())
+        self.page.get_by_label("千張大戶週增減 ≥").fill("")
+        avg = lambda: bt.locator(".bt-stats tr.bt-strat td").nth(4).inner_text()
+        before = avg()
+        # 清空月營收條件 → 回測即時重算（平均檔數變多或不變）
+        self.page.get_by_label("月營收年增 ≥").fill("")
+        self.page.get_by_label("今年累計營收年增 ≥").fill("")
+        self.assertGreaterEqual(float(avg()), float(before))
+        self.page.get_by_role("button", name="殖利率型").click()
+        self.assertIn("條件回測：殖利率型", self.page.locator(".backtest").inner_text())
+        self.assertEqual(self.errors, [])
+
     def test_search_by_name_full_width_and_partial(self):
         self.open("#2330")
         self.search("宜鼎")

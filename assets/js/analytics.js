@@ -724,6 +724,32 @@ export function fundamentals(incomeTable, balanceTable) {
   };
 }
 
+/* ───────────── 集保股權分散（千張大戶） ───────────── */
+
+/**
+ * holders.json 的一檔 → 千張大戶持股、週變化、股東人數變化
+ * 集保每週更新一次、只提供最新一週，所以歷史是本站從開始抓的那週起自己累積的（weeks 週）。
+ * @param {{cols:string[], rows:Object<string, Array[]>, source?:string}} holders
+ */
+export function holderStats(holders, code) {
+  const list = holders?.rows?.[code];
+  if (!list?.length) return null;
+  const cols = holders.cols || ['date', 'p1000', 'p400', 'n1000', 'holders'];
+  const xs = list.map((r) => Object.fromEntries(cols.map((c, i) => [c, r[i]])));
+  const cur = last(xs);
+  const ago = (n) => (xs.length > n ? xs[xs.length - 1 - n] : null);
+  const diff = (b, k) => (b && isNum(cur[k]) && isNum(b[k]) ? cur[k] - b[k] : null);
+  const rel = (b) => (b && isNum(b.holders) && b.holders > 0 && isNum(cur.holders) ? (cur.holders / b.holders - 1) * 100 : null);
+  return {
+    date: cur.date, prevDate: ago(1)?.date ?? null, weeks: xs.length,
+    p1000: cur.p1000 ?? null, p400: cur.p400 ?? null, n1000: cur.n1000 ?? null, holders: cur.holders ?? null,
+    p1000Chg: diff(ago(1), 'p1000'), p1000Chg4: diff(ago(4), 'p1000'),
+    holdersChgPct: rel(ago(1)), holdersChgPct4: rel(ago(4)),
+    series: { dates: xs.map((x) => x.date), p1000: xs.map((x) => x.p1000), holders: xs.map((x) => x.holders) },
+    source: holders.source || '集保結算所',
+  };
+}
+
 /* ───────────── 總整理 ───────────── */
 
 const MCOLS = ['close', 'change', 'open', 'high', 'low', 'volume', 'pe', 'pb', 'yield', 'foreign', 'trust', 'dealer', 'inst'];
@@ -747,7 +773,7 @@ export function marketRow(market, code) {
  */
 const SOURCE = { twse: '證交所', tpex: '櫃買中心', us: 'Yahoo + SEC 推算' };
 
-export function summarize({ info, mkt, quote, tables = {}, asOf = {}, bench = null, dividends = null, actions = null }) {
+export function summarize({ info, mkt, quote, tables = {}, asOf = {}, bench = null, dividends = null, actions = null, holders = null }) {
   const ps = priceSeries(tables.price);
   const tech = technicals(ps);
   // 還原股價：台股用除權息結果（分批更新，還沒抓到前 available = false）、美股用 Yahoo 配息
@@ -812,6 +838,7 @@ export function summarize({ info, mkt, quote, tables = {}, asOf = {}, bench = nu
     revenue: revenueStats(tables.revenue),
     margin: marginStats(tables.margin),
     holding: holdingStats(tables.holding),
+    holders: info.market === 'us' ? null : holderStats(holders, info.code),
     fundamentals: fund,
     dividends: dividendStats(tables.dividend, tables.divResult, ps, fund?.quarters),
     risk: riskStats(adj, bench),
@@ -882,6 +909,9 @@ export function overviewRow(s) {
     trend: align.startsWith('多頭') ? 1 : align.startsWith('空頭') ? -1 : align === '均線糾結' ? 0 : null,
     k: r2(t?.k),
     rsi: r2(t?.rsi),
+    big1000: r2(s.holders?.p1000),
+    big1000Chg: r2(s.holders?.p1000Chg),
+    ma20: r2(t?.ma?.[20]),
   };
 }
 

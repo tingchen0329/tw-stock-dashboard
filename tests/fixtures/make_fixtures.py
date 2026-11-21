@@ -174,13 +174,13 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
         if not etf:
             fm(f"finmind_TaiwanStockPER_{c}.json", per)
         rev, base_rev = [], r.uniform(2e9, 3e11)
-        for k in range(26, 0, -1):
+        for k in range(38, 0, -1):          # 約 3 年：回測要用到 2 年的年增率
             y, mth = (today.year, today.month - k) if today.month - k > 0 else (today.year - 1, today.month - k + 12)
             while mth <= 0:
                 y, mth = y - 1, mth + 12
             nxt = dt.date(y + (mth == 12), mth % 12 + 1, 1)
             rev.append({"date": str(nxt), "stock_id": c, "country": "Taiwan",
-                        "revenue": int(base_rev * (1 + 0.012 * (26 - k)) * r.uniform(0.85, 1.15)),
+                        "revenue": int(base_rev * (1 + 0.012 * (38 - k)) * r.uniform(0.85, 1.15)),
                         "revenue_month": mth, "revenue_year": y, "create_time": ""})
         if not etf:
             fm(f"finmind_TaiwanStockMonthRevenue_{c}.json", rev)
@@ -204,12 +204,12 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
         inc, bal = [], []
         truth[c]["inc"] = inc
         qrev = base_rev * 3
-        for q in range(9):
-            y, qq = today.year - 2 + (q + 2) // 4, (q + 2) % 4 + 1
+        for q in range(13):                  # 約 3 年的季報（回測要用到「當時已公布」的累計 EPS）
+            y, qq = today.year - 3 + (q + 2) // 4, (q + 2) % 4 + 1
             qe = dt.date(y, qq * 3, 30 if qq in (2, 3) else 31)
             if qe >= today:
                 continue
-            rv = qrev * (1 + 0.04 * q) * r.uniform(0.92, 1.08)
+            rv = qrev * (1 + 0.04 * (q - 4)) * r.uniform(0.92, 1.08)
             gp, op = rv * r.uniform(0.25, 0.55), rv * r.uniform(0.08, 0.4)
             ni = op * r.uniform(0.75, 0.95)
             for t, v, o in [("Revenue", rv, "營業收入合計"), ("GrossProfit", gp, "營業毛利（毛損）"),
@@ -379,6 +379,34 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
     tr = walk(random.Random("TAIEXTR"), 60000, 520, 0.0004, 0.01)
     fm("finmind_TaiwanStockTotalReturnIndex_TAIEX.json",
        [{"date": str(d), "stock_id": "TAIEX", "price": v} for d, v in zip(days[-520:], tr)])
+    # 集保戶股權分散表（集保 OpenAPI 格式：中文欄位、第一欄帶 BOM、代號補空白、數字是字串）
+    fri = last_day - dt.timedelta(days=(last_day.weekday() - 4) % 7)
+    tdcc = []
+    for c in list(WATCH) + [x for x in closes if x not in WATCH][:300]:
+        r4 = random.Random(f"tdcc{c}")
+        total = r4.randint(50, 30000) * 10**6
+        big = r4.uniform(0.35, 0.9)
+        shares = [total * (1 - big) * x for x in (0.03, 0.08, 0.05, 0.04, 0.03, 0.06, 0.05, 0.04, 0.12, 0.13, 0.15, 0.08, 0.06, 0.08)]
+        shares.append(total * big)
+        people = [int(sh / avg) for sh, avg in zip(shares, (400, 2500, 7000, 12000, 17000, 25000, 35000, 45000, 70000,
+                                                           140000, 280000, 480000, 680000, 880000, 6_000_000))]
+        for lv in range(1, 18):
+            sh = shares[lv - 1] if lv <= 15 else (0 if lv == 16 else sum(shares))
+            ppl = people[lv - 1] if lv <= 15 else (0 if lv == 16 else sum(people))
+            tdcc.append({"\ufeff資料日期": f"{fri:%Y%m%d}", "證券代號": f"{c:<6}", "持股分級": str(lv), "人數": str(ppl),
+                         "股數": str(int(sh)), "占集保庫存數比例%": f"{sh / sum(shares) * 100:.2f}"})
+    w("v1_opendata_1-5.json", tdcc)
+    # 證交所臺股儀表板：全市場擔保維持率、上市融資餘額（最近 60 個交易日）
+    keep, mamt = 175.0, 4.8e8
+    kr, mr = [], []
+    for d in days[-60:]:
+        keep = max(130.0, keep + rng.uniform(-2.5, 2.4))
+        mamt *= 1 + rng.uniform(-0.012, 0.011)
+        kr.append({"date": f"{d:%Y%m%d}", "crdAmt": 1.1e11, "keepRate": round(keep, 2), "belowAccNum": 300,
+                   "callAccNum": 120, "callAmt": 4.2e7, "exeAccNum": 20, "exeAmt": 9.5e6, "marginAccNum": 70000, "marginAccRate": 0.26})
+        mr.append({"date": f"{d:%Y%m%d}", "marginShr": 9_000_000, "marginAmt": int(mamt), "shortShr": 200_000, "marketValue": 1_350_000.0})
+    w("rwd_zh_marginTrading_BFIJ3U_TREND.json", {"stat": "OK", "date": f"{last_day:%Y%m%d}", "days": 60, "data": kr})
+    w("rwd_zh_marginTrading_MI_MARGN_TREND.json", {"stat": "OK", "date": f"{last_day:%Y%m%d}", "days": 60, "data": mr})
     for c, (n, m, _, base) in WATCH.items():
         yahoo(f"{c}.{'TWO' if m == 'tpex' else 'TW'}", closes[c][-1] if c in closes else base)
     # ── 美股：Yahoo 3 年日線 + SEC companyfacts（NVDA、AAPL 有財報；SPY 是 ETF，SEC 查無）──

@@ -32,12 +32,16 @@ python tests/bench/run_bench.py                # 新舊版效能比較
 - 還原股價：`analytics.adjustEvents()` + `adjustedSeries()`（台股 divResult + `actions.json`（減資 / 變更面額 / 分割，`fetch_corp_actions()` 只在 full 抓）、美股 Yahoo 配息）。報酬率 / 相對大盤 / 風險用還原；技術指標、K 線預設用原始價。大盤 bench 優先報酬指數（`fetch_data.tw_total_return()`：FinMind → 證交所 MFI94U；美股 ^SP500TR），`kind: "tr" | "price"`。
 - 資料驗證：`assets/js/checks.js`（跨來源比對 + 異常值規則），個股頁即時算；`build_overview.mjs` 對清單逐檔算 → `checks.json`、`meta.checks`、`::warning::`。
 - K 線：`assets/js/kline.js` 包 `assets/vendor/lightweight-charts/`（本地檔，CSP 不允許 CDN）。`attributionLogo` 必須關閉（會插行內 style 被 CSP 擋），改在圖下方顯示 NOTICE 文字與連結（授權要求，不可移除）。
-- `scripts/build_overview.mjs`：fetch 之後執行，用 analytics.js 產生 `overview.json`（網頁首頁總覽表）。
+- `scripts/build_overview.mjs`：fetch 之後執行，用 analytics.js 產生 `overview.json`（網頁首頁總覽表）與 `backtest.json`。
+- 千張大戶：`fetch_data.update_holders()`（集保 OpenAPI 1-5，JSON 欄位中文且第一欄帶 BOM；距上次資料日 ≥ 7 天才抓）→ `holders.json`（追蹤清單逐週累積）、`holders_all.json`（全市場最新一週，`add_holder_cols()` 併入 screen.json）；`analytics.holderStats()`。
+- 擔保維持率：`fetch_data.fetch_credit()`（證交所臺股儀表板 `BFIJ3U_TREND` / `MI_MARGN_TREND`，一次最多 60 天，與 macro_hist 合併）→ 總經 `keep`（`unit: '%'`，漲跌顯示「點」）、`margin`。
+- 選股回測：`assets/js/backtest.js`（`buildPanel()` 只用當時已公布的資料：月營收次月 10 日、季報 5/15 8/14 11/14 3/31；`runBacktest()` 網頁即時重算）。條件預設值在 `assets/js/presets.js`。
+- 持股與到價通知：`assets/js/portfolio.js`（localStorage，不上傳）、`assets/js/alert_rules.js`（規則解析、邊緣觸發，網頁與 Node 共用）、`scripts/alerts.mjs`（deploy 的 Price alerts 步驟；規則在 Secret `ALERT_RULES`，推播 `DISCORD_WEBHOOK_URL` / `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`）。
 - `config/watchlist.csv`：追蹤清單（Yahoo 自選股 CSV，順序即顯示順序）。約 70 檔是 FinMind 免費額度上限（`test_repo_watchlist_is_valid` 會檢查）。
 - 測試用清單是 `tests/fixtures/watchlist.json`（對應 fixtures 的合成資料），不是正式清單。
 
 ## 必守規則
-- **FinMind token、Gemini / Claude 金鑰、Vercel 權杖絕不可出現在前端程式、網站輸出或 commit 中。** 只存在 GitHub Secrets `FINMIND_TOKEN` 與本機環境變數。
+- **FinMind token、Gemini / Claude 金鑰、Vercel 權杖、Discord / Telegram 推播憑證、到價規則絕不可出現在前端程式、網站輸出或 commit 中。** 只存在 GitHub Secrets 與本機環境變數。
 - 外部資料（股票名稱等）寫進 DOM 一律用 `textContent` / `render.js` 的 `h()`，不用 `innerHTML`。
 - `index.html` 有 CSP（`script-src 'self'`）：不可加行內 `<script>` 或 `style="..."` 屬性。
 - FinMind 月營收的月份用 `revenue_year` / `revenue_month`，不要用 `date`（date 是次月 1 日）。
