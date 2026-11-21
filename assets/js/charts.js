@@ -159,7 +159,7 @@ export function lineChart(host) {
 
     for (const r of o.refs || []) {
       el('line', { x1: m.l, x2: W - m.r, y1: y(r.value), y2: y(r.value), stroke: r.color || 'var(--warn)', 'stroke-width': 1.5, 'stroke-dasharray': '5 4' }, svg);
-      el('text', { x: m.l + 6, y: y(r.value) - 5, class: 'ref-label', fill: r.color || 'var(--warn)' }, svg).textContent = r.label;
+      el('text', { x: m.l + 6, y: y(r.value) - 5, class: `ref-label ${r.tone || ''}` }, svg).textContent = r.label;
     }
 
     // 折線：遇到 null 就斷開（例如 MA60 前 59 天）

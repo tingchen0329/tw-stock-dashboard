@@ -212,17 +212,19 @@ const quantile = (sorted, q) => {
  * 策略贏過大多數隨機組合，才代表條件本身有選股能力，而不只是股票池（追蹤清單）本來就好。
  * @returns {{runs, p5, p50, p95, beat, curve}}  p* 為累積報酬 %；beat = 策略累積報酬勝過的比例 %；curve = 中位數路徑（每期各自取中位數）
  */
-export function randomBaseline(panel, periods, { runs = 500, seed = 20260101, cost = COST } = {}) {
-  if (!periods.some((p) => p.n)) return null;
+export function randomBaseline(panel, periods, { runs = 500, seed = 20260101, cost = COST, from = 0, to = periods.length } = {}) {
+  const sel = periods.slice(from, to);
+  if (!sel.some((p) => p.n)) return null;
   const ri = panel.cols.indexOf('ret');
   const pools = panel.dates.map((t, i) => panel.stocks.filter((s) => s.rows[i] && isNum(s.rows[i][ri])));
   const next = rng(seed);
   const totals = [];
-  const paths = periods.map(() => []);
+  const paths = sel.map(() => []);
   for (let k = 0; k < runs; k++) {
     let w = new Map();
     let v = 1;
-    periods.forEach((p, i) => {
+    sel.forEach((p, j) => {
+      const i = from + j;
       const pool = pools[i];
       const n = Math.min(p.n, pool.length);
       const idx = pool.map((_, j) => j);
@@ -236,12 +238,12 @@ export function randomBaseline(panel, periods, { runs = 500, seed = 20260101, co
       const gross = n ? mean(picks.map((s) => s.rows[i][ri])) : 0;
       w = nw;
       v *= (1 - fee) * (1 + gross);
-      paths[i].push(v);
+      paths[j].push(v);
     });
     totals.push((v - 1) * 100);
   }
   const sorted = [...totals].sort((a, b) => a - b);
-  const strat = periods.reduce((a, p) => a * (1 + p.ret), 1) * 100 - 100;
+  const strat = sel.reduce((a, p) => a * (1 + p.ret), 1) * 100 - 100;
   return {
     runs,
     p5: quantile(sorted, 0.05), p50: quantile(sorted, 0.5), p95: quantile(sorted, 0.95),
@@ -249,6 +251,90 @@ export function randomBaseline(panel, periods, { runs = 500, seed = 20260101, co
     curve: [1, ...paths.map((xs) => quantile([...xs].sort((a, b) => a - b), 0.5))],
   };
 }
+
+/* ───────── 過度擬合檢查 ───────── */
+
+/** 標準常態分配 CDF（Abramowitz–Stegun 7.1.26，誤差 < 1.5e-7） */
+export function normCdf(x) {
+  const t = 1 / (1 + 0.3275911 * Math.abs(x) / Math.SQRT2);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-(x * x) / 2);
+  return x >= 0 ? (1 + y) / 2 : (1 - y) / 2;
+}
+
+/** 標準常態分配反函數（Acklam，相對誤差 < 1.2e-9） */
+export function normInv(p) {
+  if (!(p > 0 && p < 1)) return p === 0 ? -Infinity : p === 1 ? Infinity : NaN;
+  const a = [-39.69683028665376, 220.9460984245205, -275.9285104469687, 138.357751867269, -30.66479806614716, 2.506628277459239];
+  const b = [-54.47609879822406, 161.5858368580409, -155.6989798598866, 66.80131188771972, -13.28068155288572];
+  const c = [-0.007784894002430293, -0.3223964580411365, -2.400758277161838, -2.549732539343734, 4.374664141464968, 2.938163982698783];
+  const d = [0.007784695709041462, 0.3224671290700398, 2.445134137142996, 3.754408661907416];
+  const lo = 0.02425;
+  if (p < lo) {
+    const q = Math.sqrt(-2 * Math.log(p));
+    return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+  }
+  if (p > 1 - lo) return -normInv(1 - p);
+  const q = p - 0.5;
+  const r = q * q;
+  return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+}
+
+/**
+ * Probabilistic / Deflated Sharpe Ratio（Bailey & López de Prado, 2014）
+ * 回答「這個夏普值是真的大於 0，還是運氣 + 試了很多組參數挑出來的？」
+ * @param {number[]} rets  每期（月）報酬；這裡用「策略 − 清單等權」的超額報酬
+ * @param {object} [o]
+ * @param {number} [o.trials]  試過幾組不同門檻（N）
+ * @param {number} [o.srVar]   各組門檻的（每期）夏普值變異數；N > 1 時用來估「純運氣能挑到的最高夏普」SR0
+ * @returns {{sr, srAnnual, psr, dsr, sr0, T, skew, kurt, trials}|null}  psr / dsr 為機率 %（≥ 95 才算有把握）
+ */
+export function deflatedSharpe(rets, { trials = 1, srVar = null } = {}) {
+  const xs = rets.filter(isNum);
+  const T = xs.length;
+  if (T < 6) return null;
+  const m = mean(xs);
+  const ss = (k) => xs.reduce((a, x) => a + (x - m) ** k, 0) / T;
+  const sd = Math.sqrt((ss(2) * T) / (T - 1));
+  if (!(sd > 0)) return null;
+  const sr = m / sd;
+  const skew = ss(3) / ss(2) ** 1.5;
+  const kurt = ss(4) / ss(2) ** 2;
+  const denom = Math.sqrt(Math.max(1e-12, 1 - skew * sr + ((kurt - 1) / 4) * sr * sr));
+  const at = (sr0) => normCdf(((sr - sr0) * Math.sqrt(T - 1)) / denom) * 100;
+  const N = Math.max(1, Math.floor(trials || 1));
+  const EM = 0.5772156649015329;
+  const sr0 = N > 1 && srVar > 0 ? Math.sqrt(srVar) * ((1 - EM) * normInv(1 - 1 / N) + EM * normInv(1 - 1 / (N * Math.E))) : 0;
+  return { sr, srAnnual: sr * Math.sqrt(12), psr: at(0), dsr: at(sr0), sr0, T, skew, kurt, trials: N };
+}
+
+/**
+ * 前半段 / 後半段（樣本內 / 樣本外）：用前半段調門檻、後半段驗證（walk-forward 的最簡版本）
+ * 前半段有效、後半段失效 → 門檻可能是配合過去行情調出來的
+ */
+export function splitHalves(panel, r, { cost = COST, runs = 300 } = {}) {
+  const n = r?.periods?.length ?? 0;
+  if (n < 8) return null;
+  const mid = Math.floor(n / 2);
+  const part = (a, b) => {
+    const ps = r.periods.slice(a, b);
+    const start = ps[0].date;
+    const end = ps[ps.length - 1].end;
+    const tot = (xs) => (xs.some(isNum) ? (xs.reduce((v, x) => v * (1 + (isNum(x) ? x : 0)), 1) - 1) * 100 : null);
+    const strat = tot(ps.map((p) => p.ret));
+    const univ = tot(ps.map((p) => p.univ));
+    const rnd = randomBaseline(panel, r.periods, { runs, cost, from: a, to: b });
+    return { start, end, months: ps.length, strat, univ, bench: tot(ps.map((p) => p.bench)), excess: isNum(strat) && isNum(univ) ? strat - univ : null, beat: rnd?.beat ?? null };
+  };
+  const first = part(0, mid);
+  const second = part(mid, n);
+  const verdict = !isNum(first.excess) || !isNum(second.excess) ? null
+    : first.excess > 0 && second.excess > 0 ? 'stable'
+      : first.excess > 0 ? 'decay' : second.excess > 0 ? 'late' : 'none';
+  return { first, second, verdict };
+}
+
+/** 每期超額報酬（策略 − 清單等權）：Deflated Sharpe 用 */
+export const excessReturns = (r) => r.periods.map((p) => (isNum(p.univ) ? p.ret - p.univ : null));
 
 /**
  * 依條件回測

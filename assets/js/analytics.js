@@ -751,6 +751,48 @@ export function concentration(bigChg, retailChg, eps = 0.05) {
   return { key: 'flat', text: '大戶與散戶持股變化不大' };
 }
 
+/**
+ * 借券賣出餘額（證交所 / 櫃買信用額度總量管制餘額表，追蹤清單逐日累積；單位：張）
+ * days = 餘額 ÷ 近 20 日平均成交量：全部回補大約要幾天的成交量（越高代表空方部位相對越重）
+ */
+export function sblStats(sbl, code, ps = null) {
+  const list = sbl?.rows?.[code];
+  if (!list?.length) return null;
+  const cols = sbl.cols || ['date', 'bal', 'prev', 'sell', 'ret', 'short'];
+  const xs = list.map((r) => Object.fromEntries(cols.map((c, i) => [c, r[i] ?? null])));
+  const cur = last(xs);
+  const ago = (n) => (xs.length > n ? xs[xs.length - 1 - n] : null);
+  const d = (b) => (b && isNum(cur.bal) && isNum(b.bal) ? cur.bal - b.bal : null);
+  const vols = (ps?.volume ?? []).slice(-20).filter(isNum);
+  const vol20 = vols.length >= 5 ? mean(vols) / 1000 : null;
+  return {
+    date: cur.date, bal: cur.bal, sell: cur.sell, ret: cur.ret, short: cur.short, n: xs.length,
+    chg1: isNum(cur.bal) && isNum(cur.prev) ? cur.bal - cur.prev : d(ago(1)),
+    chg5: d(ago(5)), chg20: d(ago(20)),
+    vol20, days: isNum(cur.bal) && vol20 > 0 ? cur.bal / vol20 : null,
+    series: { dates: xs.map((x) => x.date), bal: xs.map((x) => x.bal) },
+  };
+}
+
+/**
+ * 注意 / 處置（alerts.json）：個股目前的狀態
+ * level：disposal（處置中或即將處置）> watch（注意次數接近處置標準）> notice（近 30 天曾被注意）> past（近 30 天曾處置）
+ */
+export function alertFor(alerts, code, today = null) {
+  if (!alerts || !code) return null;
+  const t = today || alerts.asOf || '';
+  const disp = (alerts.disposal || []).filter((x) => x.code === code);
+  const active = disp.find((x) => x.start <= t && t <= x.end) || null;
+  const upcoming = disp.find((x) => x.start > t) || null;
+  const past = disp.filter((x) => x.end < t);
+  const notices = (alerts.notice || []).filter((x) => x.code === code);
+  const watch = (alerts.watch || []).find((x) => x.code === code) || null;
+  if (!active && !upcoming && !past.length && !notices.length && !watch) return null;
+  const level = active || upcoming ? 'disposal' : watch ? 'watch' : notices.length ? 'notice' : 'past';
+  return { level, label: ALERT_LABEL[level], active, upcoming, past, notices, watch, asOf: alerts.asOf };
+}
+export const ALERT_LABEL = { disposal: '處置', watch: '可能處置', notice: '注意', past: '曾處置' };
+
 export function holderStats(holders, code) {
   const list = holders?.rows?.[code];
   if (!list?.length) return null;
@@ -797,7 +839,7 @@ export function marketRow(market, code) {
  */
 const SOURCE = { twse: '證交所', tpex: '櫃買中心', us: 'Yahoo + SEC 推算' };
 
-export function summarize({ info, mkt, quote, tables = {}, asOf = {}, bench = null, dividends = null, actions = null, holders = null }) {
+export function summarize({ info, mkt, quote, tables = {}, asOf = {}, bench = null, dividends = null, actions = null, holders = null, sbl = null, alerts = null, today: todayStr = null }) {
   const ps = priceSeries(tables.price);
   const tech = technicals(ps);
   // 還原股價：台股用除權息結果（分批更新，還沒抓到前 available = false）、美股用 Yahoo 配息
@@ -863,6 +905,8 @@ export function summarize({ info, mkt, quote, tables = {}, asOf = {}, bench = nu
     margin: marginStats(tables.margin),
     holding: holdingStats(tables.holding),
     holders: info.market === 'us' ? null : holderStats(holders, info.code),
+    sbl: info.market === 'us' ? null : sblStats(sbl, info.code, ps),
+    alert: info.market === 'us' ? null : alertFor(alerts, info.code, todayStr),
     fundamentals: fund,
     dividends: dividendStats(tables.dividend, tables.divResult, ps, fund?.quarters),
     risk: riskStats(adj, bench),
@@ -936,6 +980,9 @@ export function overviewRow(s) {
     big1000: r2(s.holders?.p1000),
     big1000Chg: r2(s.holders?.p1000Chg),
     retail10Chg: r2(s.holders?.p10Chg),
+    sbl: r2(s.sbl?.bal),
+    sblChg5: r2(s.sbl?.chg5),
+    alert: s.alert?.level ?? null,
     ma20: r2(t?.ma?.[20]),
   };
 }

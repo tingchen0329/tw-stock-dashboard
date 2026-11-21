@@ -41,7 +41,7 @@ export async function loadBootstrap() {
   }
   const opt = { ttl: 10 * 60 * 1000, persist: true, timeout: 15000 };
   const settle = (p) => p.then((x) => x, () => null);
-  const [stocks, market, macro, quotes, spec, overview, actions] = await Promise.all([
+  const [stocks, market, macro, quotes, spec, overview, actions, alerts] = await Promise.all([
     settle(fetchJSON(v('stocks.json'), opt)),
     settle(fetchJSON(v('market.json'), opt)),
     settle(fetchJSON(v('macro.json', macroVersion), opt)),
@@ -49,8 +49,9 @@ export async function loadBootstrap() {
     settle(fetchJSON(v('datasets.json'), { ...opt, ttl: DAY })),
     settle(fetchJSON(v('overview.json'), opt)),
     settle(fetchJSON(v('actions.json'), opt)),          // 減資 / 變更面額 / 分割（還原股價用，約數 KB）
+    settle(fetchJSON(v('alerts.json'), opt)),           // 注意 / 處置股（約數 KB）
   ]);
-  return { meta, stocks, market, macro, quotes, spec: stripComments(spec), overview, actions };
+  return { meta, stocks, market, macro, quotes, spec: stripComments(spec), overview, actions, alerts };
 }
 
 const OPT = { ttl: 10 * 60 * 1000, persist: true, timeout: 20000 };
@@ -66,6 +67,8 @@ export const loadMacroHist = () => fetchJSON(v('macro_hist.json', macroVersion),
 
 /** 集保千張大戶（追蹤清單逐週累積，約 100 KB）：個股頁背景載入 */
 export const loadHolders = () => fetchJSON(v('holders.json'), { ttl: 10 * 60 * 1000, persist: true, timeout: 15000 });
+/** 借券賣出餘額（追蹤清單逐日累積）：個股頁背景載入 */
+export const loadSbl = () => fetchJSON(v('sbl.json'), { ttl: 10 * 60 * 1000, persist: true, timeout: 15000 });
 /** 選股條件回測資料（約 100 KB）：打開台股選股頁才下載 */
 export const loadBacktest = () => fetchJSON(v('backtest.json'), { ttl: 10 * 60 * 1000, persist: true, timeout: 20000 });
 

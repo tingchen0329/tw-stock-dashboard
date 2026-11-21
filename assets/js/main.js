@@ -11,9 +11,9 @@
  *       c. 使用者若在途中改查別檔，前一個請求以 AbortController 取消 → 不會出現「資料錯置」
  */
 
-import { loadBootstrap, loadStock, loadScreen, loadUsOverview, loadUsStock, loadUsScreen, loadAiConfig, loadMacroHist, loadHolders, loadBacktest } from './data.js';
+import { loadBootstrap, loadStock, loadScreen, loadUsOverview, loadUsStock, loadUsScreen, loadAiConfig, loadMacroHist, loadHolders, loadSbl, loadBacktest } from './data.js';
 import { buildIndex, search, resolveExact, highlightParts, marketLabel } from './search.js';
-import { summarize, marketRow, usMarketRow, peerStats, insiderStats } from './analytics.js';
+import { summarize, marketRow, usMarketRow, peerStats, insiderStats, alertFor } from './analytics.js';
 import { checkStock, screenIndex } from './checks.js';
 import { renderFreshness, renderWatchlist, renderMacro, renderMacroHistory, renderStock, renderSetup, h } from './render.js';
 import { buildPrompt } from './prompt.js';
@@ -70,6 +70,34 @@ function toast(msg) {
 
 function banner(text, cls = '') {
   $('banners').append(h('p', { class: `banner ${cls}` }, text));
+}
+
+/**
+ * 追蹤清單的注意 / 處置提醒（頁首橫幅）：處置中或即將處置、注意次數接近處置標準、最近一個交易日被公布注意
+ * 只列追蹤清單上的股票；點代號開個股頁
+ */
+/** 判斷「處置中」用的日期：正式資料用今天；示範資料（日期是固定的過去）用資料日 */
+const alertDay = () => (state.boot?.meta?.demo ? state.boot.alerts?.asOf : null) || F.todayTPE();
+
+function alertBanner(alerts, watchlist) {
+  if (!alerts) return;
+  const today = alertDay();
+  const lastNotice = (alerts.notice || []).reduce((m, x) => (x.date > m ? x.date : m), '');
+  const items = [];
+  for (const code of watchlist) {
+    const a = alertFor(alerts, code, today);
+    if (!a) continue;
+    const d = a.active || a.upcoming;
+    const why = d ? `${a.active ? '處置中' : '即將處置'} ${F.when(d.start)}～${F.when(d.end)}${d.match ? `，${d.match}` : ''}`
+      : a.watch ? '注意次數接近處置標準'
+        : a.notices[0]?.date === lastNotice ? `${F.when(lastNotice)} 被公布注意` : null;
+    if (!why) continue;
+    const name = state.byCode?.get(code)?.name || d?.name || a.watch?.name || a.notices[0]?.name || '';
+    items.push([h('a', { href: `#${code}` }, `${code} ${name}`), `（${why}）`]);
+  }
+  if (!items.length) return;
+  banner(['注意 / 處置：', ...items.flatMap((x, i) => (i ? ['、', ...x] : x)),
+    '。處置期間人工管制撮合、預收款券，成交較慢且不能當沖。'], 'tw-notice tw-alert warn');
 }
 
 /* ───────── 搜尋框（ARIA combobox）───────── */
@@ -203,7 +231,8 @@ async function showStock(code) {
     if (state.current !== cur) return;     // 已經換股票了，丟棄舊結果
     cur.tables = tables;
     const actions = state.boot.actions?.rows?.[code] ?? null;
-    cur.summary = summarize({ info, mkt, quote, tables, asOf, bench: state.boot.macro?.bench?.tw, actions, holders: state.holders });
+    cur.summary = summarize({ info, mkt, quote, tables, asOf, bench: state.boot.macro?.bench?.tw, actions, holders: state.holders,
+      sbl: state.sbl, alerts: state.boot.alerts, today: alertDay() });
     cur.summary.peers = state.peerData.tw ? peerStats(state.peerData.tw, code, 'industry') : null;
     if (state.peerData.tw && !state.screenIdx) state.screenIdx = screenIndex(state.peerData.tw);
     cur.summary.checks = checkStock({ info, mkt, asOf, quote, tables, screen: state.screenIdx?.get(code) ?? null, actions });
@@ -243,6 +272,12 @@ async function showStock(code) {
     loadHolders().then((d) => { state.holders = d; }, () => {})
       .then(() => { if (state.current === cur && cur.lastMeta) draw(cur.tables, cur.lastMeta); });
   }
+  // 借券賣出餘額（追蹤清單逐日累積）：背景載入，回來後重畫
+  if (state.sbl === undefined) {
+    state.sbl = null;
+    loadSbl().then((d) => { state.sbl = d; }, () => {})
+      .then(() => { if (state.current === cur && cur.lastMeta) draw(cur.tables, cur.lastMeta); });
+  }
   $('stock').scrollIntoView?.({ block: 'nearest' });
 
   // b. 再抓個股詳細資料
@@ -268,7 +303,12 @@ function showOverview() {
   markCurrentChip('overview');
   document.title = '追蹤清單總覽｜台股研究台';
   markMarket(false);
-  renderOverview($('stock'), boot.overview, { onPick: pick });
+  // 注意 / 處置用最新的 alerts.json 重算（總覽表在部署時產生，夜間更新可能只更新了公告）
+  const today = alertDay();
+  const ov = boot.overview && boot.alerts
+    ? { ...boot.overview, rows: boot.overview.rows.map((r) => ({ ...r, alert: alertFor(boot.alerts, r.code, today)?.level ?? null })) }
+    : boot.overview;
+  renderOverview($('stock'), ov, { onPick: pick });
 }
 
 /* ───────── 全市場選股 ───────── */
@@ -375,7 +415,7 @@ async function showUsOverview() {
   try { data = await loadUsOverview(); } catch { /* 顯示「尚未產生」 */ }
   if (state.current !== cur) return;
   renderOverview($('stock'), data, {
-    onPick: usPick, title: '美股追蹤清單總覽', hide: ['f20', 't20', 'big1000Chg'], dayNote: '美東收盤',
+    onPick: usPick, title: '美股追蹤清單總覽', hide: ['f20', 't20', 'big1000Chg', 'sblChg5'], dayNote: '美東收盤',
     note: '資料來源：Yahoo Finance（日線、配息）、美國證管會 SEC EDGAR（財報）。本益比 = 收盤 ÷ 近四季 EPS；河流圖位階 = 目前本益比在近三年的百分位（由財報與股價推算）；營收年增為最新一季與去年同季比較。'
       + 'ETF、外國公司（例如台積電 ADR）沒有 SEC 財報，顯示 N/A。清單在 config/us_watchlist.csv。',
   });
@@ -563,6 +603,7 @@ async function boot() {
 
   state.index = buildIndex(b.stocks?.rows ?? [], b.meta.watchlist);
   state.byCode = new Map(state.index.map((it) => [it.code, it]));
+  alertBanner(b.alerts, b.meta.watchlist || []);
   $('search').placeholder = `代號或名稱，例如 2330、台積（${state.index.length.toLocaleString()} 檔）`;
 
   // 追蹤清單：價格優先用盤中價，其次全市場收盤

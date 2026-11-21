@@ -407,6 +407,52 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
         mr.append({"date": f"{d:%Y%m%d}", "marginShr": 9_000_000, "marginAmt": int(mamt), "shortShr": 200_000, "marketValue": 1_350_000.0})
     w("rwd_zh_marginTrading_BFIJ3U_TREND.json", {"stat": "OK", "date": f"{last_day:%Y%m%d}", "days": 60, "data": kr})
     w("rwd_zh_marginTrading_MI_MARGN_TREND.json", {"stat": "OK", "date": f"{last_day:%Y%m%d}", "days": 60, "data": mr})
+    # 注意 / 處置（證交所、櫃買 OpenAPI 格式）：聯發科處置中、華邦電今天被注意、宜鼎（上櫃）可能被處置；
+    # 另有權證（6 碼）與空白列，網頁不應顯示
+    nxt = [d for d in trading_days(last_day + dt.timedelta(days=10), 30) if d > last_day][:5]
+    rs = lambda d: f"{d.year - 1911}/{d:%m/%d}"  # noqa: E731
+    w("v1_announcement_punish.json", [
+        {"Number": "1", "Date": roc(last_day), "Code": "2454", "Name": "聯發科", "NumberOfAnnouncement": "1",
+         "ReasonsOfDisposition": "連續三次", "DispositionPeriod": f"{rs(nxt[0])}～{rs(nxt[-1])}", "DispositionMeasures": "第一次處置",
+         "Detail": "１處置原因：該有價證券之交易，連續三個營業日達本公司「公布注意交易資訊」標準。\n３處置措施：\nａ以人工管制之撮合終端機執行撮合作業（約每五分鐘撮合一次）。\n",
+         "LinkInformation": ""},
+        {"Number": "2", "Date": roc(last_day), "Code": "037648", "Name": "國巨統一5C購01", "NumberOfAnnouncement": "1",
+         "ReasonsOfDisposition": "連續三次", "DispositionPeriod": f"{rs(nxt[0])}～{rs(nxt[-1])}", "DispositionMeasures": "第一次處置",
+         "Detail": "", "LinkInformation": ""}])
+    w("v1_announcement_notice.json", [
+        {"Number": "1", "Code": "2344", "Name": "華邦電", "NumberOfAnnouncement": "2",
+         "TradingInfoForAttention": "最近六個營業日（含當日）累積收盤價漲幅達 32.5%", "Date": roc(last_day), "ClosingPrice": "22", "PE": "45"},
+        {"Number": "0", "Code": "", "Name": "", "NumberOfAnnouncement": "0", "TradingInfoForAttention": "", "Date": "", "ClosingPrice": "0", "PE": "0"}])
+    w("v1_announcement_notetrans.json", [
+        {"Code": "2344", "Name": "華邦電", "RecentlyMetAttentionSecuritiesCriteria": f"{rs(days[-2]).replace('/', '年', 1).replace('/', '月')}日至{rs(last_day).replace('/', '年', 1).replace('/', '月')}日連續二次"}])
+    w("openapi_v1_tpex_disposal_information.json", [])
+    w("openapi_v1_tpex_trading_warning_information.json", [
+        {"Date": roc(last_day), "SecuritiesCompanyCode": "5289", "CompanyName": "宜鼎", "TradingInformation": "最近六個營業日(含當日)累積之最後成交價漲幅達41.4%(第一款)",
+         "ClosePrice": "280.00", "PriceEarningRatio": "35.40"}])
+    w("openapi_v1_tpex_trading_warning_note.json", [
+        {"Date": f"{last_day:%Y%m%d}", "SecuritiesCompanyCode": "5289", "CompanyName": "宜鼎", "AccumulationSituation": "最近10個營業日已有5次"}])
+    # 期交所：三大法人臺股期貨未平倉、臺指選擇權 Put/Call 比（近 20 個交易日）
+    w("v1_MarketDataOfMajorInstitutionalTradersDetailsOfFuturesContractsBytheDate.json", [
+        {"Date": f"{last_day:%Y%m%d}", "ContractCode": "臺股期貨", "Item": who, "OpenInterest(Long)": "0", "OpenInterest(Short)": "0",
+         "OpenInterest(Net)": str(net)} for who, net in (("自營商", 282), ("投信", 87599), ("外資及陸資", -97863))] + [
+        {"Date": f"{last_day:%Y%m%d}", "ContractCode": "小型臺指期貨", "Item": "外資及陸資", "OpenInterest(Net)": "-1234"}])
+    w("v1_PutCallRatio.json", [
+        {"Date": f"{d:%Y%m%d}", "PutVolume": "348206", "CallVolume": "440990", "PutCallVolumeRatio%": f"{rng.uniform(60, 120):.2f}",
+         "PutOI": "28549", "CallOI": "95013", "PutCallOIRatio%": f"{rng.uniform(80, 140):.2f}"} for d in reversed(days[-20:])])
+    # 信用額度總量管制餘額表（證交所 TWT93U、櫃買 sbl）：借券賣出餘額（股）
+    def sbl_rows(codes):
+        out_ = []
+        for c in codes:
+            r5 = random.Random(f"sbl{c}")
+            bal = r5.randint(1, 40000) * 1000
+            sell, ret = r5.randint(0, 300) * 1000, r5.randint(0, 300) * 1000
+            out_.append([c, "x", "20,000", "0", "1,000", "0", "19,000", "24,585,732", f"{bal - sell + ret:,}", f"{sell:,}", f"{ret:,}", "0", f"{bal:,}", "18,559", ""])
+        return out_
+    fields = ["代號", "名稱", "前日餘額", "賣出", "買進", "現券", "今日餘額", "次一營業日限額", "前日餘額", "當日賣出", "當日還券", "當日調整", "當日餘額", "次一營業日可限額", "備註"]
+    tw_codes = [c for c, v in WATCH.items() if v[1] == "twse"] + ["037648"]
+    w("rwd_zh_marginTrading_TWT93U.json", {"stat": "OK", "date": f"{last_day:%Y%m%d}", "fields": fields, "data": sbl_rows(tw_codes)})
+    w("www_zh-tw_margin_sbl.json", {"stat": "ok", "date": f"{last_day:%Y%m%d}",
+                                     "tables": [{"title": "信用額度總量管制餘額表", "fields": fields, "data": sbl_rows([c for c, v in WATCH.items() if v[1] == "tpex"])}]})
     for c, (n, m, _, base) in WATCH.items():
         yahoo(f"{c}.{'TWO' if m == 'tpex' else 'TW'}", closes[c][-1] if c in closes else base)
     # ── 美股：Yahoo 3 年日線 + SEC companyfacts（NVDA、AAPL 有財報；SPY 是 ETF，SEC 查無）──

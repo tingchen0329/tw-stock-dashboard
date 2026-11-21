@@ -27,12 +27,32 @@ function holderLine(hs) {
   return `千張大戶持股 ${F.pct(hs.p1000)}（集保 ${F.when(hs.date)}${wk}${ppl}）${retail}${hs.signal ? `；${hs.signal.text}` : ''}`;
 }
 
+/** 借券賣出餘額（張） */
+function sblLine(sb) {
+  if (!sb) return '借券賣出餘額 N/A';
+  const parts = [F.isNum(sb.chg1) && `日 ${F.signed(sb.chg1, 0)}`, F.isNum(sb.chg5) && `5日 ${F.signed(sb.chg5, 0)}`, F.isNum(sb.chg20) && `20日 ${F.signed(sb.chg20, 0)}`].filter(Boolean);
+  return `借券賣出餘額 ${F.num(sb.bal, 0)}（${F.when(sb.date)}${parts.length ? `，${parts.join('、')}` : ''}${F.isNum(sb.days) ? `；約 ${F.num(sb.days, 1)} 天成交量` : ''}）`;
+}
+
+/** 注意 / 處置（證交所、櫃買公告） */
+function alertLine(al) {
+  if (!al || al.level === 'past') return null;
+  const d = al.active || al.upcoming;
+  return `【注意 / 處置】${join([
+    d && `${al.active ? '處置中' : '即將處置'} ${F.when(d.start)}～${F.when(d.end)}${d.level ? `（${d.level}）` : ''}${d.match ? `，${d.match}` : ''}`,
+    al.watch && `注意次數接近處置標準（${al.watch.text}）`,
+    al.notices.length && `近 30 天被公布注意 ${al.notices.length} 次`,
+  ])}`;
+}
+
 function macroLine(macro) {
   if (!macro.length) return 'N/A';
   return join(macro.map((m) => {
     if (m.key === 'fed') return `Fed ${F.pct(m.value, 2)}`;
     if (m.key === 'keep') return `全市場擔保維持率 ${F.pct(m.value, 2)}（${F.signed(m.change, 2)} 個百分點${F.isNum(m.calls) ? `，低於 130% ${F.num(m.calls, 0)} 戶` : ''}）`;
     if (m.key === 'margin') return `上市融資餘額 ${F.num(m.value, 0)} 億（${pct(m.changePct, 2)}${F.isNum(m.ratio) ? `，占市值 ${F.pct(m.ratio, 2)}` : ''}）`;
+    if (m.key === 'fut_oi') return `外資臺股期貨淨未平倉 ${F.signed(m.value, 0)} 口（日 ${F.signed(m.change, 0)}）`;
+    if (m.key === 'pcr') return `臺指選擇權 P/C 未平倉比 ${F.pct(m.value, 2)}（${F.signed(m.change, 2)} 個百分點）`;
     const val = m.key === 'us10y' ? F.pct(m.value, 2) : F.num(m.value, m.key === 'usdtwd' ? 3 : m.value > 1000 ? 0 : 2);
     const when = m.key === 'txf_night' ? `，${F.when(m.time)}` : '';
     return `${m.label} ${val}（${pct(m.changePct, 2)}${when}）`;
@@ -193,8 +213,10 @@ export function buildPrompt(s, meta, macro = []) {
   ]) || 'N/A'}\n　${join([
     holding ? `外資持股 ${F.pct(holding.ratio)}（20日 ${F.signed(holding.chg20)}、60日 ${F.signed(holding.chg60)} 百分點）` : '外資持股 N/A',
     margin ? `融資 ${F.num(margin.margin, 0)}（20日 ${F.signed(margin.marginChg20, 0)}）、融券 ${F.num(margin.short, 0)}（20日 ${F.signed(margin.shortChg20, 0)}）、券資比 ${F.pct(margin.shortRatio)}` : '融資券 N/A',
+    sblLine(s.sbl),
     holderLine(s.holders),
   ])}`);
+  if (alertLine(s.alert)) L.push(alertLine(s.alert));
 
   L.push(riskLine(s.risk));
   L.push(peerLine(s.peers));

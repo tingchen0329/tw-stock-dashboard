@@ -807,7 +807,7 @@ BENCH_DAYS = 2 * 366
 # FinMind 的台股指數（TaiwanStockPrice 的 data_id）：只有日收盤，沒有盤中
 FINMIND_INDEX = {"taiex": ("加權指數", "TAIEX"), "otc": ("櫃買指數", "TPEx")}
 # 顯示順序：台股 → 美股 → 匯率 / 利率 / 商品
-MACRO_ORDER = ["taiex", "otc", "txf_night", "keep", "margin", "dji", "ixic", "spx", "sox", "vix", "usdtwd", "dxy", "us10y", "gold", "fed"]
+MACRO_ORDER = ["taiex", "otc", "txf_night", "fut_oi", "pcr", "keep", "margin", "dji", "ixic", "spx", "sox", "vix", "usdtwd", "dxy", "us10y", "gold", "fed"]
 
 
 def finmind_index(tx, data_id: str, today: dt.date) -> dict | None:
@@ -1458,6 +1458,301 @@ def fetch_credit(tx, report: SourceReport, out: Path) -> list[dict]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# 注意股 / 處置股（證交所、櫃買 OpenAPI，每日，免 token）→ alerts.json
+#   注意：達「公布注意交易資訊」標準（短期漲跌、週轉率、本益比異常等）
+#   處置：連續 3 次注意等 → 處置期間人工管制撮合（約每數分鐘撮合一次）、預收款券，流動性變差
+#   可能處置：注意累計次數接近處置標準（證交所 notetrans、櫃買 tpex_trading_warning_note）
+# ──────────────────────────────────────────────────────────────────────
+TWSE_PUNISH = f"{TWSE_OPENAPI}/announcement/punish"
+TWSE_NOTICE = f"{TWSE_OPENAPI}/announcement/notice"
+TWSE_NOTETRANS = f"{TWSE_OPENAPI}/announcement/notetrans"
+TPEX_DISPOSAL = f"{TPEX_OPENAPI}/tpex_disposal_information"
+TPEX_WARNING = f"{TPEX_OPENAPI}/tpex_trading_warning_information"
+TPEX_WARNING_NOTE = f"{TPEX_OPENAPI}/tpex_trading_warning_note"
+ALERT_DAYS = 30
+STOCK_CODE = re.compile(r"\d{4}|00\d{3,4}[A-Z]?")       # 股票與 ETF（排除權證 03xxxx、債券等）
+
+
+def _period(s: Any) -> tuple[str | None, str | None]:
+    """處置期間：'115/11/23～115/11/27'（證交所）、'1151120~1151126'（櫃買）→ 西元起訖"""
+    parts = re.split(r"\s*[～~]\s*", str(s or "").strip())
+    return (roc_to_iso(parts[0]), roc_to_iso(parts[1])) if len(parts) == 2 else (None, None)
+
+
+def _roc_text_date(s: Any) -> str | None:
+    """'115年11月19日至115年11月20日連續二次' → 最後一個日期 '2026-11-20'"""
+    m = re.findall(r"(\d{2,3})年(\d{1,2})月(\d{1,2})日", str(s or ""))
+    return f"{int(m[-1][0]) + 1911:04d}-{int(m[-1][1]):02d}-{int(m[-1][2]):02d}" if m else None
+
+
+def parse_disposal(rows: Any, market: str) -> list[dict]:
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        code = str(pick(r, "Code", "SecuritiesCompanyCode") or "").strip()
+        start, end = _period(pick(r, "DispositionPeriod"))
+        if not STOCK_CODE.fullmatch(code) or not end:
+            continue
+        detail = re.sub(r"\s+", " ", str(pick(r, "Detail", "DisposalCondition") or "")).strip()
+        m = re.search(r"約每[^）)，,]{1,6}?分鐘撮合一次", detail)
+        out.append({"code": code, "name": str(pick(r, "Name", "CompanyName") or "").strip(), "market": market,
+                    "date": roc_to_iso(pick(r, "Date")), "start": start, "end": end,
+                    "reason": str(pick(r, "ReasonsOfDisposition", "DispositionReasons") or "").strip() or None,
+                    "level": str(pick(r, "DispositionMeasures") or "").strip() or None,   # 第一次處置 / 第二次處置（證交所）
+                    "match": m.group(0) if m else None, "detail": detail[:600] or None})
+    return out
+
+
+def parse_notice(rows: Any, market: str) -> list[dict]:
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        code = str(pick(r, "Code", "SecuritiesCompanyCode") or "").strip()
+        d = roc_to_iso(pick(r, "Date"))
+        if not STOCK_CODE.fullmatch(code) or not d:            # 證交所非交易日回傳一筆空白列
+            continue
+        n = to_num(pick(r, "NumberOfAnnouncement"))
+        out.append({"code": code, "name": str(pick(r, "Name", "CompanyName") or "").strip(), "market": market, "date": d,
+                    "info": str(pick(r, "TradingInfoForAttention", "TradingInformation") or "").strip() or None,
+                    "count": int(n) if n else None})
+    return out
+
+
+def parse_watch(rows: Any, market: str) -> list[dict]:
+    out = []
+    for r in rows if isinstance(rows, list) else []:
+        code = str(pick(r, "Code", "SecuritiesCompanyCode") or "").strip()
+        text = str(pick(r, "RecentlyMetAttentionSecuritiesCriteria", "AccumulationSituation") or "").strip()
+        if not STOCK_CODE.fullmatch(code) or not text:
+            continue
+        out.append({"code": code, "name": str(pick(r, "Name", "CompanyName") or "").strip(), "market": market,
+                    "date": _roc_text_date(text) or roc_to_iso(pick(r, "Date")), "text": text})
+    return out
+
+
+def update_alerts(tx, report: SourceReport, out: Path, today: dt.date) -> dict[str, int]:
+    """
+    注意 / 處置 / 可能處置 → alerts.json。官方只給「目前」的清單 → 與上一份合併，保留近 30 天的注意紀錄
+    （網頁據此算「近 30 天被注意幾次」）。某個市場抓失敗時沿用上一份該市場的資料。
+    """
+    path = out / "alerts.json"
+    prev = _read_json(path) or {}
+    since = (today - dt.timedelta(days=ALERT_DAYS)).isoformat()
+    srcs = {"twse": (TWSE_PUNISH, TWSE_NOTICE, TWSE_NOTETRANS), "tpex": (TPEX_DISPOSAL, TPEX_WARNING, TPEX_WARNING_NOTE)}
+    fresh: dict[str, dict] = {}
+    for market, (u_disp, u_note, u_watch) in srcs.items():
+        name = f"{market}_alerts"
+        res = report.run(name, lambda a=u_disp, b=u_note, c=u_watch, m=market: {
+            "disposal": parse_disposal(tx.get_json(a), m), "notice": parse_notice(tx.get_json(b), m),
+            "watch": parse_watch(tx.get_json(c), m)}, count=lambda r: sum(len(v) for v in r.values()))
+        if res is not None:
+            fresh[market] = res
+            it = report.items[name]
+            it["ok"] = True
+            it["note"] = f"處置 {len(res['disposal'])}、注意 {len(res['notice'])}、可能處置 {len(res['watch'])}（股票與 ETF）"
+    if not fresh:
+        return {path.name: path.stat().st_size} if path.exists() else {}
+
+    def merge(kind: str, key: Callable[[dict], tuple], keep: Callable[[dict], bool]) -> list[dict]:
+        rows = {}
+        for x in prev.get(kind) or []:                       # 上一份：抓失敗的市場整份沿用；成功的市場只留還在期間內的歷史
+            if keep(x) and (x.get("market") not in fresh or kind != "watch"):
+                rows[key(x)] = x
+        for m in fresh.values():
+            for x in m[kind]:
+                rows[key(x)] = x
+        return list(rows.values())
+
+    data = {
+        "asOf": today.isoformat(),
+        "disposal": sorted(merge("disposal", lambda x: (x["code"], x["start"]), lambda x: (x.get("end") or "") >= since),
+                           key=lambda x: (x["start"] or "", x["code"]), reverse=True),
+        "notice": sorted(merge("notice", lambda x: (x["code"], x["date"]), lambda x: (x.get("date") or "") >= since),
+                         key=lambda x: (x["date"], x["code"]), reverse=True),
+        "watch": sorted(merge("watch", lambda x: (x["code"],), lambda x: True), key=lambda x: x["code"]),
+    }
+    return {path.name: write_json(path, data)}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 期貨 / 選擇權（期交所 OpenAPI，每日，免 token）→ 總經列兩張卡片
+#   fut_oi：外資台指期貨淨未平倉（口）；附投信、自營商
+#   pcr：臺指選擇權 Put/Call 未平倉比（%）；附成交量比
+# ──────────────────────────────────────────────────────────────────────
+TAIFEX_OPENAPI = "https://openapi.taifex.com.tw/v1"
+TAIFEX_FUT_INST = f"{TAIFEX_OPENAPI}/MarketDataOfMajorInstitutionalTradersDetailsOfFuturesContractsBytheDate"
+TAIFEX_PCR = f"{TAIFEX_OPENAPI}/PutCallRatio"
+DERIV_KEYS = ("fut_oi", "pcr")
+
+
+def parse_fut_inst(rows: Any) -> tuple[str, dict[str, float | None]]:
+    """三大法人各期貨契約（依日期）→ (日期, {foreign, trust, dealer} 臺股期貨淨未平倉口數)"""
+    date, by = None, {}
+    for r in rows if isinstance(rows, list) else []:
+        if str(r.get("ContractCode", "")).strip() not in ("臺股期貨", "台股期貨"):
+            continue
+        who = str(r.get("Item", ""))
+        k = "foreign" if "外資" in who else "trust" if "投信" in who else "dealer" if "自營" in who else None
+        if k:
+            by[k] = to_num(pick(r, "OpenInterest(Net)", "OpenInterestNet"))
+            date = _ymd(r.get("Date")) or date
+    if not date or by.get("foreign") is None:
+        raise RuntimeError("找不到臺股期貨外資未平倉（欄位名稱可能改變）")
+    return date, by
+
+
+def fetch_derivs(tx, report: SourceReport, out: Path) -> list[dict]:
+    old = ((_read_json(out / "macro_hist.json") or {}).get("items") or {})
+    items = []
+
+    def card(key: str, label: str, hist: dict, extra: dict, unit: str) -> dict | None:
+        d, c = hist["dates"], hist["close"]
+        if not c:
+            return None
+        v, p = c[-1], (c[-2] if len(c) > 1 else None)
+        return {"key": key, "label": label, "source": "期交所", "value": v, "prev": p,
+                "change": round(v - p, 2) if p is not None else None,
+                "changePct": round((v / p - 1) * 100, 2) if p and unit != "口" else None,
+                "time": d[-1], "day": d[-1], "unit": unit, "hist": hist, **extra}
+
+    res = report.run("taifex_fut_inst", lambda: parse_fut_inst(tx.get_json(TAIFEX_FUT_INST)), count=lambda r: len(r[1]))
+    if res:
+        date, by = res
+        hist = _merge_hist(old.get("fut_oi"), {date: by["foreign"]},
+                           {"trust": {date: by.get("trust")}, "dealer": {date: by.get("dealer")}})
+        item = card("fut_oi", "外資台指淨單(口)", hist, {
+            "trust": by.get("trust"), "dealer": by.get("dealer"),
+            "note": "外資及陸資在臺股期貨（大台）的多單減空單未平倉口數；負數 = 淨空單。只計大台，不含小台、微台",
+        }, "口")
+        if item:
+            items.append(item)
+
+    def pcr():
+        rows = tx.get_json(TAIFEX_PCR)
+        rows = [r for r in rows if isinstance(r, dict) and _ymd(r.get("Date"))] if isinstance(rows, list) else []
+        if not rows:
+            raise RuntimeError("沒有 Put/Call 比資料")
+        return rows
+    res = report.run("taifex_pcr", pcr)
+    if res:
+        pts = {_ymd(r["Date"]): to_num(r.get("PutCallOIRatio%")) for r in res}
+        vol = {_ymd(r["Date"]): to_num(r.get("PutCallVolumeRatio%")) for r in res}
+        hist = _merge_hist(old.get("pcr"), pts, {"vol": vol})
+        lastd = max(pts)
+        item = card("pcr", "P/C 未平倉比", hist, {
+            "vol": vol.get(lastd),
+            "note": "臺指選擇權：賣權（Put）未平倉口數 ÷ 買權（Call）未平倉口數",
+        }, "%")
+        if item:
+            items.append(item)
+    prev_items = {i.get("key"): i for i in (_read_json(out / "macro.json") or {}).get("items", [])}
+    have = {i["key"] for i in items}
+    items += [prev_items[k] for k in DERIV_KEYS if k not in have and k in prev_items]     # 抓失敗：沿用上一份
+    return items
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 借券賣出餘額（證交所 TWT93U、櫃買 sbl「信用額度總量管制餘額表」，每日晚間約 20:30 / 22:30 更新）
+#   兩者欄位相同：[0]代號 [1]名稱 [2–7]融券（前日、賣出、買進、現券、今日餘額、限額）
+#   [8–13]借券賣出（前日餘額、當日賣出、當日還券、當日調整、當日餘額、次一營業日可借券賣出限額）
+#   → sbl.json（追蹤清單逐日累積）、sbl_all.json（全市場最新一天，併入 screen.json）
+# ──────────────────────────────────────────────────────────────────────
+TWSE_SBL = "https://www.twse.com.tw/rwd/zh/marginTrading/TWT93U"
+TPEX_SBL = "https://www.tpex.org.tw/www/zh-tw/margin/sbl"
+SBL_DAYS = 120               # 追蹤清單保留的交易日數
+SBL_BACKFILL = 8             # 每次執行、每個市場最多往前補幾個交易日（證交所 www 站有防爬）
+SBL_COLS = ["date", "bal", "prev", "sell", "ret", "short"]       # 張：借券賣出餘額、前日餘額、當日借券賣出、當日還券、融券餘額
+
+
+def parse_sbl(payload: Any) -> tuple[str | None, dict[str, list]]:
+    if not isinstance(payload, dict):
+        return None, {}
+    tb = payload["tables"][0] if payload.get("tables") else payload        # 櫃買包在 tables 裡
+    fields, data = tb.get("fields") or [], tb.get("data") or []
+    if not data:
+        return None, {}                                                     # 非交易日：沒有資料
+    if len(fields) < 13 or "餘額" not in str(fields[12]) or "賣出" not in str(fields[9]):
+        raise RuntimeError(f"欄位格式改變：{fields[:14]}")
+    lots = lambda v: int(round(to_num(v) / 1000)) if to_num(v) is not None else None  # noqa: E731 — 股 → 張
+    rows = {}
+    for r in data:
+        code = str(r[0]).strip()
+        if STOCK_CODE.fullmatch(code) and len(r) > 12:
+            rows[code] = [lots(r[12]), lots(r[8]), lots(r[9]), lots(r[10]), lots(r[6])]
+    return _ymd(payload.get("date") or tb.get("date")), rows
+
+
+def update_sbl(tx, report: SourceReport, out: Path, today: dt.date, codes: list[str]) -> dict[str, int]:
+    sp, ap = out / "sbl.json", out / "sbl_all.json"
+    prev, prev_all = _read_json(sp) or {}, _read_json(ap) or {}
+    rows: dict[str, dict[str, list]] = {c: {r[0]: r for r in v} for c, v in (prev.get("rows") or {}).items()}
+    seen: dict[str, set] = {m: set(v) for m, v in (prev.get("days") or {}).items()}
+    trade_days = [d for d in (read_bench(out).get("tw") or {}).get("dates") or [] if d <= today.isoformat()][-SBL_DAYS:]
+    want = set(codes)
+    all_out = {m: prev_all.get(m) for m in ("twse", "tpex") if prev_all.get(m)}
+
+    def get(market: str, day: str | None):
+        if market == "twse":
+            params = {"response": "json", **({"date": day.replace("-", "")} if day else {})}
+            return parse_sbl(tx.get_json(TWSE_SBL, params, kind="twse_www"))
+        params = {"response": "json", **({"date": day.replace("-", "/")} if day else {})}
+        return parse_sbl(tx.get_json(TPEX_SBL, params))
+
+    def keep(market: str, day: str, data: dict) -> None:
+        seen.setdefault(market, set()).add(day)
+        for c in want & data.keys():
+            rows.setdefault(c, {})[day] = [day, *data[c]]
+
+    for market in ("twse", "tpex"):
+        def run(m=market) -> tuple[str, int, int]:
+            day, data = get(m, None)
+            if not day:
+                raise RuntimeError("沒有資料（非交易日或尚未更新）")
+            keep(m, day, data)
+            all_out[m] = {"asOf": day, "cols": ["bal", "chg"],
+                          "rows": {c: [x[0], x[0] - x[1] if x[0] is not None and x[1] is not None else None] for c, x in data.items()}}
+            filled = 0
+            todo = [d for d in reversed(trade_days) if d < day and d not in seen.get(m, set())][:SBL_BACKFILL]
+            for d in todo:                                    # 往前補：第一次執行時累積歷史，之後每天只補缺的
+                try:
+                    got, more = get(m, d)
+                except Exception:  # noqa: BLE001 — 補歷史失敗不影響最新一天
+                    break
+                seen.setdefault(m, set()).add(d)
+                if got == d:
+                    keep(m, d, more)
+                    filled += 1
+            return day, len(data), filled
+        res = report.run(f"{market}_sbl", run, count=lambda r: r[1])
+        if res:
+            report.items[f"{market}_sbl"]["note"] = f"資料日期 {res[0]}" + (f"，補歷史 {res[2]} 天" if res[2] else "")
+    if not any(report.items.get(f"{m}_sbl", {}).get("ok") for m in ("twse", "tpex")):
+        return {p.name: p.stat().st_size for p in (sp, ap) if p.exists()}
+    out_rows = {c: [v[d] for d in sorted(v)][-SBL_DAYS:] for c, v in rows.items() if c in want}
+    asof = max((x.get("asOf") or "" for x in all_out.values()), default=None)
+    sizes = {sp.name: write_json(sp, {"asOf": asof, "cols": SBL_COLS, "rows": {c: v for c, v in out_rows.items() if v},
+                                      "days": {m: sorted(v)[-SBL_DAYS:] for m, v in seen.items()}})}
+    sizes[ap.name] = write_json(ap, all_out)
+    return sizes
+
+
+def add_sbl_cols(screen: dict, out: Path) -> dict:
+    """選股表加上借券賣出餘額（張）與日增減（重複執行時先拿掉舊欄位）"""
+    sa = _read_json(out / "sbl_all.json") or {}
+    extra = ["sbl", "sblChg"]
+    rows = {}
+    for m in ("twse", "tpex"):
+        rows.update((sa.get(m) or {}).get("rows") or {})
+    keep = [i for i, c in enumerate(screen["cols"]) if c not in extra]
+    code_i = screen["cols"].index("code")
+    screen["cols"] = [screen["cols"][i] for i in keep] + extra
+    for n, r in enumerate(screen["rows"]):
+        x = rows.get(r[code_i])
+        screen["rows"][n] = [r[i] for i in keep] + (list(x[:2]) if x else [None, None])
+    if sa:
+        screen["asOf"] = {**screen.get("asOf", {}), "sbl": max((v.get("asOf") or "" for v in sa.values() if isinstance(v, dict)), default=None)}
+    return screen
+
+
+# ──────────────────────────────────────────────────────────────────────
 # 全市場選股（screen.json）：只用證交所 / 櫃買開放資料，不花 FinMind 額度
 #   月營收：上市 t187ap05_L、上櫃 mopsfin_t187ap05_O（每月一次，全部公司一個檔案）
 #   損益表：上市 t187ap06_L_*、上櫃 mopsfin_t187ap06_O_*（最新一季累計；一般業 / 金融 / 證券 / 金控 / 保險 / 異業）
@@ -1814,8 +2109,9 @@ def main(argv: list[str] | None = None) -> int:
         macro = fetch_macro(tx, report, today, use_finmind=not quota_hit)
     except QuotaExceeded:
         quota_hit, macro = True, []
-    macro = sort_macro(macro + fetch_credit(tx, report, out))
+    macro = sort_macro(macro + fetch_credit(tx, report, out) + fetch_derivs(tx, report, out))
     sizes.update(write_macro(out, macro, fetch_bench(tx, report, read_bench(out), today, use_finmind=not quota_hit)))
+    sizes.update(update_alerts(tx, report, out, today))         # 注意 / 處置股
 
     # 追蹤清單盤中報價（Yahoo）：上市用 .TW、上櫃用 .TWO
     market_of = {r[0]: r[2] for r in stock_list}
@@ -1860,7 +2156,9 @@ def main(argv: list[str] | None = None) -> int:
                           {"twse": twse_date, "tpex": tpex_date, "inst": t86_date}, out / "screen.json")
     # 集保股權分散（千張大戶）：每週一次，免 FinMind；併入選股表
     sizes.update(update_holders(tx, report, out, today, watchlist))
-    sizes["screen.json"] = write_json(out / "screen.json", add_holder_cols(screen, out))
+    # 借券賣出餘額：追蹤清單逐日累積、全市場最新一天併入選股表
+    sizes.update(update_sbl(tx, report, out, today, watchlist))
+    sizes["screen.json"] = write_json(out / "screen.json", add_sbl_cols(add_holder_cols(screen, out), out))
 
     # 美股：股價每次更新，SEC 財報只在 full 時重抓
     sizes.update(us_data.fetch_us(tx, report, out, us_watchlist, mode == "full", write_json,
@@ -1916,8 +2214,8 @@ def run_macro_only(tx, out: Path, prev: dict, today: dt.date, token: str | None,
         macro = fetch_macro(tx, report, today, use_finmind=True)
     except QuotaExceeded:
         macro = [i for i in json.loads((out / "macro.json").read_text("utf-8"))["items"]
-                 if i.get("key") not in ("keep", "margin")]                    # 額度用完：保留舊總經
-    macro = sort_macro(macro + fetch_credit(tx, report, out))
+                 if i.get("key") not in ("keep", "margin", *DERIV_KEYS)]       # 額度用完：保留舊總經
+    macro = sort_macro(macro + fetch_credit(tx, report, out) + fetch_derivs(tx, report, out))
     missing = [c for c in watchlist if not (out / "stock" / f"{c}.json").exists()]
     fetched, quota = fetch_details(tx, missing, spec, today, out) if missing else (0, False)
     slow = 0
@@ -1934,8 +2232,13 @@ def run_macro_only(tx, out: Path, prev: dict, today: dt.date, token: str | None,
     held = (_read_json(out / "holders.json") or {}).get("asOf")
     sizes.update(update_holders(tx, report, out, today, watchlist))   # 週五晚上的夜間更新可能剛好抓到新一週
     new_holders = (_read_json(out / "holders.json") or {}).get("asOf") != held
-    if new_holders and (out / "screen.json").exists():
-        sizes["screen.json"] = write_json(out / "screen.json", add_holder_cols(_read_json(out / "screen.json"), out))
+    lent = (_read_json(out / "sbl.json") or {}).get("asOf")
+    sizes.update(update_sbl(tx, report, out, today, watchlist))         # 借券資料晚上 20:30 / 22:30 才更新
+    new_sbl = (_read_json(out / "sbl.json") or {}).get("asOf") != lent
+    sizes.update(update_alerts(tx, report, out, today))
+    if (new_holders or new_sbl) and (out / "screen.json").exists():
+        sizes["screen.json"] = write_json(out / "screen.json",
+                                          add_sbl_cols(add_holder_cols(_read_json(out / "screen.json"), out), out))
     files = stock_files(out, watchlist)
     sizes.update(files)
     # 美股收盤在台北凌晨（冬令 05:00、夏令 04:00）→ 夜間也更新美股股價

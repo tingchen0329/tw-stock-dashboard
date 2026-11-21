@@ -87,7 +87,8 @@ if (!tables) {
 
 const market = readLocal('market.json');
 const s = summarize({ info, mkt: marketRow(market, code), quote: readLocal('quotes.json')?.rows?.[code] ?? null, tables, asOf: market?.asOf ?? {},
-  bench: readLocal('macro.json')?.bench?.tw ?? null, actions: readLocal('actions.json')?.rows?.[code] ?? null });
+  bench: readLocal('macro.json')?.bench?.tw ?? null, actions: readLocal('actions.json')?.rows?.[code] ?? null,
+  holders: readLocal('holders.json'), sbl: readLocal('sbl.json'), alerts: readLocal('alerts.json'), today: todayTPE() });
 const meta = readLocal('meta.json') ?? { generatedAt: new Date().toISOString() };
 
 if (flag('--prompt')) {

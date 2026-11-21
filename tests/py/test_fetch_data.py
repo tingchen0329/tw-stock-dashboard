@@ -430,7 +430,7 @@ class EndToEnd(unittest.TestCase):
     def test_macro_has_night_futures_dow_nasdaq_in_order(self):
         items = json.loads((self.out / "macro.json").read_text())["items"]
         keys = [m["key"] for m in items]
-        self.assertEqual(keys, ["taiex", "otc", "txf_night", "keep", "margin", "dji", "ixic", "spx", "sox", "vix", "usdtwd", "dxy", "us10y", "gold", "fed"])
+        self.assertEqual(keys, ["taiex", "otc", "txf_night", "fut_oi", "pcr", "keep", "margin", "dji", "ixic", "spx", "sox", "vix", "usdtwd", "dxy", "us10y", "gold", "fed"])
         night = items[2]
         self.assertEqual((night["label"], night["value"], night["source"]), ("台指期夜盤", 27050.0, "期交所（臺指期116）"))
 
@@ -442,7 +442,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(row[0], "2026-10-16")
         self.assertTrue(0 < row[1] <= row[2] <= 100)                 # 千張以上 ≤ 400 張以上
         sc = json.loads((self.out / "screen.json").read_text())
-        self.assertEqual(sc["cols"][-4:], ["big1000", "big1000Chg", "holdersChgPct", "retail10Chg"])
+        self.assertEqual(sc["cols"][-6:], ["big1000", "big1000Chg", "holdersChgPct", "retail10Chg", "sbl", "sblChg"])
         x = dict(zip(sc["cols"], next(r for r in sc["rows"] if r[0] == "2330")))
         self.assertEqual(x["big1000"], row[1])
         self.assertIsNone(x["big1000Chg"])                            # 第一週沒有變化
@@ -1044,6 +1044,115 @@ class Credit(unittest.TestCase):
             kept = {i["key"]: i for i in fd.fetch_credit(self.Tx(fail=True), r, out)}
             self.assertEqual(kept["keep"]["value"], keep["value"])
             self.assertFalse(r.items["twse_keep_rate"]["ok"])
+
+
+class AlertsDerivsSbl(unittest.TestCase):
+    """v7.3：注意 / 處置（證交所、櫃買格式不同）、期交所未平倉與 P/C、借券賣出餘額"""
+
+    def test_disposal_formats_and_filters(self):
+        tw = fd.parse_disposal([
+            {"Code": "2454", "Name": "聯發科", "Date": "1151120", "DispositionPeriod": "115/11/23～115/11/27", "DispositionMeasures": "第一次處置",
+             "ReasonsOfDisposition": "連續三次", "Detail": "ａ以人工管制之撮合終端機執行撮合作業（約每五分鐘撮合一次）。"},
+            {"Code": "037648", "Name": "國巨統一5C購01", "DispositionPeriod": "115/11/23～115/11/27"}], "twse")   # 權證排除
+        self.assertEqual(len(tw), 1)
+        self.assertEqual((tw[0]["start"], tw[0]["end"], tw[0]["match"], tw[0]["level"]),
+                         ("2026-11-23", "2026-11-27", "約每五分鐘撮合一次", "第一次處置"))
+        tp = fd.parse_disposal([{"SecuritiesCompanyCode": "3287", "CompanyName": "廣寰科", "Date": "1151119",
+                                 "DispositionPeriod": "1151120~1151126", "DispositionReasons": "連續3個營業日",
+                                 "DisposalCondition": "處置措施：(1)以人工管制之撮合終端機執行撮合作業(約每2分鐘撮合一次)；"}], "tpex")
+        self.assertEqual((tp[0]["start"], tp[0]["end"], tp[0]["match"], tp[0]["level"]), ("2026-11-20", "2026-11-26", "約每2分鐘撮合一次", None))
+        # 證交所非交易日的空白列；櫃買的西元日期
+        self.assertEqual(fd.parse_notice([{"Code": "", "Date": "", "Number": "0"}], "twse"), [])
+        w = fd.parse_watch([{"Code": "1795", "Name": "美時", "RecentlyMetAttentionSecuritiesCriteria": "115年11月19日至115年11月20日連續二次"},
+                            {"SecuritiesCompanyCode": "1569", "CompanyName": "濱川", "Date": "20261120", "AccumulationSituation": "最近10個營業日已有5次"}], "x")
+        self.assertEqual([x["date"] for x in w], ["2026-11-20", "2026-11-20"])
+
+    def test_alerts_merge_keeps_30_days_and_failed_market(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            (out / "alerts.json").write_text(json.dumps({"asOf": "2026-11-13", "disposal": [
+                {"code": "1111", "market": "twse", "start": "2026-10-01", "end": "2026-10-07"},          # 超過 30 天 → 丟掉
+                {"code": "2222", "market": "tpex", "start": "2026-11-10", "end": "2026-11-16"}],
+                "notice": [{"code": "3333", "market": "twse", "date": "2026-11-12"}, {"code": "4444", "market": "twse", "date": "2026-10-01"}],
+                "watch": [{"code": "5555", "market": "twse", "text": "x"}, {"code": "6666", "market": "tpex", "text": "y"}]}))
+
+            class Tx:
+                def get_json(self, url, params=None, kind="public"):
+                    if "tpex" in url:
+                        raise RuntimeError("HTTP 503")
+                    if url.endswith("notice"):
+                        return [{"Code": "2330", "Name": "台積電", "Date": "1151120", "TradingInfoForAttention": "漲幅", "NumberOfAnnouncement": "1"}]
+                    return []
+            r = fd.SourceReport()
+            fd.update_alerts(Tx(), r, out, dt.date(2026, 11, 22))
+            a = json.loads((out / "alerts.json").read_text())
+            self.assertTrue(r.items["twse_alerts"]["ok"])                       # 沒有注意股也算成功
+            self.assertFalse(r.items["tpex_alerts"]["ok"])
+            self.assertEqual([x["code"] for x in a["disposal"]], ["2222"])        # 櫃買失敗：沿用上一份
+            self.assertEqual([x["code"] for x in a["notice"]], ["2330", "3333"])  # 新的 + 30 天內的舊紀錄
+            self.assertEqual([x["code"] for x in a["watch"]], ["6666"])           # 證交所成功：可能處置換成新的（空）
+
+    def test_futures_oi_and_pcr_cards(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+
+            class Tx:
+                def get_json(self, url, params=None, kind="public"):
+                    if url == fd.TAIFEX_PCR:
+                        return [{"Date": "20261120", "PutCallOIRatio%": "105.5", "PutCallVolumeRatio%": "78.96"},
+                                {"Date": "20261119", "PutCallOIRatio%": "101.0", "PutCallVolumeRatio%": "73.38"}]
+                    return [{"Date": "20261120", "ContractCode": "臺股期貨", "Item": "外資及陸資", "OpenInterest(Net)": "-97863"},
+                            {"Date": "20261120", "ContractCode": "臺股期貨", "Item": "投信", "OpenInterest(Net)": "87599"},
+                            {"Date": "20261120", "ContractCode": "小型臺指期貨", "Item": "外資及陸資", "OpenInterest(Net)": "-1"}]
+            (out / "macro_hist.json").write_text(json.dumps({"items": {"fut_oi": {"dates": ["2026-11-19"], "close": [-90000.0], "trust": [80000.0]}}}))
+            items = {i["key"]: i for i in fd.fetch_derivs(Tx(), fd.SourceReport(), out)}
+            oi = items["fut_oi"]
+            self.assertEqual((oi["value"], oi["change"], oi["changePct"], oi["unit"]), (-97863.0, -7863.0, None, "口"))
+            self.assertEqual(oi["hist"]["trust"], [80000.0, 87599.0])
+            self.assertEqual(oi["hist"]["dealer"], [None, None])
+            pcr = items["pcr"]
+            self.assertEqual((pcr["value"], pcr["change"], pcr["vol"], pcr["day"]), (105.5, 4.5, 78.96, "2026-11-20"))
+
+    def test_sbl_parse_accumulate_and_screen_cols(self):
+        fields = ["代號", "名稱", "前日餘額", "賣出", "買進", "現券", "今日餘額", "限額", "前日餘額", "當日賣出", "當日還券", "當日調整", "當日餘額", "可借券賣出限額", "備註"]
+        row = lambda c, bal, prev: [c, "x", "0", "0", "0", "0", "59,000", "0", f"{prev:,}", "39,000", "3,000", "0", f"{bal:,}", "1", ""]  # noqa: E731
+        day, data = fd.parse_sbl({"stat": "OK", "date": "20261120", "fields": fields, "data": [row("2330", 24155514, 24119514), row("037648", 1, 1)]})
+        self.assertEqual(day, "2026-11-20")
+        self.assertEqual(data, {"2330": [24156, 24120, 39, 3, 59]})          # 股 → 張；權證排除
+        self.assertEqual(fd.parse_sbl({"stat": "很抱歉，沒有符合條件的資料!"}), (None, {}))
+        with self.assertRaises(RuntimeError):
+            fd.parse_sbl({"date": "20261120", "fields": fields[:10], "data": [row("2330", 1, 1)]})
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            (out / "macro.json").write_text(json.dumps({"items": [], "bench": {"tw": {"dates": ["2026-11-18", "2026-11-19", "2026-11-20"]}}}))
+
+            class Tx:
+                def __init__(self):
+                    self.calls = []
+
+                def get_json(self, url, params=None, kind="public"):
+                    self.calls.append((url.rsplit("/", 1)[-1], (params or {}).get("date")))
+                    if "tpex" in url:                                            # 櫃買：tables 包一層、日期用 YYYY/MM/DD
+                        dd = (params or {}).get("date", "2026/11/20").replace("/", "")
+                        return {"stat": "ok", "date": dd, "tables": [{"fields": fields, "data": [row("5289", 5429776, 5540776)]}]}
+                    dd = (params or {}).get("date", "20261120")
+                    if dd == "20261118":
+                        return {"stat": "很抱歉，沒有符合條件的資料!"}
+                    return {"stat": "OK", "date": dd, "fields": fields, "data": [row("2330", 24155514 if dd == "20261120" else 24119514, 24000000)]}
+            tx = Tx()
+            fd.update_sbl(tx, fd.SourceReport(), out, dt.date(2026, 11, 22), ["2330", "5289"])
+            self.assertIn(("TWT93U", "20261119"), tx.calls)
+            self.assertIn(("sbl", "2026/11/19"), tx.calls)
+            s = json.loads((out / "sbl.json").read_text())
+            self.assertEqual([r[0] for r in s["rows"]["2330"]], ["2026-11-19", "2026-11-20"])   # 11/18 沒資料
+            self.assertEqual(s["rows"]["5289"][-1][1:3], [5430, 5541])
+            # 第二次執行：查過的日子不再補
+            tx2 = Tx()
+            fd.update_sbl(tx2, fd.SourceReport(), out, dt.date(2026, 11, 22), ["2330", "5289"])
+            self.assertEqual(sorted(c[1] or "" for c in tx2.calls), ["", ""])
+            sc = fd.add_sbl_cols(fd.add_sbl_cols({"cols": ["code"], "rows": [["2330"], ["9999"]]}, out), out)
+            self.assertEqual(sc["cols"], ["code", "sbl", "sblChg"])
+            self.assertEqual(sc["rows"], [["2330", 24156, 156], ["9999", None, None]])
 
 
 class MergeHist(unittest.TestCase):

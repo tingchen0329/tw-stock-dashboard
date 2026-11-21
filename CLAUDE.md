@@ -35,7 +35,10 @@ python tests/bench/run_bench.py                # 新舊版效能比較
 - `scripts/build_overview.mjs`：fetch 之後執行，用 analytics.js 產生 `overview.json`（網頁首頁總覽表）與 `backtest.json`。
 - 千張大戶：`fetch_data.update_holders()`（集保 OpenAPI 1-5，JSON 欄位中文且第一欄帶 BOM；距上次資料日 ≥ 7 天才抓）→ `holders.json`（追蹤清單逐週累積）、`holders_all.json`（全市場最新一週，`add_holder_cols()` 併入 screen.json）；`analytics.holderStats()`（p10 = 10 張以下散戶，`concentration()` 判斷籌碼集中 / 渙散；舊列只有 5 欄）。
 - 擔保維持率：`fetch_data.fetch_credit()`（證交所臺股儀表板 `BFIJ3U_TREND` / `MI_MARGN_TREND`，一次最多 60 天，與 macro_hist 合併）→ 總經 `keep`（`unit: '%'`，漲跌顯示「點」）、`margin`。`_merge_hist(old, new, extra)` 的 extra 是與日期對齊的附帶序列（keep 的 `calls`、margin 的 `ratio`），歷史視窗畫第二張圖；`lineChart` 的 `refs` 畫參考線（130% 追繳線）。
-- 選股回測：`assets/js/backtest.js`（`buildPanel()` 只用當時已公布的資料：月營收次月 10 日、季報 5/15 8/14 11/14 3/31；`runBacktest()` 網頁即時重算，`maxN` + `rank` 限制持有檔數；`randomBaseline()` 同檔數隨機選股 500 次，固定種子 `rng()`）。條件預設值在 `assets/js/presets.js`。
+- 注意 / 處置：`fetch_data.update_alerts()`（證交所 `announcement/punish|notice|notetrans`、櫃買 `tpex_disposal_information|tpex_trading_warning_information|tpex_trading_warning_note`；民國日期、全形「～」）→ `alerts.json`（注意保留 30 天、失敗的市場沿用上一份）；`analytics.alertFor()`，示範資料用 alerts.asOf 當今天。
+- 期交所：`fetch_data.fetch_derivs()`（OpenAPI 三大法人臺股期貨、`PutCallRatio`）→ 總經 `fut_oi`（`unit: '口'`，漲跌顯示差額）、`pcr`（`unit: '%'`）。
+- 借券賣出餘額：`fetch_data.update_sbl()`（證交所 `TWT93U` 走 twse_www 節流、櫃買 `www/zh-tw/margin/sbl?date=YYYY/MM/DD`；欄位 [8–13] 是借券賣出，[12] 當日餘額，股 → 張）→ `sbl.json`（追蹤清單，`days` 記錄查過的日子）、`sbl_all.json`（`add_sbl_cols()` 併入 screen.json）；`analytics.sblStats()`。
+- 選股回測：`assets/js/backtest.js`（`buildPanel()` 只用當時已公布的資料：月營收次月 10 日、季報 5/15 8/14 11/14 3/31；`runBacktest()` 網頁即時重算，`maxN` + `rank` 限制持有檔數；`randomBaseline()` 同檔數隨機選股 500 次，固定種子 `rng()`；`splitHalves()` 前後兩段、`deflatedSharpe()` 依 screen.js 記在 localStorage 的試過組數校正）。條件預設值在 `assets/js/presets.js`。
 - `config/watchlist.csv`：追蹤清單（Yahoo 自選股 CSV，順序即顯示順序）。約 70 檔是 FinMind 免費額度上限（`test_repo_watchlist_is_valid` 會檢查）。
 - 測試用清單是 `tests/fixtures/watchlist.json`（對應 fixtures 的合成資料），不是正式清單。
 

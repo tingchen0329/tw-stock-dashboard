@@ -10,7 +10,7 @@
 import * as F from './format.js';
 import { h } from './render.js';
 import { sortRows } from './overview.js';
-import { runBacktest } from './backtest.js';
+import { runBacktest, splitHalves, deflatedSharpe, excessReturns } from './backtest.js';
 import { lineChart, tableView } from './charts.js';
 
 import { TW_PRESETS, US_PRESETS } from './presets.js';
@@ -57,6 +57,8 @@ function columns(watch) {
     { key: 'trust', label: '投信', tip: '當日投信買賣超（張）', cell: (r) => (F.isNum(r.trust) ? h('span', { class: `num ${F.dir(r.trust)}` }, F.signed(r.trust, 0)) : plain(F.NA)) },
     { key: 'big1000', label: '千張大戶', tip: '集保股權分散表：持股 1,000 張以上股東的持股比例（每週五更新）', cell: (r) => plain(F.pct(r.big1000, 1)) },
     { key: 'big1000Chg', label: '大戶週增減', tip: '千張大戶持股比例與前一週相比（百分點）', cell: (r) => (F.isNum(r.big1000Chg) ? h('span', { class: `num ${F.dir(r.big1000Chg)}` }, F.signed(r.big1000Chg, 2)) : plain(F.NA)) },
+    { key: 'sbl', label: '借券餘額', tip: '借券賣出餘額（張）；證交所 / 櫃買信用額度總量管制餘額表，每日晚間更新', cell: (r) => plain(F.isNum(r.sbl) ? F.num(r.sbl, 0) : F.NA) },
+    { key: 'sblChg', label: '借券日增減', tip: '借券賣出餘額與前一交易日相比（張）', cell: (r) => (F.isNum(r.sblChg) ? h('span', { class: `num ${F.dir(r.sblChg)}` }, F.signed(r.sblChg, 0)) : plain(F.NA)) },
     { key: 'retail10Chg', label: '散戶週增減', tip: '10 張以下股東持股比例與前一週相比（百分點）；大戶增、散戶減 = 籌碼集中', cell: (r) => (F.isNum(r.retail10Chg) ? h('span', { class: `num ${F.dir(-r.retail10Chg)}` }, F.signed(r.retail10Chg, 2)) : plain(F.NA)) },
   ];
 }
@@ -67,6 +69,90 @@ const sp = (v, dp = 1) => (F.isNum(v) ? h('span', { class: `num ${F.dir(v)}` }, 
 
 export const BT_MAX = [[null, '全部'], [5, '前 5 檔'], [10, '前 10 檔'], [20, '前 20 檔']];
 
+/*
+ * 試過幾組門檻（Deflated Sharpe Ratio 用）：每組「條件 + 最多持有檔數」記一次它的超額報酬夏普值，
+ * 存在這台瀏覽器（localStorage），依「選股類型」分開。試越多組，回測挑出的最好結果越可能只是運氣。
+ */
+const TRIALS_KEY = 'tw-stock-bt-trials-v1';
+const MAX_TRIALS = 300;
+const readTrials = () => { try { return JSON.parse(localStorage.getItem(TRIALS_KEY)) || {}; } catch { return {}; } };
+const writeTrials = (o) => { try { localStorage.setItem(TRIALS_KEY, JSON.stringify(o)); } catch { /* 無痕模式：只在這次瀏覽有效 */ } };
+const memTrials = {};
+const trialsOf = (preset) => ({ ...(readTrials()[preset] || memTrials[preset] || {}) });
+function trialStats(t) {
+  const xs = Object.values(t).filter(Number.isFinite);
+  const m = xs.length ? xs.reduce((a, x) => a + x, 0) / xs.length : 0;
+  const v = xs.length > 1 ? xs.reduce((a, x) => a + (x - m) ** 2, 0) / (xs.length - 1) : null;
+  return { n: Math.max(1, xs.length), srVar: v };
+}
+/** 記下一組門檻（同一組只算一次；最多保留最近 MAX_TRIALS 組） */
+export function recordTrial(preset, sig, sr) {
+  const t = trialsOf(preset);
+  if (Number.isFinite(sr)) {
+    delete t[sig];
+    t[sig] = sr;
+    const keys = Object.keys(t);
+    for (const k of keys.slice(0, Math.max(0, keys.length - MAX_TRIALS))) delete t[k];
+  }
+  memTrials[preset] = t;
+  writeTrials({ ...readTrials(), [preset]: t });
+  return trialStats(t);
+}
+/** 目前這組也算進去（還沒存）：打字途中的數字（例如 2 → 25）不要每個都記成一組 */
+export function peekTrials(preset, sig, sr) {
+  const t = trialsOf(preset);
+  if (Number.isFinite(sr)) t[sig] = sr;
+  return trialStats(t);
+}
+let recordTimer = 0;
+const scheduleRecord = (preset, sig, sr) => {
+  clearTimeout(recordTimer);
+  recordTimer = setTimeout(() => recordTrial(preset, sig, sr), 1500);         // 停在這組門檻 1.5 秒才算試過
+};
+export function resetTrials(preset) {
+  clearTimeout(recordTimer);
+  const all = readTrials();
+  delete all[preset];
+  delete memTrials[preset];
+  writeTrials(all);
+}
+
+/** 過度擬合檢查：前半段 / 後半段、Deflated Sharpe Ratio */
+function overfitView(panel, r, presetKey, presetLabel, sig, onReset) {
+  const halves = splitHalves(panel, r);
+  const ex = excessReturns(r);
+  const base = deflatedSharpe(ex);
+  const tr = peekTrials(presetKey, sig, base?.sr);
+  scheduleRecord(presetKey, sig, base?.sr);
+  const ds = base ? deflatedSharpe(ex, { trials: tr.n, srVar: tr.srVar }) : null;
+  const pr = (x) => (F.isNum(x) ? F.pct(x, 0) : '—');
+  const ym = (d) => (d ? d.slice(0, 7).replace('-', '/') : '—');
+  const half = (label, x) => [label, `${ym(x.start)}～${ym(x.end)}（${x.months} 期）`,
+    F.pct(x.strat, 1, true), F.pct(x.univ, 1, true), F.isNum(x.excess) ? `${F.signed(x.excess, 1)} 點` : '—', pr(x.beat)];
+  const VERDICT = {
+    stable: ['up', '前後兩段都贏過清單等權：結果比較穩定（仍要注意樣本很少）'],
+    decay: ['down', '前半段有效、後半段失效：門檻可能是配合過去行情調出來的，或市場風格已經改變'],
+    late: ['', '前半段輸、後半段贏：效果不穩定，可能只是近期行情剛好適合'],
+    none: ['down', '前後兩段都沒有贏過清單等權'],
+  };
+  const v = halves?.verdict ? VERDICT[halves.verdict] : null;
+  const dsCls = !ds ? 'muted' : ds.dsr >= 95 ? 'up' : ds.dsr >= 80 ? '' : 'down';
+  return h('div', { class: 'bt-overfit' },
+    h('h4', {}, '過度擬合檢查'),
+    halves ? h('div', { class: 'ov-wrap' }, h('table', { class: 'ov bt-stats bt-halves' },
+      h('thead', {}, h('tr', {}, ['', '期間', '策略', '清單等權', '策略 − 清單等權', '贏過隨機'].map((c) => h('th', { scope: 'col' }, c)))),
+      h('tbody', {}, [half('前半段（樣本內）', halves.first), half('後半段（樣本外）', halves.second)].map(([label, ...cells]) =>
+        h('tr', {}, h('th', { scope: 'row' }, label), ...cells.map((c) => h('td', {}, c))))))) : h('p', { class: 'note' }, '期數太少（不到 8 期），無法分成前後兩段比較。'),
+    v ? h('p', { class: `bt-of-verdict ${v[0]}` }, v[1], '。') : null,
+    h('p', { class: 'bt-dsr' },
+      `「${presetLabel}」在這台瀏覽器試過 `, h('b', {}, `${tr.n} 組`), ' 不同門檻。',
+      ds ? ['考慮試過的組數後，選股超額報酬（策略 − 清單等權）真的為正的機率：', h('b', { class: dsCls }, F.pct(ds.dsr, 0)),
+        `（Deflated Sharpe Ratio；只看這一組為 ${F.pct(ds.psr, 0)}）。95% 以上才算有統計上的把握。`]
+        : '超額報酬資料不足（至少要 6 期），無法計算 Deflated Sharpe Ratio。',
+      onReset ? h('button', { type: 'button', class: 'btn small', on: { click: onReset } }, '重新計算組數') : null));
+}
+
+
 /**
  * 選股條件回測區塊：依目前門檻即時重算（backtest.json 由 build_overview.mjs 產生）
  * @param {object} [o]
@@ -75,7 +161,7 @@ export const BT_MAX = [[null, '全部'], [5, '前 5 檔'], [10, '前 10 檔'], [
  * @param {(n:number|null)=>void} [o.onMaxN]
  * @returns {{el:HTMLElement, chart:object|null}}
  */
-export function backtestView(panel, crit, presetLabel, onPick, { maxN = null, rank = null, onMaxN = null } = {}) {
+export function backtestView(panel, crit, presetLabel, onPick, { maxN = null, rank = null, onMaxN = null, presetKey = 'growth', onResetTrials = null } = {}) {
   const r = runBacktest(panel, crit, { maxN, rank });
   if (!r) return { el: h('p', { class: 'note' }, '回測資料不足（需要至少兩個月的大盤與個股資料）。'), chart: null };
   const { strat: S, univ: U, bench: B } = r.stats;
@@ -131,6 +217,7 @@ export function backtestView(panel, crit, presetLabel, onPick, { maxN = null, ra
     R ? h('p', { class: 'bt-verdict' },
       '策略的累積報酬贏過 ', h('b', { class: verdict[0] }, F.pct(R.beat, 0)), ` 的隨機選股組合（隨機 5%～95% 區間：${F.pct(R.p5, 1, true)}～${F.pct(R.p95, 1, true)}）：`,
       h('span', { class: verdict[0] }, verdict[1]), '。') : null,
+    overfitView(panel, r, presetKey, presetLabel, JSON.stringify([r.active.map((c) => [c.key, c.op, c.value]).sort(), r.maxN]), onResetTrials),
     legendEl, box,
     h('p', { class: 'note' }, `${F.when(lastP.date)} 換股後持有（${lastP.n} 檔）：`), h('div', { class: 'chips bt-picks' }, ...pickBtns),
     tableView(['換股日', '檔數', '策略', '清單等權', '大盤', '選中'], r.periods.map((p) => [
@@ -140,6 +227,7 @@ export function backtestView(panel, crit, presetLabel, onPick, { maxN = null, ra
       h('ul', {},
         h('li', {}, h('b', {}, '倖存者 / 選擇偏差：'), '股票池是「現在的」追蹤清單——多半是你近年看好、表現好的股票，也不含期間內下市或被你移除的股票，所以絕對報酬通常高估。比較「策略 vs 清單等權」與「策略 vs 隨機選股」的差距，比看絕對報酬有意義。'),
         h('li', {}, h('b', {}, '隨機選股基準：'), '每期從同一個股票池隨機挑出與策略相同的檔數、同樣扣成本，模擬 500 次（固定亂數種子，結果可重現）。策略贏過 90% 以上的隨機組合，才比較能說是條件本身有效，而不是運氣或股票池本來就好。'),
+        h('li', {}, h('b', {}, '過度擬合：'), '反覆調門檻直到回測好看，挑出來的最好結果很可能只是運氣。建議只用前半段調門檻、看後半段是否仍有效；Deflated Sharpe Ratio（Bailey & López de Prado）依試過的組數校正，組數記在這台瀏覽器。'),
         h('li', {}, h('b', {}, '年化波動、報酬 / 風險：'), '月報酬標準差 × √12；報酬 / 風險 = 年化報酬 ÷ 年化波動（未扣無風險利率，類似夏普值）。期間不滿一年時不計年化。'),
         h('li', {}, h('b', {}, '樣本少：'), `只有約 ${r.months} 個月，結果容易被單一波行情左右，不代表條件長期有效。`),
         h('li', {}, h('b', {}, '條件為近似：'), '月營收以次月 10 日、季報以法定期限（5/15、8/14、11/14、3/31）視為公布日；金融業期限可能不同。成交量用換股日前 20 日平均；ROE 以股價淨值比 ÷ 本益比推估。'),
@@ -201,6 +289,7 @@ export function renderScreen(host, screen, { watchlist = [], onPick, market = 't
     const rank = { ...P.sort, label: P.criteria.find((c) => c.key === P.sort.key)?.label };
     const { el, chart } = backtestView(btPanel, criteriaOf(state.preset), P.label, onPick, {
       maxN: state.btMax, rank, onMaxN: (n) => { state.btMax = n; persist(); drawBacktest(); },
+      presetKey: `${market}:${state.preset}`, onResetTrials: () => { resetTrials(`${market}:${state.preset}`); drawBacktest(); },
     });
     btChart = chart;
     btHost.replaceChildren(el);

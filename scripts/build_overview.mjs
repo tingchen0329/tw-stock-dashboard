@@ -33,6 +33,8 @@ const byCode = new Map((read('stocks.json')?.rows ?? []).map((r) => [r[0], r]));
 const screen = screenIndex(read('screen.json'));     // 交叉比對：官方月營收 / EPS 彙總表
 const actions = read('actions.json')?.rows ?? {};   // 減資 / 變更面額 / 分割（還原股價、異常值排除）
 const holders = read('holders.json');                 // 集保千張大戶（每週累積）
+const sbl = read('sbl.json');                         // 借券賣出餘額（每日累積）
+const alerts = read('alerts.json');                   // 注意 / 處置股
 const btStocks = [];                                  // 回測用：追蹤清單個股的歷史資料
 const checks = [];                                   // [{ code, name, market, items }]
 const adjCount = { tw: 0, us: 0 };
@@ -48,7 +50,7 @@ for (const code of meta.watchlist ?? []) {
   try {
     const s = summarize({
       info, mkt: marketRow(market, code), quote: quotes[code] ?? null, tables: detail?.tables ?? {}, asOf: market?.asOf ?? {}, bench: bench.tw,
-      actions: actions[code] ?? null, holders,
+      actions: actions[code] ?? null, holders, sbl, alerts, today: meta.today ?? null,
     });
     rows.push(overviewRow(s));
     if (detail?.tables) btStocks.push({ code, name: info.name, industry: info.industry, tables: detail.tables, actions: actions[code] ?? null });

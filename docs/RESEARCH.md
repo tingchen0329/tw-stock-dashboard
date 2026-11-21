@@ -53,6 +53,14 @@
 | 擔保維持率 | 130% 追繳線、距追繳線點數、低於 130% 戶數走勢（斷頭賣壓的領先指標） |
 | 回測隨機基準 | 蒙地卡羅隨機選股（同檔數 500 次）；最多持有 N 檔；年化波動、報酬 / 風險 |
 
+## v7.3.0 新增
+| 功能 | 資料源 | 說明 |
+|---|---|---|
+| 注意 / 處置股 | 證交所 OpenAPI `announcement/punish`、`notice`、`notetrans`；櫃買 `tpex_disposal_information`、`tpex_trading_warning_information`、`tpex_trading_warning_note` | 頁首橫幅（追蹤清單）、個股頁提醒、總覽表標記；注意紀錄保留 30 天 |
+| 外資台指期淨未平倉、P/C 比 | 期交所 OpenAPI `MarketDataOfMajorInstitutionalTradersDetailsOfFuturesContractsBytheDate`、`PutCallRatio` | 總經列兩張卡片，歷史自己累積（P/C 第一次就有約 20 個交易日） |
+| 借券賣出餘額 | 證交所 `rwd/zh/marginTrading/TWT93U`、櫃買 `www/zh-tw/margin/sbl`（可帶日期） | 追蹤清單逐日累積（每次最多往前補 8 天）、全市場最新一天併入選股表 |
+| 回測過度擬合檢查 | 不需新資料 | 前半段 / 後半段（樣本內 / 樣本外）、Deflated Sharpe Ratio（依這台瀏覽器試過的門檻組數校正） |
+
 ## 後續可做（依價值排序）
 | 功能 | 參考網站 | 免費資料源 | 難度 / 注意 |
 |---|---|---|---|
@@ -60,11 +68,7 @@
 | 財報公布日 / 法說會日期 | Yahoo Finance、MOPS | 證交所 OpenAPI（法說會）；美股無免費官方日曆 | 中 |
 | 分析師目標價、EPS 預估 | Yahoo Finance、Finviz | 無可靠免費 API | 不做（只放外部連結） |
 | 手機安裝（PWA） | — | manifest + service worker，離線可看上一份資料 | 低 |
-| 期貨 / 選擇權法人未平倉、Put/Call Ratio | 期交所、玩股網 | 期交所 OpenAPI（openapi.taifex.com.tw，每日、免費） | 低：加進總經列（外資台指期淨未平倉） |
-| 借券賣出餘額 | 玩股網、Goodinfo | 證交所 TWT93U、櫃買 OpenAPI（每日、免費） | 低：籌碼區與選股欄位 |
-| 大額交易人未沖銷部位 | 期交所 | 期交所（每日） | 中：前十大非特定法人 = 前十大 − 特定法人 |
-| 注意股 / 處置股提醒 | 券商 App | 證交所 OpenAPI（公布注意 / 處置有價證券）、櫃買公告 | 低：追蹤清單有處置時在頁首橫幅提示（處置期間全額交割、分盤撮合） |
-| 回測的樣本外驗證 | QuantConnect、學術文獻 | 不需新資料 | 中：前 12 期挑門檻、後 12 期驗證（walk-forward）；或依試過的門檻組數校正（Deflated Sharpe Ratio） |
+| 大額交易人未沖銷部位 | 期交所 | 期交所 OpenAPI `OpenInterestOfLargeTradersFutures`（每日） | 低：前十大非特定法人 = 前十大 − 特定法人（台指期併計小台、微台） |
 | 千張大戶歷史回補 | 神秘金字塔 | 集保網站逐週查詢（要模擬表單，約 52 週 × 70 檔次請求） | 中：只做一次，之後每週累積 |
 
 ## 參考

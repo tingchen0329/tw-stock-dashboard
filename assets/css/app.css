@@ -323,7 +323,8 @@ dialog footer { display: flex; gap: 8px; justify-content: flex-end; padding: 0 1
 .mh-price .d { font-size: 15px; font-variant-numeric: tabular-nums; }
 .mh-stats { margin-top: 10px; }
 .mh-sub { margin: 14px 0 2px; font-size: 14px; font-weight: 600; }
-.chart text.ref-label { fill: var(--warn); font-size: 11px; font-weight: 600; }
+.chart text.ref-label { font-size: 11px; font-weight: 600; }
+.chart text.ref-label.warn { fill: var(--warn); }
 
 /* 同業比較 */
 .scroll-x { overflow-x: auto; }
@@ -410,3 +411,17 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; color:
 .bt-caveats { margin-top: 10px; font-size: 13px; color: var(--ink-2); }
 .bt-caveats summary { cursor: pointer; font-weight: 600; color: var(--ink); }
 .bt-caveats li { margin: 4px 0; }
+
+/* ── 注意 / 處置、借券（v7.3）──────────────────────────── */
+.alert-box { margin: 10px 0; padding: 10px 14px; border-radius: var(--radius); border: 1px solid var(--hair); border-left: 4px solid var(--warn); background: var(--surface); font-size: 14px; }
+.alert-box.disposal { border-left-color: var(--bad); }
+.alert-box p { margin: 2px 0; }
+.alert-box details { margin: 4px 0; font-size: 13px; color: var(--ink-2); }
+.alert-box .muted { font-size: 12px; }
+.tag.al-disposal { color: var(--bad); border-color: var(--bad); }
+.tag.al-watch, .tag.al-notice { color: var(--warn); border-color: var(--warn); }
+.banner.tw-alert a { color: inherit; font-weight: 600; }
+.bt-overfit { margin: 14px 0 6px; padding-top: 10px; border-top: 1px solid var(--hair); }
+.bt-overfit h4 { margin: 0 0 6px; font-size: 14px; }
+.bt-dsr { font-size: 14px; margin: 6px 0; }
+.bt-dsr .btn { margin-left: 8px; }

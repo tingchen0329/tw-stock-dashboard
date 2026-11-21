@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  quarterDeadline, revenueDeadline, rebalanceDates, idxLE, factorsAt, prepStock, buildPanel, runBacktest, randomBaseline, rng, COST, BT_COLS,
+  quarterDeadline, revenueDeadline, rebalanceDates, idxLE, factorsAt, prepStock, buildPanel, runBacktest, randomBaseline, rng, COST, BT_COLS, normCdf, normInv, deflatedSharpe, splitHalves, excessReturns,
 } from '../../assets/js/backtest.js';
 import { TW_PRESETS } from '../../assets/js/presets.js';
 
@@ -189,4 +189,40 @@ test('最多持有 N 檔：依排序欄位取前 N，缺值排最後；年化波
   const top = runBacktest(p, [{ key: 'revYoY', op: '>=', value: 20 }], { runs: 0 });
   assert.ok(top.stats.strat.vol < 0.2, `vol=${top.stats.strat.vol}`);       // 只有第一期手續費造成的微小差異
   assert.ok(runBacktest(p, [], { runs: 0 }).stats.strat.vol > 0);
+});
+
+test('常態分配 CDF / 反函數：對照表值', () => {
+  assert.ok(Math.abs(normCdf(1.959964) - 0.975) < 1e-6);
+  assert.ok(Math.abs(normCdf(0) - 0.5) < 1e-9);
+  for (const p of [0.001, 0.01, 0.2, 0.5, 0.8, 0.975, 0.999]) assert.ok(Math.abs(normCdf(normInv(p)) - p) < 1e-6, String(p));
+  assert.ok(Math.abs(normInv(0.95) - 1.644854) < 1e-5);
+});
+
+test('Deflated Sharpe：試越多組門檻，機率越低；變異數未知或只試一組時等於 PSR', () => {
+  const r = [0.02, 0.01, -0.01, 0.03, 0, 0.02, 0.01, 0.015, -0.005, 0.02, 0.01, 0.02];
+  const one = deflatedSharpe(r);
+  assert.ok(one.psr > 95 && one.dsr === one.psr && one.sr0 === 0);
+  const many = deflatedSharpe(r, { trials: 50, srVar: 0.09 });
+  const few = deflatedSharpe(r, { trials: 5, srVar: 0.09 });
+  assert.ok(many.dsr < few.dsr && few.dsr < one.psr, `${many.dsr} ${few.dsr} ${one.psr}`);
+  assert.equal(deflatedSharpe(r, { trials: 50, srVar: null }).dsr, one.psr);
+  assert.equal(deflatedSharpe([0.01, 0.02, 0.01]), null);                    // 期數太少
+  assert.equal(deflatedSharpe([0.01, 0.01, 0.01, 0.01, 0.01, 0.01]), null);   // 沒有波動
+  // 平均為 0 → PSR 約 50%
+  assert.ok(Math.abs(deflatedSharpe([0.01, -0.01, 0.02, -0.02, 0.01, -0.01, 0.03, -0.03]).psr - 50) < 1);
+});
+
+test('前後兩段：前半段有效、後半段失效要標示出來', () => {
+  const p = bigPanel(30, 12);
+  // 前 6 期 A 組每月 +5%、後 6 期每月 −5%
+  p.stocks.slice(0, 3).forEach((s) => s.rows.forEach((row, i) => { row[8] = i < 6 ? 0.05 : -0.05; }));
+  const r = runBacktest(p, [{ key: 'revYoY', op: '>=', value: 20 }], { runs: 0 });
+  const hv = splitHalves(p, r, { runs: 200 });
+  assert.equal(hv.first.months, 6);
+  assert.equal(hv.second.months, 6);
+  assert.ok(hv.first.excess > 0 && hv.second.excess < 0);
+  assert.equal(hv.verdict, 'decay');
+  assert.ok(hv.first.beat > 90 && hv.second.beat < 10, `${hv.first.beat} ${hv.second.beat}`);
+  assert.equal(excessReturns(r).length, 12);
+  assert.equal(splitHalves(p, { periods: r.periods.slice(0, 7) }), null);      // 不到 8 期
 });

@@ -7,6 +7,7 @@
  */
 import * as F from './format.js';
 import { h } from './render.js';
+import { ALERT_LABEL } from './analytics.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const svg = (tag, attrs = {}, ...kids) => {
@@ -47,7 +48,11 @@ const TREND = { 1: ['多頭', 'up'], '-1': ['空頭', 'down'], 0: ['糾結', 'fl
 
 /** 欄位定義：key 用來排序（sort: false 不可排序），tip 是滑鼠提示，cell 產生內容 */
 export const COLUMNS = [
-  { key: 'code', label: '股票', cell: (r) => [h('b', {}, r.code), h('span', { class: 'name' }, r.name)] },
+  {
+    key: 'code', label: '股票',
+    cell: (r) => [h('b', {}, r.code), h('span', { class: 'name' }, r.name),
+      r.alert && r.alert !== 'past' ? h('span', { class: `tag al-${r.alert}`, title: '證交所 / 櫃買公告：注意或處置（詳見個股頁）' }, ALERT_LABEL[r.alert]) : null],
+  },
   {
     key: 'chgPct', label: '股價', tip: '盤中為 Yahoo 報價（約延遲 20 分鐘），收盤後為證交所 / 櫃買收盤價',
     cell: (r) => [h('span', { class: 'px' }, F.price(r.price)),
@@ -63,6 +68,13 @@ export const COLUMNS = [
   { key: 'roe', label: 'ROE', tip: '近四季股東權益報酬率', cell: (r) => plain(F.pct(r.roe, 1)) },
   { key: 'f20', label: '外資 20日', tip: '近 20 日外資買賣超（張）', cell: (r) => lots(r.f20) },
   { key: 't20', label: '投信 20日', tip: '近 20 日投信買賣超（張）', cell: (r) => lots(r.t20) },
+  {
+    key: 'sblChg5', label: '借券 5日', tip: '借券賣出餘額近 5 個交易日增減（張）；括號內為目前餘額。證交所 / 櫃買每日晚間更新',
+    cell: (r) => (F.isNum(r.sblChg5)
+      ? [h('span', { class: `num ${F.dir(r.sblChg5)}` }, F.signed(r.sblChg5, 0)), h('span', { class: 'sub muted' }, F.num(r.sbl, 0))]
+      : F.isNum(r.sbl) ? [h('span', { class: 'muted', title: '累積滿 6 個交易日後顯示 5 日變化' }, '—'), h('span', { class: 'sub muted' }, F.num(r.sbl, 0))]
+        : h('span', { class: 'muted' }, 'N/A')),
+  },
   {
     key: 'big1000Chg', label: '大戶週增減', tip: '集保千張大戶持股比例與前一週相比（百分點）；括號內為目前持股比例。每週五盤後更新',
     cell: (r) => (F.isNum(r.big1000Chg)

@@ -41,3 +41,18 @@ test('美股選股：成長型 / 殖利率型預設條件', async () => {
   assert.deepEqual(applyScreen(us, US_PRESETS.yield.criteria).map((r) => r.code), ['KO']);
   for (const p of Object.values(US_PRESETS)) for (const c of p.criteria) assert.ok(['>=', '<=', '>', '<'].includes(c.op), c.key);
 });
+
+test('回測試過的組數：同一組只算一次、目前這組先算進去、可重設', async () => {
+  const { recordTrial, peekTrials, resetTrials } = await import('../../assets/js/screen.js');
+  resetTrials('t:x');
+  assert.deepEqual(peekTrials('t:x', 'a', 0.1), { n: 1, srVar: null });
+  recordTrial('t:x', 'a', 0.1);
+  recordTrial('t:x', 'a', 0.1);
+  const st = recordTrial('t:x', 'b', 0.3);
+  assert.equal(st.n, 2);
+  assert.ok(Math.abs(st.srVar - 0.02) < 1e-12);
+  assert.equal(peekTrials('t:x', 'c', 0.2).n, 3);
+  assert.equal(peekTrials('t:x', 'a', 0.1).n, 2);
+  resetTrials('t:x');
+  assert.equal(peekTrials('t:x', 'z', NaN).n, 1);
+});
