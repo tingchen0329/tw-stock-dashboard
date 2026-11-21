@@ -67,10 +67,19 @@ export function priceSeries(table) {
  * 除權息事件 → 還原因子（還原股價用；FinMind 的還原股價只限付費會員，所以自己算）
  *   台股：FinMind 除權息結果 → 因子 = 除權息參考價 ÷ 除權息前收盤（含股票股利）
  *   美股：Yahoo 配息 [[日期, 每股股利]] → 因子 = 1 − 股利 ÷ 除息前一日收盤（股票分割 Yahoo 已調整）
- * @returns {{date:string, factor:number, note:string}[]} 依日期排序；不合理的事件（因子 ≤ 0 或 ≥ 1）略過
+ *   台股減資 / 變更面額 / 分割（actions.json）：[[恢復買賣日, 參考價, 停止前收盤|null, 類別]]
+ *     → 因子 = 參考價 ÷ 停止買賣前收盤（沒有就用日線上一個交易日收盤）；減資的因子會 > 1
+ * @returns {{date:string, factor:number, note:string}[]} 依日期排序；不合理的事件略過
  */
-export function adjustEvents(ps, { divResult = null, dividends = null } = {}) {
+export function adjustEvents(ps, { divResult = null, dividends = null, actions = null } = {}) {
   const ev = [];
+  for (const [d, after, before0, kind] of actions || []) {
+    const i = ps.dates.findIndex((x) => x >= d);
+    const before = isNum(before0) && before0 > 0 ? before0 : (i > 0 ? ps.close[i - 1] : null);
+    const f = isNum(after) && isNum(before) && before > 0 ? after / before : null;
+    // 0.02–50 倍以外多半是欄位錯誤；與 1 相差不到 0.1% 視為沒有調整
+    if (f && f > 0.02 && f < 50 && Math.abs(f - 1) > 0.001) ev.push({ date: d, factor: f, note: `${kind || '股本變動'}（參考價 ${fmt2(after)}）`, kind: 'action' });
+  }
   for (const r of rows(divResult)) {
     const b = toNum(r.before_price);
     const a = toNum(r.after_price);
@@ -735,18 +744,19 @@ export function marketRow(market, code) {
  */
 const SOURCE = { twse: '證交所', tpex: '櫃買中心', us: 'Yahoo + SEC 推算' };
 
-export function summarize({ info, mkt, quote, tables = {}, asOf = {}, bench = null, dividends = null }) {
+export function summarize({ info, mkt, quote, tables = {}, asOf = {}, bench = null, dividends = null, actions = null }) {
   const ps = priceSeries(tables.price);
   const tech = technicals(ps);
   // 還原股價：台股用除權息結果（分批更新，還沒抓到前 available = false）、美股用 Yahoo 配息
   const us = info.market === 'us';
-  const events = adjustEvents(ps, { divResult: tables.divResult, dividends: us ? dividends : null });
+  const events = adjustEvents(ps, { divResult: tables.divResult, dividends: us ? dividends : null, actions: us ? null : actions });
   const adj = adjustedSeries(ps, events);
   const adjusted = {
     available: us ? Array.isArray(dividends) : !!tables.divResult,
     applied: adj.applied,
     events: events.filter((e) => e.date > (ps.dates[0] ?? '') && e.date <= (last(ps.dates) ?? '')),
-    source: us ? 'Yahoo 配息紀錄' : 'FinMind 除權息結果',
+    source: us ? 'Yahoo 配息紀錄' : 'FinMind 除權息結果、減資 / 面額變更 / 分割',
+    actions: events.filter((e) => e.kind === 'action'),
   };
   if (tech) {
     tech.returnsRaw = tech.returns;

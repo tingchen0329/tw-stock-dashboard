@@ -41,15 +41,16 @@ export async function loadBootstrap() {
   }
   const opt = { ttl: 10 * 60 * 1000, persist: true, timeout: 15000 };
   const settle = (p) => p.then((x) => x, () => null);
-  const [stocks, market, macro, quotes, spec, overview] = await Promise.all([
+  const [stocks, market, macro, quotes, spec, overview, actions] = await Promise.all([
     settle(fetchJSON(v('stocks.json'), opt)),
     settle(fetchJSON(v('market.json'), opt)),
     settle(fetchJSON(v('macro.json', macroVersion), opt)),
     settle(fetchJSON(v('quotes.json'), opt)),
     settle(fetchJSON(v('datasets.json'), { ...opt, ttl: DAY })),
     settle(fetchJSON(v('overview.json'), opt)),
+    settle(fetchJSON(v('actions.json'), opt)),          // 減資 / 變更面額 / 分割（還原股價用，約數 KB）
   ]);
-  return { meta, stocks, market, macro, quotes, spec: stripComments(spec), overview };
+  return { meta, stocks, market, macro, quotes, spec: stripComments(spec), overview, actions };
 }
 
 const OPT = { ttl: 10 * 60 * 1000, persist: true, timeout: 20000 };

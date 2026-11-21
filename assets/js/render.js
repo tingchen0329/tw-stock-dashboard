@@ -507,7 +507,7 @@ export function renderStock(host, s, state) {
     signedSpan(`${x.excess >= 0 ? '贏' : '輸'} ${F.num(Math.abs(x.excess), 1)} 點`, x.excess)] : 'N/A'];
   const betaText = (b) => (!F.isNum(b) ? 'N/A' : `${F.num(b, 2)}（${b > 1.2 ? '大盤漲跌時，漲跌幅通常更大' : b < 0.8 ? '與大盤連動較低' : '與大盤大致同步'}）`);
   const adjNote = !s.adjusted?.available ? '個股股利資料尚未載入，報酬暫未含息'
-    : `個股用還原股價（${s.adjusted.source}，期間內 ${s.adjusted.applied} 次除權息）`;
+    : `個股用還原股價（期間內調整 ${s.adjusted.applied} 次${s.adjusted.actions?.length ? `，含 ${s.adjusted.actions.length} 次減資 / 面額變更 / 分割` : ""}）`;
   const benchNote = rk?.kind === 'tr' ? '大盤用報酬指數（股利再投入）' : '大盤暫用價格指數（不含息，個股會略占優勢）';
   const riskPanel = panel('相對大盤與風險', rk ? `比較對象：${rk.label}，至 ${rk.date}；${adjNote}，${benchNote}` : null, rk ? kv([
     relRow('近 1 個月', rk.periods.m1),

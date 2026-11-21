@@ -33,8 +33,9 @@ export const TW_LIMIT_PCT = 10.5;
  * @param {object} p.tables        個股資料表（price、revenue、income、divResult…）
  * @param {object|null} p.screen   screen.json 這一檔的列（物件）
  * @param {string|null} p.today    台北日期（判斷資料是否停更），預設用股價最後一天
+ * @param {Array|null} p.actions   actions.json 這一檔的減資 / 變更面額 / 分割事件（恢復買賣日不算異常）
  */
-export function checkStock({ info, mkt = null, asOf = {}, quote = null, tables = {}, screen = null, today = null }) {
+export function checkStock({ info, mkt = null, asOf = {}, quote = null, tables = {}, screen = null, today = null, actions = null }) {
   const out = [];
   const add = (level, key, label, msg) => out.push({ level, key, label, msg });
   const us = info.market === 'us';
@@ -75,7 +76,10 @@ export function checkStock({ info, mkt = null, asOf = {}, quote = null, tables =
     else if (!item) add('info', 'revenue', '月營收', `FinMind 尚無 ${screen.revYm} 營收（最新 ${rv.latest.period}）`);
     else if (!isNum(item.yoy)) add('info', 'revenue', '月營收', `${screen.revYm} 缺去年同月營收，無法算年增率`);
     else if (Math.abs(item.yoy - screen.revYoY) > 0.5) {
-      add('warn', 'revenue', '月營收', `${screen.revYm} 年增率：官方 ${f2(screen.revYoY)}% ≠ FinMind ${f2(item.yoy)}%`);
+      // 金融業（金控、銀行、保險）月營收的認列口徑兩個來源不同，差異屬正常 → 只提示
+      const fin = /金融|保險|銀行|證券/.test(String(screen.industry || info.industry || ''));
+      add(fin ? 'info' : 'warn', 'revenue', '月營收', `${screen.revYm} 年增率：官方 ${f2(screen.revYoY)}% ≠ FinMind ${f2(item.yoy)}%`
+        + (fin ? '（金融業營收口徑不同，僅供參考）' : ''));
     } else add('ok', 'revenue', '月營收', `${screen.revYm} 年增率與官方一致（${f2(screen.revYoY)}%）`);
     const latestYoY = rv?.latest?.yoy;
     if (isNum(latestYoY) && (latestYoY > 1000 || latestYoY < -95)) {
@@ -102,7 +106,7 @@ export function checkStock({ info, mkt = null, asOf = {}, quote = null, tables =
   }
 
   /* ── 2a. 單日漲跌超過限制（台股） ── */
-  const exDates = new Set(rowsOf(tables.divResult).map((r) => r.date));
+  const exDates = new Set([...rowsOf(tables.divResult).map((r) => r.date), ...(actions || []).map((a) => a[0])]);
   const limit = us ? 40 : TW_LIMIT_PCT;
   const jumps = [];
   for (let i = 1; i < n; i++) {

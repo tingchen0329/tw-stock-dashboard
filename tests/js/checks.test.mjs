@@ -106,3 +106,22 @@ test('資料驗證：收盤價、營收、EPS 交叉比對與異常值', () => {
   const noDiv = checkStock({ ...base, mkt: { close: 100 }, tables: { ...base.tables, divResult: undefined } });
   assert.equal(noDiv.find((x) => x.key === 'jump').level, 'info');
 });
+
+test('減資 / 面額變更：因子 = 參考價 ÷ 停止前收盤；恢復買賣日的跳動不算異常', () => {
+  const dates = Array.from({ length: 30 }, (_, i) => day(i));
+  const close = dates.map((_, i) => (i < 20 ? 400 : 100));            // 面額 10 元 → 2.5 元（1 拆 4）
+  const ps = { dates, open: close, high: close, low: close, close, volume: close.map(() => 1) };
+  const ev = adjustEvents(ps, { actions: [[dates[20], 100, 400, '變更面額'], [dates[25], 100, null, '減資']] });
+  assert.equal(ev.length, 1);                                         // 第二筆參考價 = 前收（因子 1）→ 略過
+  assert.equal(ev[0].factor, 0.25);
+  const adj = adjustedSeries(ps, ev);
+  assert.ok(adj.close.every((c) => c === 100));                      // 還原後沒有 −75% 的假跌幅
+  const price = { cols: ['date', 'open', 'max', 'min', 'close', 'Trading_Volume'], rows: dates.map((d, i) => [d, close[i], close[i], close[i], close[i], 1]) };
+  const base = { info: { code: '2327', market: 'twse' }, tables: { price, divResult: { cols: [], rows: [] } } };
+  assert.equal(checkStock(base).find((x) => x.key === 'jump').level, 'warn');
+  assert.equal(checkStock({ ...base, actions: [[dates[20], 100, 400, '變更面額']] }).find((x) => x.key === 'jump').level, 'ok');
+  // 金融業營收口徑不同：差異只提示
+  const revenue = { cols: ['revenue_year', 'revenue_month', 'revenue'], rows: [[2025, 9, 100], [2026, 9, 120]] };
+  const fin = checkStock({ ...base, tables: { ...base.tables, revenue }, screen: { revYm: '2026-09', revYoY: 5, industry: '金融保險業' } });
+  assert.equal(fin.find((x) => x.key === 'revenue').level, 'info');
+});

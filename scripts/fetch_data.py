@@ -1080,6 +1080,43 @@ def write_macro(out: Path, items: list[dict], bench: dict) -> dict[str, int]:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# 減資、變更面額、股票分割（還原股價要用；除權息以外會讓股價「跳一階」的事件）
+# 三個 FinMind 免費資料集都可一次查全市場（不帶 data_id）→ 完整更新時共 3 次請求
+CORP_ACTIONS = [
+    # (資料集, 類別, 恢復買賣參考價欄位, 停止買賣前收盤欄位（沒有就用股價日線推算）)
+    ("TaiwanStockCapitalReductionReferencePrice", "減資", "PostReductionReferencePrice", "ClosingPriceonLastTradingDay"),
+    ("TaiwanStockParValueChange", "變更面額", "after_ref_close", "before_close"),
+    ("TaiwanStockSplitPrice", "分割", "after_price", "before_price"),
+]
+CORP_DAYS = 3 * 366 + 30
+
+
+def fetch_corp_actions(tx, report: SourceReport, today: dt.date, prev: dict | None) -> dict:
+    """
+    → {"asOf", "rows": {代號: [[恢復買賣日, 參考價, 停止前收盤 | None, 類別], ...]}}
+    單一資料集失敗沿用上一份同類別的事件（不讓還原股價突然少掉一段）。
+    """
+    start = (today - dt.timedelta(days=CORP_DAYS)).isoformat()
+    old = (prev or {}).get("rows") or {}
+    rows: dict[str, list] = {}
+    for dataset, kind, after_col, before_col in CORP_ACTIONS:
+        got = report.run(f"finmind_{kind}", lambda d=dataset: finmind(tx, d, None, start), count=lambda r: len(r or []))
+        if got == []:                       # 三年內沒有這類事件是正常的，不算來源失敗
+            report.items[f"finmind_{kind}"].update(ok=True, note="期間內沒有事件")
+        if got is None:
+            for code, evs in old.items():
+                rows.setdefault(code, []).extend(e for e in evs if e[3] == kind)
+            continue
+        for r in got:
+            code, date, after = str(r.get("stock_id") or "").strip(), r.get("date"), to_num(r.get(after_col))
+            if code and date and after and after > 0:
+                rows.setdefault(code, []).append([date, after, to_num(r.get(before_col)), kind])
+    for evs in rows.values():
+        evs.sort(key=lambda e: e[0])
+    return {"asOf": today.isoformat(), "rows": rows}
+
+
+# ──────────────────────────────────────────────────────────────────────
 # 全市場選股（screen.json）：只用證交所 / 櫃買開放資料，不花 FinMind 額度
 #   月營收：上市 t187ap05_L、上櫃 mopsfin_t187ap05_O（每月一次，全部公司一個檔案）
 #   損益表：上市 t187ap06_L_*、上櫃 mopsfin_t187ap06_O_*（最新一季累計；一般業 / 金融 / 證券 / 金控 / 保險 / 異業）
@@ -1466,6 +1503,20 @@ def main(argv: list[str] | None = None) -> int:
             f"本次更新 {fetched} 檔，沿用上一份 {detail_ok - fetched} 檔" if mode != "full" or detail_ok > fetched else "",
             f"缺 {len(watchlist) - detail_ok} 檔" if detail_ok < len(watchlist) else "",
             "FinMind 額度用完 (HTTP 402)，下次執行會補抓" if quota_hit else "") if x)}
+
+    # 減資 / 變更面額 / 分割：完整更新時重抓（3 次 FinMind 請求），其他時候沿用上一份
+    act_path = out / "actions.json"
+    if not quota_hit and (mode == "full" or not act_path.exists()):
+        try:
+            prev_act = json.loads(act_path.read_text("utf-8")) if act_path.exists() else None
+        except (OSError, ValueError):
+            prev_act = None
+        try:
+            sizes["actions.json"] = write_json(act_path, fetch_corp_actions(tx, report, today, prev_act))
+        except QuotaExceeded:
+            quota_hit = True
+    if act_path.exists():
+        sizes.setdefault("actions.json", act_path.stat().st_size)
 
     # 全市場選股資料（證交所 / 櫃買開放資料，免 FinMind）
     screen = build_screen(tx, report, market_rows, stock_list,

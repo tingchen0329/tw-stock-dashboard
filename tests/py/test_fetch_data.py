@@ -434,6 +434,14 @@ class EndToEnd(unittest.TestCase):
         night = items[2]
         self.assertEqual((night["label"], night["value"], night["source"]), ("台指期夜盤", 27050.0, "期交所（臺指期116）"))
 
+    def test_corporate_actions_whole_market(self):
+        act = json.loads((self.out / "actions.json").read_text())
+        self.assertEqual(act["rows"]["1101"][0][1:], [50.0, 30.0, "減資"])
+        self.assertEqual(act["rows"]["1102"][0][1:], [100.0, 400.0, "變更面額"])
+        meta = json.loads((self.out / "meta.json").read_text())
+        self.assertTrue(meta["sources"]["finmind_分割"]["ok"])            # 期間內沒有分割不算失敗
+        self.assertIn("actions.json", meta["bytes"])
+
     def test_macro_has_benchmarks_for_relative_strength(self):
         bench = json.loads((self.out / "macro.json").read_text())["bench"]
         self.assertEqual(sorted(bench), ["tw", "us"])

@@ -51,7 +51,6 @@
 | 到價 / 條件提醒（手機通知） | 券商 App | GitHub Actions + Discord webhook / Telegram（LINE Notify 已停止服務） | 低：金鑰放 Secrets |
 | 選股條件回測 | Finviz、Portfolio123 | 現有 3 年日線；要注意倖存者偏差（只用現在的清單回測會高估） | 高 |
 | 手機安裝（PWA） | — | manifest + service worker，離線可看上一份資料 | 低 |
-| 台股減資 / 分割還原 | — | FinMind 減資恢復買賣參考價（TaiwanStockCapitalReductionReferencePrice） | 中 |
 
 ## 參考
 - 證交所「臺股儀表板」（全市場擔保維持率、違約、營收）：2026-09-23 上線

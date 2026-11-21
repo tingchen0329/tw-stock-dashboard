@@ -368,6 +368,13 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
                       ("IDX_SP500TR", 14000)]:
         # 加權指數、S&P 500（含報酬指數）兼做「相對大盤」的 2 年日線 → 給長一點
         yahoo(sym, base, n=520 if sym in ("IDX_TWII", "IDX_GSPC", "IDX_SP500TR") else 64)
+    # 減資 / 變更面額 / 分割（全市場一次查詢；欄位名稱與 FinMind 相同）
+    fm("finmind_TaiwanStockCapitalReductionReferencePrice.json", [
+        {"date": str(days[-200]), "stock_id": "1101", "ClosingPriceonLastTradingDay": 30.0, "PostReductionReferencePrice": 50.0,
+         "ReasonforCapitalReduction": "彌補虧損"}])
+    fm("finmind_TaiwanStockParValueChange.json", [
+        {"date": str(days[-150]), "stock_id": "1102", "stock_name": "示範", "before_close": 400.0, "after_ref_close": 100.0}])
+    fm("finmind_TaiwanStockSplitPrice.json", [])
     # 加權報酬指數（FinMind TaiwanStockTotalReturnIndex，欄位 price）
     tr = walk(random.Random("TAIEXTR"), 60000, 520, 0.0004, 0.01)
     fm("finmind_TaiwanStockTotalReturnIndex_TAIEX.json",

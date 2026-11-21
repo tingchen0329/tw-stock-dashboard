@@ -202,10 +202,11 @@ async function showStock(code) {
   const draw = (tables, meta) => {
     if (state.current !== cur) return;     // 已經換股票了，丟棄舊結果
     cur.tables = tables;
-    cur.summary = summarize({ info, mkt, quote, tables, asOf, bench: state.boot.macro?.bench?.tw });
+    const actions = state.boot.actions?.rows?.[code] ?? null;
+    cur.summary = summarize({ info, mkt, quote, tables, asOf, bench: state.boot.macro?.bench?.tw, actions });
     cur.summary.peers = state.peerData.tw ? peerStats(state.peerData.tw, code, 'industry') : null;
     if (state.peerData.tw && !state.screenIdx) state.screenIdx = screenIndex(state.peerData.tw);
-    cur.summary.checks = checkStock({ info, mkt, asOf, quote, tables, screen: state.screenIdx?.get(code) ?? null });
+    cur.summary.checks = checkStock({ info, mkt, asOf, quote, tables, screen: state.screenIdx?.get(code) ?? null, actions });
     cur.lastMeta = meta;
     if (!info.name && cur.summary.info) cur.summary.info.name = code;
     cur.cleanup?.();

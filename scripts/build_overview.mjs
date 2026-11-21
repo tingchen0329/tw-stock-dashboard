@@ -29,6 +29,7 @@ const quotes = read('quotes.json')?.rows ?? {};
 const bench = read('macro.json')?.bench ?? {};      // 相對大盤：台股比加權指數、美股比 S&P 500
 const byCode = new Map((read('stocks.json')?.rows ?? []).map((r) => [r[0], r]));
 const screen = screenIndex(read('screen.json'));     // 交叉比對：官方月營收 / EPS 彙總表
+const actions = read('actions.json')?.rows ?? {};   // 減資 / 變更面額 / 分割（還原股價、異常值排除）
 const checks = [];                                   // [{ code, name, market, items }]
 const adjCount = { tw: 0, us: 0 };
 
@@ -43,11 +44,13 @@ for (const code of meta.watchlist ?? []) {
   try {
     const s = summarize({
       info, mkt: marketRow(market, code), quote: quotes[code] ?? null, tables: detail?.tables ?? {}, asOf: market?.asOf ?? {}, bench: bench.tw,
+      actions: actions[code] ?? null,
     });
     rows.push(overviewRow(s));
     if (s.adjusted?.available) adjCount.tw++;
     checks.push({ code, name: info.name, market: 'tw', items: checkStock({
       info, mkt: marketRow(market, code), asOf: market?.asOf ?? {}, quote: quotes[code] ?? null, tables: detail?.tables ?? {}, screen: screen.get(code) ?? null,
+      actions: actions[code] ?? null,
     }) });
     if (detail?.tables?.cashflow?.rows?.length) cover.cfRaw++;
     if (detail?.tables?.dividend?.rows?.length) cover.divRaw++;
