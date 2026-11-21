@@ -1153,8 +1153,15 @@ def fetch_corp_actions(tx, report: SourceReport, today: dt.date, prev: dict | No
             code, date, after = str(r.get("stock_id") or "").strip(), r.get("date"), to_num(r.get(after_col))
             if code and date and after and after > 0:
                 rows.setdefault(code, []).append([date, after, to_num(r.get(before_col)), kind])
-    for evs in rows.values():
-        evs.sort(key=lambda e: e[0])
+    for code, evs in rows.items():
+        # FinMind 的面額變更也會列在「分割」資料集 → 同日同參考價只留一筆（否則還原因子會乘兩次）
+        seen, uniq = set(), []
+        for e in sorted(evs, key=lambda e: (e[0], [k for _, k, _, _ in CORP_ACTIONS].index(e[3]) if e[3] in [k for _, k, _, _ in CORP_ACTIONS] else 9)):
+            key = (e[0], round(e[1], 4))
+            if key not in seen:
+                seen.add(key)
+                uniq.append(e)
+        rows[code] = uniq
     return {"asOf": today.isoformat(), "rows": rows}
 
 
@@ -1360,7 +1367,7 @@ def fetch_credit(tx, report: SourceReport, out: Path) -> list[dict]:
         hist, rows = res
         last = rows[-1] if rows else {}
         item = card("keep", "擔保維持率", hist, {
-            "calls": to_num(last.get("callAccNum")),          # 整戶維持率低於 130% 的戶數
+            "calls": int(to_num(last.get("callAccNum"))) if to_num(last.get("callAccNum")) is not None else None,  # 整戶維持率低於 130% 的戶數
             "callAmt": to_num(last.get("callAmt")),           # 當日通知追繳金額（元）
             "exeAmt": to_num(last.get("exeAmt")),             # 次一營業日處分金額（元）
             "note": "全市場（上市＋上櫃）融資融券整戶合併計算；低於 130% 券商會通知追繳",

@@ -1006,3 +1006,24 @@ class Credit(unittest.TestCase):
             kept = {i["key"]: i for i in fd.fetch_credit(self.Tx(fail=True), r, out)}
             self.assertEqual(kept["keep"]["value"], keep["value"])
             self.assertFalse(r.items["twse_keep_rate"]["ok"])
+
+
+class CorpActionsDedupe(unittest.TestCase):
+    """FinMind 的面額變更也列在「分割」：同日同參考價只能留一筆（國巨 2327、4763 曾被乘兩次因子）"""
+
+    def test_same_event_in_two_datasets(self):
+        class Tx:
+            finmind_requests = 0
+
+            def get_json(self, url, params=None, kind="public"):
+                ds = params["dataset"]
+                if ds == "TaiwanStockParValueChange":
+                    return {"status": 200, "data": [{"date": "2025-08-25", "stock_id": "2327", "before_close": 546, "after_ref_close": 136.5}]}
+                if ds == "TaiwanStockSplitPrice":
+                    return {"status": 200, "data": [{"date": "2025-08-25", "stock_id": "2327", "before_price": 546, "after_price": 136.5},
+                                                    {"date": "2026-01-05", "stock_id": "9999", "before_price": 100, "after_price": 50}]}
+                return {"status": 200, "data": []}
+
+        act = fd.fetch_corp_actions(Tx(), fd.SourceReport(), dt.date(2026, 11, 22), None)
+        self.assertEqual(act["rows"]["2327"], [["2025-08-25", 136.5, 546.0, "變更面額"]])
+        self.assertEqual(act["rows"]["9999"], [["2026-01-05", 50.0, 100.0, "分割"]])

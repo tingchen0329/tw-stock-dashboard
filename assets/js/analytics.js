@@ -76,17 +76,26 @@ export function priceSeries(table) {
  */
 export function adjustEvents(ps, { divResult = null, dividends = null, actions = null } = {}) {
   const ev = [];
+  // 同一事件可能同時出現在兩個資料集（FinMind 的面額變更也會列在「分割」）→ 同日同參考價只算一次，否則因子會乘兩次
+  const seen = new Set();
   for (const [d, after, before0, kind] of actions || []) {
+    const key = `${d}|${after}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     const i = ps.dates.findIndex((x) => x >= d);
     const before = isNum(before0) && before0 > 0 ? before0 : (i > 0 ? ps.close[i - 1] : null);
     const f = isNum(after) && isNum(before) && before > 0 ? after / before : null;
     // 0.02–50 倍以外多半是欄位錯誤；與 1 相差不到 0.1% 視為沒有調整
     if (f && f > 0.02 && f < 50 && Math.abs(f - 1) > 0.001) ev.push({ date: d, factor: f, note: `${kind || '股本變動'}（參考價 ${fmt2(after)}）`, kind: 'action' });
   }
+  const actionAt = new Map(ev.map((e) => [e.date, e.factor]));
   for (const r of rows(divResult)) {
     const b = toNum(r.before_price);
     const a = toNum(r.after_price);
-    if (r.date && isNum(a) && isNum(b) && b > 0 && a > 0 && a < b) ev.push({ date: r.date, factor: a / b, note: `除${r.stock_or_cache_dividend || '權息'} ${fmt2(toNum(r.stock_and_cache_dividend))}` });
+    if (!(r.date && isNum(a) && isNum(b) && b > 0 && a > 0 && a < b)) continue;
+    // 同一天已有減資 / 面額變更事件、因子幾乎相同 → 是同一件事，不重複調整
+    if (actionAt.has(r.date) && Math.abs(actionAt.get(r.date) - a / b) < 0.02) continue;
+    ev.push({ date: r.date, factor: a / b, note: `除${r.stock_or_cache_dividend || '權息'} ${fmt2(toNum(r.stock_and_cache_dividend))}` });
   }
   for (const [d, amt] of dividends || []) {
     const i = ps.dates.findIndex((x) => x >= d);

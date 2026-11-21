@@ -125,3 +125,14 @@ test('減資 / 面額變更：因子 = 參考價 ÷ 停止前收盤；恢復買�
   const fin = checkStock({ ...base, tables: { ...base.tables, revenue }, screen: { revYm: '2026-09', revYoY: 5, industry: '金融保險業' } });
   assert.equal(fin.find((x) => x.key === 'revenue').level, 'info');
 });
+
+test('同一事件同時列在「變更面額」與「分割」（或除權息結果）只調整一次', () => {
+  const ps = { dates: ['2025-08-21', '2025-08-22', '2025-08-25', '2025-08-26'], close: [540, 546, 143, 145], open: [], high: [], low: [], volume: [] };
+  const actions = [['2025-08-25', 136.5, 546, '變更面額'], ['2025-08-25', 136.5, 546, '分割']];
+  const divResult = { cols: ['date', 'before_price', 'after_price', 'stock_and_cache_dividend', 'stock_or_cache_dividend'], rows: [['2025-08-25', 546, 136.5, 0, '權']] };
+  const ev = adjustEvents(ps, { actions, divResult });
+  assert.equal(ev.length, 1);
+  assert.equal(ev[0].factor, 0.25);
+  const adj = adjustedSeries(ps, ev);
+  assert.ok(Math.abs(adj.close[2] / adj.close[1] - 143 / 136.5) < 1e-9);   // 還原後只剩真實漲跌（+4.8%）
+});
