@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  quarterDeadline, revenueDeadline, rebalanceDates, idxLE, factorsAt, prepStock, buildPanel, runBacktest, COST, BT_COLS,
+  quarterDeadline, revenueDeadline, rebalanceDates, idxLE, factorsAt, prepStock, buildPanel, runBacktest, randomBaseline, rng, COST, BT_COLS,
 } from '../../assets/js/backtest.js';
 import { TW_PRESETS } from '../../assets/js/presets.js';
 
@@ -132,9 +132,61 @@ test('runBacktest：缺資料不會被選入；選不到股票的月份持有現
   assert.deepEqual(runBacktest(panel, [{ key: 'revYoY', op: '>=', value: null }]).periods[0].picks, ['A', 'B']);
 });
 
-test('預設條件的欄位都能回測（千張大戶除外）', () => {
+test('預設條件的欄位都能回測（集保大戶 / 散戶除外）', () => {
   for (const p of Object.values(TW_PRESETS)) {
-    const r = runBacktest(panel, p.criteria);
-    assert.ok(r.skipped.every((c) => c.key.startsWith('big1000')), r.skipped.map((c) => c.key).join());
+    const r = runBacktest(panel, p.criteria.map((c) => ({ ...c, value: c.value ?? 0 })));
+    assert.ok(r.skipped.every((c) => c.key.startsWith('big1000') || c.key === 'retail10Chg'), r.skipped.map((c) => c.key).join());
   }
+});
+
+/** 多檔隨機股票池：A 每月 +5%（條件命中）、其他檔在 −3%～+3% 之間 */
+function bigPanel(n = 30, months = 12) {
+  const next = rng(7);
+  const dates = Array.from({ length: months }, (_, i) => `2025-${String(i + 1).padStart(2, '0')}-11`);
+  return {
+    dates, end: '2026-01-12', day: 11, cols: [...BT_COLS, 'ret'],
+    bench: { label: '大盤', kind: 'tr', ret: dates.map(() => 0.01) },
+    stocks: Array.from({ length: n }, (_, k) => ({
+      code: String(1000 + k), name: `股${k}`,
+      rows: dates.map(() => [k < 3 ? 30 : 0, 0, 1, 10, 15, 12, 3 + k / 10, 800, k < 3 ? 0.05 : next() * 0.06 - 0.03]),
+    })),
+  };
+}
+
+test('隨機選股基準：同檔數、固定種子可重現；有選股能力的條件贏過幾乎所有隨機組合', () => {
+  const p = bigPanel();
+  const r = runBacktest(p, [{ key: 'revYoY', op: '>=', value: 20 }]);
+  assert.deepEqual(r.periods[0].picks, ['1000', '1001', '1002']);
+  assert.equal(r.random.runs, 500);
+  assert.ok(r.random.beat > 99, `beat=${r.random.beat}`);
+  assert.ok(r.random.p5 <= r.random.p50 && r.random.p50 <= r.random.p95);
+  assert.equal(r.curve.random.length, r.curve.dates.length);
+  const again = randomBaseline(p, r.periods);
+  assert.equal(again.p50, r.random.p50);                                        // 同種子 → 同結果
+  // 條件全部清空 = 每期持有全部 → 隨機抽「全部」，與策略相同
+  const all = runBacktest(p, []);
+  assert.ok(Math.abs(all.random.p50 - all.stats.strat.total) < 1e-9);
+  assert.equal(all.random.beat, 0);
+  // 選不到股票：沒有隨機基準
+  assert.equal(runBacktest(p, [{ key: 'pe', op: '<=', value: 1 }]).random, null);
+  assert.equal(runBacktest(p, [{ key: 'revYoY', op: '>=', value: 20 }], { runs: 0 }).random, null);
+});
+
+test('最多持有 N 檔：依排序欄位取前 N，缺值排最後；年化波動與報酬 / 風險', () => {
+  const p = bigPanel();
+  const r = runBacktest(p, [], { maxN: 2, rank: { key: 'yield', dir: -1 } });
+  assert.deepEqual(r.periods[0].picks, ['1029', '1028']);                      // 殖利率最高的兩檔
+  assert.equal(r.periods[0].matched, 30);
+  assert.equal(r.maxN, 2);
+  const asc = runBacktest(p, [], { maxN: 2, rank: { key: 'yield', dir: 1 } });
+  assert.deepEqual(asc.periods[0].picks, ['1000', '1001']);
+  const q = structuredClone(p);
+  q.stocks[29].rows[0][6] = null;
+  assert.deepEqual(runBacktest(q, [], { maxN: 2, rank: { key: 'yield', dir: -1 } }).periods[0].picks, ['1028', '1027']);
+  // 沒有 maxN：符合的全部持有
+  assert.equal(runBacktest(p, []).periods[0].n, 30);
+  // 每月固定 +5%：波動 0 → 報酬 / 風險不計；有波動時為正數
+  const top = runBacktest(p, [{ key: 'revYoY', op: '>=', value: 20 }], { runs: 0 });
+  assert.ok(top.stats.strat.vol < 0.2, `vol=${top.stats.strat.vol}`);       // 只有第一期手續費造成的微小差異
+  assert.ok(runBacktest(p, [], { runs: 0 }).stats.strat.vol > 0);
 });

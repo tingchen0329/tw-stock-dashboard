@@ -1209,8 +1209,8 @@ def refresh_actions(tx, report: SourceReport, out: Path, watchlist: list[str], t
 TDCC_API = "https://openapi.tdcc.com.tw/v1/opendata/1-5"            # JSON（欄位名稱是中文，第一欄帶 BOM）
 TDCC_CSV = "https://opendata.tdcc.com.tw/getOD.ashx?id=1-5"         # 同內容的 CSV（備援）
 HOLDER_WEEKS = 60
-HOLDER_COLS = ["date", "p1000", "p400", "n1000", "holders"]
-HOLDER_ALL_COLS = ["p1000", "p1000Chg", "holders", "holdersChgPct"]
+HOLDER_COLS = ["date", "p1000", "p400", "n1000", "holders", "p10"]          # p10 新增於 v7.2（舊列只有 5 欄）
+HOLDER_ALL_COLS = ["p1000", "p1000Chg", "holders", "holdersChgPct", "p10", "p10Chg"]
 
 
 def _tdcc_key(k: Any) -> str:
@@ -1225,6 +1225,7 @@ def parse_tdcc(rows: list[dict]) -> tuple[str | None, dict[str, dict]]:
     """
     集保 1-5 → (資料日期 ISO, {代號: {p1000, p400, n1000, holders}})
       p1000 = 千張以上（分級 15）持股比例 %、p400 = 400 張以上（分級 12–15）
+      p10 = 10 張以下（分級 1–3：1–999 股、1–5 張、5–10 張）的「散戶」持股比例 %
       比例用股數重算（官方「占集保庫存數比例」只有 2 位小數，加總會有誤差）
     """
     by: dict[str, dict[int, tuple]] = {}
@@ -1245,7 +1246,8 @@ def parse_tdcc(rows: list[dict]) -> tuple[str | None, dict[str, dict]]:
             continue
         sh = lambda levels: sum(lv.get(i, (0, 0))[1] for i in levels)  # noqa: E731
         out[code] = {"p1000": round(sh([15]) / total * 100, 2), "p400": round(sh(range(12, 16)) / total * 100, 2),
-                     "n1000": int(lv.get(15, (0, 0))[0]), "holders": int(people)}
+                     "n1000": int(lv.get(15, (0, 0))[0]), "holders": int(people),
+                     "p10": round(sh(range(1, 4)) / total * 100, 2)}
     return date, out
 
 
@@ -1297,7 +1299,7 @@ def update_holders(tx, report: SourceReport, out: Path, today: dt.date, codes: l
         hist = [r for r in old_rows.get(c, []) if r[0] != date]
         x = data.get(c)
         if x:
-            hist.append([date, x["p1000"], x["p400"], x["n1000"], x["holders"]])
+            hist.append([date, x["p1000"], x["p400"], x["n1000"], x["holders"], x["p10"]])
         if hist:
             rows[c] = sorted(hist)[-HOLDER_WEEKS:]
     pm = (prev_all or {}).get("rows") or {}
@@ -1309,7 +1311,9 @@ def update_holders(tx, report: SourceReport, out: Path, today: dt.date, codes: l
         all_rows[c] = [x["p1000"],
                        round(x["p1000"] - o[0], 2) if o and isinstance(o[0], (int, float)) else None,
                        x["holders"],
-                       round((x["holders"] / o[2] - 1) * 100, 2) if o and o[2] else None]
+                       round((x["holders"] / o[2] - 1) * 100, 2) if o and o[2] else None,
+                       x["p10"],
+                       round(x["p10"] - o[4], 2) if o and len(o) > 4 and isinstance(o[4], (int, float)) else None]
     write_json(hp, {"asOf": date, "source": src, "cols": HOLDER_COLS, "rows": rows})
     write_json(ap, {"asOf": date, "prevDate": (prev_all or {}).get("asOf"), "source": src,
                     "cols": HOLDER_ALL_COLS, "rows": all_rows})
@@ -1319,14 +1323,14 @@ def update_holders(tx, report: SourceReport, out: Path, today: dt.date, codes: l
 def add_holder_cols(screen: dict, out: Path) -> dict:
     """選股表加上千張大戶持股、週變化、股東人數週增減（集保沒有資料的股票填 None）"""
     ha = _read_json(out / "holders_all.json")
-    extra = ["big1000", "big1000Chg", "holdersChgPct"]
+    extra = ["big1000", "big1000Chg", "holdersChgPct", "retail10Chg"]
     rows = (ha or {}).get("rows") or {}
     keep = [i for i, c in enumerate(screen["cols"]) if c not in extra]      # 重複執行時先拿掉舊的欄位
     code_i = screen["cols"].index("code")
     screen["cols"] = [screen["cols"][i] for i in keep] + extra
     for n, r in enumerate(screen["rows"]):
         x = rows.get(r[code_i])
-        screen["rows"][n] = [r[i] for i in keep] + ([x[0], x[1], x[3]] if x else [None, None, None])
+        screen["rows"][n] = [r[i] for i in keep] + ([x[0], x[1], x[3], x[5] if len(x) > 5 else None] if x else [None] * 4)
     if ha:
         screen["asOf"] = {**screen.get("asOf", {}), "holders": ha.get("asOf"), "holdersPrev": ha.get("prevDate")}
     return screen
@@ -1359,11 +1363,23 @@ def _credit_rows(tx, url: str, before: str | None = None) -> list[dict]:
     return [r for r in p.get("data") or [] if _ymd(r.get("date"))]
 
 
-def _merge_hist(old: dict | None, new: dict[str, float]) -> dict:
-    pts = dict(zip((old or {}).get("dates") or [], (old or {}).get("close") or []))
+def _merge_hist(old: dict | None, new: dict[str, float], extra: dict[str, dict[str, float]] | None = None) -> dict:
+    """
+    合併歷史：{dates, close} + 新的 {日期: 值}。extra = {欄位: {日期: 值}} 是附帶的同日序列
+    （例如擔保維持率的「低於 130% 戶數」calls），與 dates 對齊，缺的日子為 None。
+    """
+    old = old or {}
+    od = old.get("dates") or []
+    pts = dict(zip(od, old.get("close") or []))
     pts.update(new)
     ds = sorted(d for d, v in pts.items() if v is not None)[-750:]
-    return {"dates": ds, "close": [pts[d] for d in ds]}
+    out = {"dates": ds, "close": [pts[d] for d in ds]}
+    names = set(extra or {}) | {k for k in old if k not in ("dates", "close", "label", "source")}
+    for name in sorted(names):
+        vals = dict(zip(od, old.get(name) or [])) if isinstance(old.get(name), list) else {}
+        vals.update((extra or {}).get(name) or {})
+        out[name] = [vals.get(d) for d in ds]
+    return out
 
 
 def fetch_credit(tx, report: SourceReport, out: Path) -> list[dict]:
@@ -1371,10 +1387,12 @@ def fetch_credit(tx, report: SourceReport, out: Path) -> list[dict]:
     old = ((_read_json(out / "macro_hist.json") or {}).get("items") or {})
     items = []
 
-    def series(url: str, key: str, value: Callable[[dict], float | None]) -> tuple[dict, list[dict]]:
+    def series(url: str, key: str, value: Callable[[dict], float | None],
+               extras: dict[str, Callable[[dict], float | None]] | None = None) -> tuple[dict, list[dict]]:
+        ex = lambda rs: {n: {_ymd(r["date"]): f(r) for r in rs} for n, f in (extras or {}).items()}  # noqa: E731
         rows = _credit_rows(tx, url)
         pts = {_ymd(r["date"]): value(r) for r in rows}
-        hist = _merge_hist(old.get(key), pts)
+        hist = _merge_hist(old.get(key), pts, ex(rows))
         for _ in range(CREDIT_BACKFILL):                # 第一次執行：往前補到儀表板資料起點
             first = hist["dates"][0] if hist["dates"] else None
             if not first or first <= CREDIT_START:
@@ -1382,7 +1400,7 @@ def fetch_credit(tx, report: SourceReport, out: Path) -> list[dict]:
             more = _credit_rows(tx, url, (dt.date.fromisoformat(first) - dt.timedelta(days=1)).isoformat())
             if not more:
                 break
-            hist = _merge_hist(hist, {_ymd(r["date"]): value(r) for r in more})
+            hist = _merge_hist(hist, {_ymd(r["date"]): value(r) for r in more}, ex(more))
         return hist, rows
 
     def card(key: str, label: str, hist: dict, extra: dict, unit: str = "") -> dict | None:
@@ -1395,7 +1413,9 @@ def fetch_credit(tx, report: SourceReport, out: Path) -> list[dict]:
                 "changePct": round((v / p - 1) * 100, 2) if p else None,
                 "time": d[-1], "day": d[-1], "unit": unit, "hist": hist, **extra}
 
-    res = report.run("twse_keep_rate", lambda: series(TWSE_KEEP_TREND, "keep", lambda r: to_num(r.get("keepRate"))),
+    calls = lambda r: int(to_num(r.get("callAccNum"))) if to_num(r.get("callAccNum")) is not None else None  # noqa: E731
+    res = report.run("twse_keep_rate", lambda: series(TWSE_KEEP_TREND, "keep", lambda r: to_num(r.get("keepRate")),
+                                                      {"calls": calls}),
                      count=lambda r: len(r[0]["dates"]) if r else 0)
     if res:
         hist, rows = res
@@ -1408,8 +1428,11 @@ def fetch_credit(tx, report: SourceReport, out: Path) -> list[dict]:
         }, "%")
         if item:
             items.append(item)
+    ratio = lambda r: (round(to_num(r.get("marginAmt")) / 1e5 / to_num(r.get("marketValue")) * 100, 3)  # noqa: E731
+                       if to_num(r.get("marginAmt")) and to_num(r.get("marketValue")) else None)
     res = report.run("twse_margin_trend", lambda: series(
-        TWSE_MARGIN_TREND, "margin", lambda r: round(to_num(r.get("marginAmt")) / 1e5, 2) if to_num(r.get("marginAmt")) else None),
+        TWSE_MARGIN_TREND, "margin", lambda r: round(to_num(r.get("marginAmt")) / 1e5, 2) if to_num(r.get("marginAmt")) else None,
+        {"ratio": ratio}),
         count=lambda r: len(r[0]["dates"]) if r else 0)
     if res:
         hist, rows = res

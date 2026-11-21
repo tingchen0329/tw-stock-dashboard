@@ -201,3 +201,20 @@ test('同業排名與內部人彙總', async () => {
   assert.deepEqual([x.buy.value, x.sell.value, x.sell.plan, x.net], [50, 40, 1, 10]);     // 6 個月外的不算
   assert.equal(x.recent[0].date, '2026-10-01');
 });
+
+test('集保：散戶（10 張以下）週變化與籌碼集中度；舊資料（沒有 p10 欄）不出錯', async () => {
+  const { holderStats, concentration } = await import('../../assets/js/analytics.js');
+  const cols = ['date', 'p1000', 'p400', 'n1000', 'holders', 'p10'];
+  const hs = holderStats({ cols, rows: { 2330: [['2026-11-13', 80, 88, 10, 1000, 12.0], ['2026-11-20', 80.4, 88.2, 11, 990, 11.8]] } }, '2330');
+  assert.ok(Math.abs(hs.p10Chg - -0.2) < 1e-9);
+  assert.equal(hs.signal.key, 'concentrate');
+  assert.deepEqual(hs.series.p10, [12.0, 11.8]);
+  // 第一週寫入 p10、前一週是舊格式（5 欄）→ 沒有散戶變化、沒有訊號
+  const mixed = holderStats({ cols, rows: { 2330: [['2026-11-13', 80, 88, 10, 1000], ['2026-11-20', 80.4, 88.2, 11, 990, 11.8]] } }, '2330');
+  assert.equal(mixed.p10, 11.8);
+  assert.equal(mixed.p10Chg, null);
+  assert.equal(mixed.signal, null);
+  assert.equal(concentration(-0.3, 0.2).key, 'disperse');
+  assert.equal(concentration(0.03, -0.03).key, 'flat');                 // 變化太小視為持平
+  assert.equal(concentration(0.3, 0.2).key, 'flat');                    // 同向不判定
+});

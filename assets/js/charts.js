@@ -120,6 +120,8 @@ export function lineChart(host) {
     const scan = (arr) => { for (const v of arr) if (Number.isFinite(v)) { if (v < lo) lo = v; if (v > hi) hi = v; } };
     o.series.forEach((s) => scan(s.values));
     (o.bands || []).forEach((b) => { scan(b.lower); scan(b.upper); });
+    // 參考線（例如擔保維持率 130% 追繳線）：o.refs = [{ value, label, color }]，座標範圍會包含它
+    (o.refs || []).forEach((r) => scan([r.value]));
     const pad = (hi - lo) * 0.05 || 1;
     // 股價不會是負的：資料全為正時，留白不可把座標推到 0 以下（舊版河流圖出現 -2,000 的刻度）
     const ticks = niceTicks(lo >= 0 ? Math.max(0, lo - pad) : lo - pad, hi + pad, 5);
@@ -153,6 +155,11 @@ export function lineChart(host) {
     for (const bl of o.bandLabels || []) {
       const lastV = [...bl.values].reverse().find(Number.isFinite);
       if (Number.isFinite(lastV)) el('text', { x: W - m.r + 6, y: y(lastV) + 4, class: 'end-label' }, svg).textContent = bl.text;
+    }
+
+    for (const r of o.refs || []) {
+      el('line', { x1: m.l, x2: W - m.r, y1: y(r.value), y2: y(r.value), stroke: r.color || 'var(--warn)', 'stroke-width': 1.5, 'stroke-dasharray': '5 4' }, svg);
+      el('text', { x: m.l + 6, y: y(r.value) - 5, class: 'ref-label', fill: r.color || 'var(--warn)' }, svg).textContent = r.label;
     }
 
     // 折線：遇到 null 就斷開（例如 MA60 前 59 天）

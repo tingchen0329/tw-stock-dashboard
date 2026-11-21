@@ -77,7 +77,9 @@ export function checkStock({ info, mkt = null, asOf = {}, quote = null, tables =
     else if (!isNum(item.yoy)) add('info', 'revenue', '月營收', `${screen.revYm} 缺去年同月營收，無法算年增率`);
     else if (Math.abs(item.yoy - screen.revYoY) > 0.5) {
       // 金融業（金控、銀行、保險）月營收的認列口徑兩個來源不同，差異屬正常 → 只提示
-      const fin = /金融|保險|銀行|證券/.test(String(screen.industry || info.industry || ''));
+      // 產業別欄位可能是「金控」或空白 → 也用代號判斷：28xx 金融保險、58xx 銀行、600x–602x 證券期貨
+      const fin = /金融|金控|保險|銀行|證券|期貨/.test(String(screen.industry || info.industry || ''))
+        || /^(28\d\d|58\d\d|60[0-2]\d)$/.test(String(info.code || screen.code || ''));
       add(fin ? 'info' : 'warn', 'revenue', '月營收', `${screen.revYm} 年增率：官方 ${f2(screen.revYoY)}% ≠ FinMind ${f2(item.yoy)}%`
         + (fin ? '（金融業營收口徑不同，僅供參考）' : ''));
     } else add('ok', 'revenue', '月營收', `${screen.revYm} 年增率與官方一致（${f2(screen.revYoY)}%）`);

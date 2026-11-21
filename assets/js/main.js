@@ -12,7 +12,6 @@
  */
 
 import { loadBootstrap, loadStock, loadScreen, loadUsOverview, loadUsStock, loadUsScreen, loadAiConfig, loadMacroHist, loadHolders, loadBacktest } from './data.js';
-import { renderPortfolio, loadHoldings } from './portfolio.js';
 import { buildIndex, search, resolveExact, highlightParts, marketLabel } from './search.js';
 import { summarize, marketRow, usMarketRow, peerStats, insiderStats } from './analytics.js';
 import { checkStock, screenIndex } from './checks.js';
@@ -292,49 +291,6 @@ async function showScreen() {
   cur.cleanup = renderScreen($('stock'), data, { watchlist: boot.meta.watchlist, onPick: pick, backtest });
 }
 
-/* ───────── 持股損益 ───────── */
-
-async function showPortfolio() {
-  const { boot } = state;
-  if (!boot?.meta) return;
-  state.current?.ctrl.abort();
-  state.current?.cleanup?.();
-  const cur = { code: 'portfolio', ctrl: new AbortController(), cleanup: null, summary: null };
-  state.current = cur;
-  markCurrentChip('portfolio');
-  document.title = '持股損益｜台股研究台';
-  markMarket(false);
-  const twOv = new Map((boot.overview?.rows ?? []).map((r) => [r.code, r]));
-  let usOv = new Map();
-  let usSc = new Map();
-  const fx = boot.macro?.items?.find((m) => m.key === 'usdtwd');
-  const priceOf = (x) => {
-    if (x.mkt === 'us') {
-      const o = usOv.get(x.code);
-      if (o) return { price: o.price, chgPct: o.chgPct, name: o.name, kind: '收盤' };
-      const s = usSc.get(x.code);
-      return s ? { price: s.close, chgPct: s.chgPct, name: s.name, kind: '收盤' } : null;
-    }
-    const o = twOv.get(x.code);
-    if (o) return { price: o.price, chgPct: o.chgPct, name: o.name, kind: o.priceKind };
-    const m = marketRow(boot.market, x.code);
-    if (!m) return null;
-    const prev = F.isNum(m.close) && F.isNum(m.change) ? m.close - m.change : null;
-    return { price: m.close, chgPct: prev ? (m.change / prev) * 100 : null, name: state.byCode.get(x.code)?.name ?? '', kind: '收盤' };
-  };
-  cur.cleanup = renderPortfolio($('stock'), {
-    priceOf, fx: fx?.value ?? null, fxDay: fx?.day ?? null, meta: boot.meta,
-    onPick: (mkt, code) => { location.hash = mkt === 'us' ? `us/${code}` : code; },
-  });
-  // 有美股持股才載入美股價格（總覽 + S&P 500），回來後只重算表格（不清掉正在輸入的規則）
-  if (loadHoldings().some((x) => x.mkt === 'us')) {
-    const [ov, sc] = await Promise.all([loadUsOverview().catch(() => null), loadUsScreen().catch(() => null)]);
-    usOv = new Map((ov?.rows ?? []).map((r) => [r.code, r]));
-    usSc = new Map((sc?.rows ?? []).map((r) => { const o = Object.fromEntries(sc.cols.map((c, i) => [c, r[i]])); return [o.code, o]; }));
-    if (state.current === cur) cur.cleanup?.refresh?.();
-  }
-}
-
 /* ───────── 美股 ───────── */
 
 const usPick = (sym) => { location.hash = `us/${sym}`; };
@@ -419,7 +375,7 @@ async function showUsOverview() {
   try { data = await loadUsOverview(); } catch { /* 顯示「尚未產生」 */ }
   if (state.current !== cur) return;
   renderOverview($('stock'), data, {
-    onPick: usPick, title: '美股追蹤清單總覽', hide: ['f20', 't20'], dayNote: '美東收盤',
+    onPick: usPick, title: '美股追蹤清單總覽', hide: ['f20', 't20', 'big1000Chg'], dayNote: '美東收盤',
     note: '資料來源：Yahoo Finance（日線、配息）、美國證管會 SEC EDGAR（財報）。本益比 = 收盤 ÷ 近四季 EPS；河流圖位階 = 目前本益比在近三年的百分位（由財報與股價推算）；營收年增為最新一季與去年同季比較。'
       + 'ETF、外國公司（例如台積電 ADR）沒有 SEC 財報，顯示 N/A。清單在 config/us_watchlist.csv。',
   });
@@ -490,7 +446,6 @@ const route = () => {
   else if (c.startsWith('us/')) showUsStock(c.slice(3).toUpperCase());
   else if (c === 'overview') showOverview();
   else if (c === 'screen') showScreen();
-  else if (c === 'portfolio') showPortfolio();
   else if (c) showStock(c);
 };
 
@@ -623,10 +578,7 @@ async function boot() {
   }, h('span', { class: 't' }, '總覽'), h('span', { class: 'v' }, `${wl.length} 檔`)),
   h('button', {
     class: 'chip ov-chip', type: 'button', dataset: { code: 'screen' }, on: { click: () => pick('screen') },
-  }, h('span', { class: 't' }, '選股'), h('span', { class: 'v' }, '全市場')),
-  h('button', {
-    class: 'chip ov-chip', type: 'button', dataset: { code: 'portfolio' }, on: { click: () => pick('portfolio') },
-  }, h('span', { class: 't' }, '持股'), h('span', { class: 'v' }, '損益')));
+  }, h('span', { class: 't' }, '選股'), h('span', { class: 'v' }, '全市場')));
   renderMacro($('macro'), b.macro?.items, openMacro);
 
   window.addEventListener('hashchange', route);

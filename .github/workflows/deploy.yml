@@ -88,16 +88,6 @@ jobs:
       - name: Build overview table
         run: node scripts/build_overview.mjs _site/data
 
-      - name: Price alerts (Discord / Telegram)
-        # 規則與推播管道都放 Secrets（不公開）；沒設定就略過。失敗只會出現 warning，不影響部署
-        env:
-          ALERT_RULES: ${{ secrets.ALERT_RULES }}
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          SITE_URL="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/" node scripts/alerts.mjs _site/data
-
       - name: Annotate failed sources
         if: always()
         # 失敗的資料源以 warning 註記顯示在執行頁面上方（也可由 API 讀取，方便遠端檢查）

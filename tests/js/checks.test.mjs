@@ -124,6 +124,11 @@ test('減資 / 面額變更：因子 = 參考價 ÷ 停止前收盤；恢復買�
   const revenue = { cols: ['revenue_year', 'revenue_month', 'revenue'], rows: [[2025, 9, 100], [2026, 9, 120]] };
   const fin = checkStock({ ...base, tables: { ...base.tables, revenue }, screen: { revYm: '2026-09', revYoY: 5, industry: '金融保險業' } });
   assert.equal(fin.find((x) => x.key === 'revenue').level, 'info');
+  // 產業別空白也用代號判斷（2881 富邦金）
+  const fin2 = checkStock({ ...base, info: { ...base.info, code: '2881' }, tables: { ...base.tables, revenue }, screen: { code: '2881', revYm: '2026-09', revYoY: 5, industry: '' } });
+  assert.equal(fin2.find((x) => x.key === 'revenue').level, 'info');
+  const nonFin = checkStock({ ...base, info: { ...base.info, code: '2330' }, tables: { ...base.tables, revenue }, screen: { code: '2330', revYm: '2026-09', revYoY: 5, industry: '半導體業' } });
+  assert.equal(nonFin.find((x) => x.key === 'revenue').level, 'warn');
 });
 
 test('同一事件同時列在「變更面額」與「分割」（或除權息結果）只調整一次', () => {

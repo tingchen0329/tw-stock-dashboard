@@ -403,7 +403,7 @@ def make(out: Path, today: dt.date, xss: bool) -> None:
         keep = max(130.0, keep + rng.uniform(-2.5, 2.4))
         mamt *= 1 + rng.uniform(-0.012, 0.011)
         kr.append({"date": f"{d:%Y%m%d}", "crdAmt": 1.1e11, "keepRate": round(keep, 2), "belowAccNum": 300,
-                   "callAccNum": 120, "callAmt": 4.2e7, "exeAccNum": 20, "exeAmt": 9.5e6, "marginAccNum": 70000, "marginAccRate": 0.26})
+                   "callAccNum": int(120 + max(0, 180 - keep) * 40), "callAmt": 4.2e7, "exeAccNum": 20, "exeAmt": 9.5e6, "marginAccNum": 70000, "marginAccRate": 0.26})
         mr.append({"date": f"{d:%Y%m%d}", "marginShr": 9_000_000, "marginAmt": int(mamt), "shortShr": 200_000, "marketValue": 1_350_000.0})
     w("rwd_zh_marginTrading_BFIJ3U_TREND.json", {"stat": "OK", "date": f"{last_day:%Y%m%d}", "days": 60, "data": kr})
     w("rwd_zh_marginTrading_MI_MARGN_TREND.json", {"stat": "OK", "date": f"{last_day:%Y%m%d}", "days": 60, "data": mr})

@@ -64,6 +64,13 @@ export const COLUMNS = [
   { key: 'f20', label: '外資 20日', tip: '近 20 日外資買賣超（張）', cell: (r) => lots(r.f20) },
   { key: 't20', label: '投信 20日', tip: '近 20 日投信買賣超（張）', cell: (r) => lots(r.t20) },
   {
+    key: 'big1000Chg', label: '大戶週增減', tip: '集保千張大戶持股比例與前一週相比（百分點）；括號內為目前持股比例。每週五盤後更新',
+    cell: (r) => (F.isNum(r.big1000Chg)
+      ? [h('span', { class: `num ${F.dir(r.big1000Chg)}` }, F.signed(r.big1000Chg, 2)), h('span', { class: 'sub muted' }, F.pct(r.big1000, 1))]
+      : F.isNum(r.big1000) ? [h('span', { class: 'muted', title: '第一週資料，下週起顯示變化' }, '—'), h('span', { class: 'sub muted' }, F.pct(r.big1000, 1))]
+        : h('span', { class: 'muted' }, 'N/A')),
+  },
+  {
     key: 'trend', label: '均線', tip: '多頭：MA5 > MA20 > MA60 > MA240；空頭相反；其餘為糾結',
     cell: (r) => { const [t, c] = TREND[r.trend] ?? [F.NA, 'muted']; return h('span', { class: c }, t); },
   },

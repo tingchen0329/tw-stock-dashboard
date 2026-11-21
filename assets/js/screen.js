@@ -57,6 +57,7 @@ function columns(watch) {
     { key: 'trust', label: '投信', tip: '當日投信買賣超（張）', cell: (r) => (F.isNum(r.trust) ? h('span', { class: `num ${F.dir(r.trust)}` }, F.signed(r.trust, 0)) : plain(F.NA)) },
     { key: 'big1000', label: '千張大戶', tip: '集保股權分散表：持股 1,000 張以上股東的持股比例（每週五更新）', cell: (r) => plain(F.pct(r.big1000, 1)) },
     { key: 'big1000Chg', label: '大戶週增減', tip: '千張大戶持股比例與前一週相比（百分點）', cell: (r) => (F.isNum(r.big1000Chg) ? h('span', { class: `num ${F.dir(r.big1000Chg)}` }, F.signed(r.big1000Chg, 2)) : plain(F.NA)) },
+    { key: 'retail10Chg', label: '散戶週增減', tip: '10 張以下股東持股比例與前一週相比（百分點）；大戶增、散戶減 = 籌碼集中', cell: (r) => (F.isNum(r.retail10Chg) ? h('span', { class: `num ${F.dir(-r.retail10Chg)}` }, F.signed(r.retail10Chg, 2)) : plain(F.NA)) },
   ];
 }
 
@@ -64,20 +65,32 @@ function columns(watch) {
 
 const sp = (v, dp = 1) => (F.isNum(v) ? h('span', { class: `num ${F.dir(v)}` }, F.pct(v, dp, true)) : h('span', { class: 'muted' }, F.NA));
 
+export const BT_MAX = [[null, '全部'], [5, '前 5 檔'], [10, '前 10 檔'], [20, '前 20 檔']];
+
 /**
  * 選股條件回測區塊：依目前門檻即時重算（backtest.json 由 build_overview.mjs 產生）
+ * @param {object} [o]
+ * @param {number|null} [o.maxN]   最多持有檔數（依 rank 排序取前 N）
+ * @param {{key, dir, label}} [o.rank]
+ * @param {(n:number|null)=>void} [o.onMaxN]
  * @returns {{el:HTMLElement, chart:object|null}}
  */
-export function backtestView(panel, crit, presetLabel, onPick) {
-  const r = runBacktest(panel, crit);
+export function backtestView(panel, crit, presetLabel, onPick, { maxN = null, rank = null, onMaxN = null } = {}) {
+  const r = runBacktest(panel, crit, { maxN, rank });
   if (!r) return { el: h('p', { class: 'note' }, '回測資料不足（需要至少兩個月的大盤與個股資料）。'), chart: null };
   const { strat: S, univ: U, bench: B } = r.stats;
+  const R = r.random;
   const names = new Map(panel.stocks.map((s) => [s.code, s.name]));
   const benchLabel = `${panel.bench.label}${panel.bench.kind === 'tr' ? '' : '（價格指數，不含息）'}`;
   const row = (label, x, cls) => h('tr', { class: cls },
     h('th', { scope: 'row' }, label),
     h('td', {}, sp(x.total)), h('td', {}, sp(x.cagr)), h('td', {}, F.isNum(x.mdd) ? h('span', { class: 'down' }, F.pct(x.mdd, 1)) : F.NA),
+    h('td', {}, F.isNum(x.vol) ? F.pct(x.vol, 1) : '—'), h('td', {}, F.isNum(x.ratio) ? F.num(x.ratio, 2) : '—'),
     h('td', {}, F.isNum(x.win) ? F.pct(x.win, 0) : '—'), h('td', {}, F.isNum(x.avgPicks) ? F.num(x.avgPicks, 1) : '—'));
+  // 隨機選股：每期從同一股票池隨機挑同樣檔數，500 次模擬的中位數（只有累積報酬有意義，其他欄位留空）
+  const randRow = R ? h('tr', { class: 'bt-rand' }, h('th', { scope: 'row' }, `隨機選股（同檔數，${R.runs} 次中位數）`),
+    h('td', {}, sp(R.p50)), ...Array.from({ length: 6 }, () => h('td', { class: 'muted' }, '—'))) : null;
+  const verdict = !R ? null : R.beat >= 90 ? ['up', '條件有明顯的選股效果'] : R.beat >= 60 ? ['', '略優於隨機，但差距不大'] : R.beat >= 40 ? ['muted', '和隨機挑差不多'] : ['down', '比隨機挑還差'];
   const box = h('div');
   const chart = lineChart(box);
   chart.update({
@@ -86,6 +99,7 @@ export function backtestView(panel, crit, presetLabel, onPick) {
       { name: '策略', values: r.curve.strat.map((v) => v * 100), color: 'var(--s1)', endLabel: true },
       { name: '清單等權', values: r.curve.univ.map((v) => v * 100), color: 'var(--s2)', endLabel: true },
       { name: benchLabel, values: r.curve.bench.map((v) => v * 100), color: 'var(--s3)', endLabel: true },
+      ...(r.curve.random ? [{ name: '隨機選股（中位數）', values: r.curve.random.map((v) => v * 100), color: 'var(--muted)', width: 1.5 }] : []),
     ],
     fmt: (v) => F.num(v, 1), axisFmt: (v) => F.num(v, 0), ariaLabel: `${presetLabel}條件回測：策略、清單等權與大盤的累積淨值（起點 100）`,
   });
@@ -93,20 +107,30 @@ export function backtestView(panel, crit, presetLabel, onPick) {
   const pickBtns = lastP.picks.length
     ? lastP.picks.map((c) => h('button', { type: 'button', class: 'chip', on: { click: () => onPick(c) } }, h('span', { class: 't' }, `${c} ${names.get(c) || ''}`)))
     : [h('span', { class: 'muted' }, '目前沒有股票符合（持有現金）')];
-  const legendEl = h('div', { class: 'legend', 'aria-hidden': 'true' }, [['策略', 'var(--s1)'], ['清單等權', 'var(--s2)'], [benchLabel, 'var(--s3)']].map(([t, c]) => {
+  const legendEl = h('div', { class: 'legend', 'aria-hidden': 'true' }, [['策略', 'var(--s1)'], ['清單等權', 'var(--s2)'], [benchLabel, 'var(--s3)'],
+    ...(r.curve.random ? [['隨機選股（中位數）', 'var(--muted)']] : [])].map(([t, c]) => {
     const i = h('i');
     i.style.background = c;
     return h('span', {}, i, t);
   }));
+  const maxSeg = onMaxN ? h('div', { class: 'bt-max' },
+    h('span', { class: 'muted' }, '最多持有：'),
+    h('div', { class: 'seg', role: 'group', 'aria-label': '最多持有檔數' }, BT_MAX.map(([n, label]) =>
+      h('button', { type: 'button', 'aria-pressed': String(n === (r.maxN ?? null)), on: { click: () => onMaxN(n) } }, label))),
+    r.maxN && rank ? h('span', { class: 'muted' }, `（依${rank.label || rank.key}由高到低取前 ${r.maxN} 檔）`) : null) : null;
   const el = h('section', { class: 'panel backtest' },
     h('h3', {}, `條件回測：${presetLabel}（追蹤清單）`),
+    maxSeg,
     h('p', { class: 'note' }, `用上方目前的門檻，在追蹤清單 ${panel.stocks.length} 檔個股（不含 ETF）上回測：${r.start}～${r.end} 共 ${r.months} 期，`
       + `每月 ${panel.day} 日後第一個交易日收盤換股、等權重，已扣手續費 0.1425% 與證交稅 0.3%（期間合計約 ${F.num(S.fees, 1)}%）。`
       + `選不到股票的月份持有現金（${S.empty} 期）。`),
     r.skipped.length ? h('p', { class: 'note' }, `沒有歷史資料、回測時不使用的條件：${r.skipped.map((c) => c.label).join('、')}。`) : null,
     h('div', { class: 'ov-wrap' }, h('table', { class: 'ov bt-stats' },
-      h('thead', {}, h('tr', {}, ['', '累積報酬', '年化', '最大回撤', '月勝率 vs 大盤', '平均檔數'].map((c) => h('th', { scope: 'col' }, c)))),
-      h('tbody', {}, row('策略（符合條件）', S, 'bt-strat'), row('清單等權（全部持有）', U), row(benchLabel, B)))),
+      h('thead', {}, h('tr', {}, ['', '累積報酬', '年化', '最大回撤', '年化波動', '報酬 / 風險', '月勝率 vs 大盤', '平均檔數'].map((c) => h('th', { scope: 'col' }, c)))),
+      h('tbody', {}, row(r.maxN ? `策略（符合條件，最多 ${r.maxN} 檔）` : '策略（符合條件）', S, 'bt-strat'), randRow, row('清單等權（全部持有）', U), row(benchLabel, B)))),
+    R ? h('p', { class: 'bt-verdict' },
+      '策略的累積報酬贏過 ', h('b', { class: verdict[0] }, F.pct(R.beat, 0)), ` 的隨機選股組合（隨機 5%～95% 區間：${F.pct(R.p5, 1, true)}～${F.pct(R.p95, 1, true)}）：`,
+      h('span', { class: verdict[0] }, verdict[1]), '。') : null,
     legendEl, box,
     h('p', { class: 'note' }, `${F.when(lastP.date)} 換股後持有（${lastP.n} 檔）：`), h('div', { class: 'chips bt-picks' }, ...pickBtns),
     tableView(['換股日', '檔數', '策略', '清單等權', '大盤', '選中'], r.periods.map((p) => [
@@ -114,7 +138,9 @@ export function backtestView(panel, crit, presetLabel, onPick) {
       p.picks.map((c) => `${c}${names.get(c) ? ` ${names.get(c)}` : ''}`).join('、') || '（現金）']), { label: '每期明細（表格）' }),
     h('details', { class: 'bt-caveats', open: true }, h('summary', {}, '回測的限制（請先讀）'),
       h('ul', {},
-        h('li', {}, h('b', {}, '倖存者 / 選擇偏差：'), '股票池是「現在的」追蹤清單——多半是你近年看好、表現好的股票，也不含期間內下市或被你移除的股票，所以絕對報酬通常高估。比較「策略 vs 清單等權」的差距，比看絕對報酬有意義。'),
+        h('li', {}, h('b', {}, '倖存者 / 選擇偏差：'), '股票池是「現在的」追蹤清單——多半是你近年看好、表現好的股票，也不含期間內下市或被你移除的股票，所以絕對報酬通常高估。比較「策略 vs 清單等權」與「策略 vs 隨機選股」的差距，比看絕對報酬有意義。'),
+        h('li', {}, h('b', {}, '隨機選股基準：'), '每期從同一個股票池隨機挑出與策略相同的檔數、同樣扣成本，模擬 500 次（固定亂數種子，結果可重現）。策略贏過 90% 以上的隨機組合，才比較能說是條件本身有效，而不是運氣或股票池本來就好。'),
+        h('li', {}, h('b', {}, '年化波動、報酬 / 風險：'), '月報酬標準差 × √12；報酬 / 風險 = 年化報酬 ÷ 年化波動（未扣無風險利率，類似夏普值）。期間不滿一年時不計年化。'),
         h('li', {}, h('b', {}, '樣本少：'), `只有約 ${r.months} 個月，結果容易被單一波行情左右，不代表條件長期有效。`),
         h('li', {}, h('b', {}, '條件為近似：'), '月營收以次月 10 日、季報以法定期限（5/15、8/14、11/14、3/31）視為公布日；金融業期限可能不同。成交量用換股日前 20 日平均；ROE 以股價淨值比 ÷ 本益比推估。'),
         h('li', {}, h('b', {}, '交易假設：'), '以換股日收盤價成交、不計滑價與零股限制；忽略持有期間權重漂移的再平衡成本。'),
@@ -152,7 +178,8 @@ export function renderScreen(host, screen, { watchlist = [], onPick, market = 't
   const watch = new Set(watchlist);
   const cols = us ? usColumns(watch) : columns(watch);
   const saved = load(market);
-  const state = { preset: saved.preset in PRESETS ? saved.preset : 'growth', values: saved.values || {}, sort: null };
+  const state = { preset: saved.preset in PRESETS ? saved.preset : 'growth', values: saved.values || {}, sort: null,
+    btMax: BT_MAX.some(([n]) => n === saved.btMax) ? saved.btMax : null };
 
   const criteriaOf = (p) => PRESETS[p].criteria.map((c) => ({ ...c, value: (state.values[p] ?? {})[c.key] !== undefined ? state.values[p][c.key] : c.value }));
   const tabs = h('div', { class: 'ov-tabs', role: 'group', 'aria-label': '選股類型' });
@@ -161,7 +188,7 @@ export function renderScreen(host, screen, { watchlist = [], onPick, market = 't
   const desc = h('p', { class: 'note' });
   const table = h('table', { class: 'ov' });
 
-  const persist = () => save(market, { preset: state.preset, values: state.values });
+  const persist = () => save(market, { preset: state.preset, values: state.values, btMax: state.btMax });
 
   // 回測（只有台股）：backtest 是 Promise（背景載入 backtest.json），回來後依目前門檻畫
   const btHost = h('div', { class: 'bt-host' });
@@ -170,7 +197,11 @@ export function renderScreen(host, screen, { watchlist = [], onPick, market = 't
   const drawBacktest = () => {
     if (!btPanel) return;
     btChart?.destroy?.();
-    const { el, chart } = backtestView(btPanel, criteriaOf(state.preset), PRESETS[state.preset].label, onPick);
+    const P = PRESETS[state.preset];
+    const rank = { ...P.sort, label: P.criteria.find((c) => c.key === P.sort.key)?.label };
+    const { el, chart } = backtestView(btPanel, criteriaOf(state.preset), P.label, onPick, {
+      maxN: state.btMax, rank, onMaxN: (n) => { state.btMax = n; persist(); drawBacktest(); },
+    });
     btChart = chart;
     btHost.replaceChildren(el);
   };

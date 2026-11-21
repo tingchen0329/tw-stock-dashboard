@@ -16,6 +16,7 @@ export const TW_PRESETS = {
       { key: 'pe', op: '<=', value: 35, label: '本益比', unit: '倍' },
       { key: 'volume', op: '>=', value: 500, label: '成交量', unit: '張' },
       { key: 'big1000Chg', op: '>=', value: null, label: '千張大戶週增減', unit: '百分點' },
+      { key: 'retail10Chg', op: '<=', value: null, label: '10 張以下散戶週增減', unit: '百分點' },
     ],
   },
   yield: {

@@ -184,19 +184,35 @@ export function renderMacroHistory(host, item, hist, state) {
     h('dt', {}, '區間漲跌'), h('dd', { class: F.dir(chg) }, dfmt(chg)),
     h('dt', {}, '區間最高'), h('dd', {}, `${fmt(hi)}（${F.when(dates[close.indexOf(hi)])}）`),
     h('dt', {}, '區間最低'), h('dd', {}, `${fmt(lo)}（${F.when(dates[close.indexOf(lo)])}）`),
-    h('dt', {}, '距區間高點'), h('dd', {}, dfmt(delta(lastV, hi))));
+    h('dt', {}, '距區間高點'), h('dd', {}, dfmt(delta(lastV, hi))),
+    // 擔保維持率：離 130% 追繳線還有多遠（全市場平均跌到 130% 時，大量帳戶會被追繳、斷頭賣壓集中）
+    item.key === 'keep' ? [h('dt', {}, '距 130% 追繳線'), h('dd', { class: lastV - 130 < 20 ? 'down' : '' }, F.isNum(lastV) ? `${F.num(lastV - 130, 2)} 點` : 'N/A')] : null);
+  // 附帶序列：擔保維持率的「低於 130% 戶數」、融資的「占上市市值 %」
+  const sub = item.key === 'keep' && hist.calls ? { key: 'calls', name: '整戶維持率低於 130% 的戶數', fmt: (v) => `${F.num(v, 0)} 戶`, axis: (v) => F.num(v, 0) }
+    : item.key === 'margin' && hist.ratio ? { key: 'ratio', name: '融資餘額占上市市值', fmt: (v) => F.pct(v, 3), axis: (v) => F.pct(v, 2) } : null;
+  const subVals = sub ? hist[sub.key].slice(start) : null;
+  const subBox = sub && subVals.filter(F.isNum).length > 1 ? h('div') : null;
   const rowsDesc = dates.map((d, i) => [d, fmt(close[i]), i ? dfmt(delta(close[i], close[i - 1])) : '—']);
   host.replaceChildren(head,
     h('div', { class: 'seg', role: 'group', 'aria-label': '期間' }, MACRO_RANGES.map(([k, , label]) =>
       h('button', { type: 'button', 'aria-pressed': String(k === state.range), title: label, on: { click: () => state.onRange(k) } }, k))),
     box, stats,
-    tableView(['日期', item.key === 'fed' ? '利率' : pp || item.key === 'margin' ? '數值' : '收盤', '日漲跌'], rowsDesc, { label: '每日紀錄（表格）' }));
+    subBox ? h('h4', { class: 'mh-sub' }, sub.name) : null, subBox,
+    tableView(['日期', item.key === 'fed' ? '利率' : pp || item.key === 'margin' ? '數值' : '收盤', '日漲跌', ...(sub ? [sub.name] : [])],
+      rowsDesc.map((r, i) => (sub ? [...r, F.isNum(subVals[i]) ? sub.fmt(subVals[i]) : 'N/A'] : r)), { label: '每日紀錄（表格）' }));
   const ch = lineChart(box);
   ch.update({
     dates, series: [{ name: item.label, values: close, color: 'var(--s1)', endLabel: true }],
+    refs: item.key === 'keep' ? [{ value: 130, label: '130% 追繳線', color: 'var(--warn)' }] : undefined,
     height: 240, fmt, axisFmt: (v) => macroFmt(item.key, v), ariaLabel: `${item.label}近${dates.length}個交易日走勢`,
   });
   charts.push(ch);
+  if (subBox) {
+    const c2 = lineChart(subBox);
+    c2.update({ dates, series: [{ name: sub.name, values: subVals, color: 'var(--s2)', endLabel: true }], height: 150, fmt: sub.fmt, axisFmt: sub.axis,
+      ariaLabel: `${sub.name}近${dates.length}個交易日走勢` });
+    charts.push(c2);
+  }
   return () => charts.forEach((c) => c.destroy?.());
 }
 
@@ -217,6 +233,8 @@ function holderRows(hs) {
   return [
     [`千張大戶持股（集保 ${F.when(hs.date)}）`, [F.pct(hs.p1000), ' ', wk(hs.p1000Chg, ' 百分點')]],
     ['400 張以上大戶', F.pct(hs.p400)],
+    ['10 張以下散戶持股', F.isNum(hs.p10) ? [F.pct(hs.p10), ' ', wk(hs.p10Chg, ' 百分點')] : h('span', { class: 'muted' }, 'N/A（下次集保更新後出現）')],
+    hs.signal ? ['籌碼集中度（週）', h('span', { class: { concentrate: 'up', disperse: 'down' }[hs.signal.key] || 'muted' }, hs.signal.text)] : null,
     ['千張大戶人數', F.isNum(hs.n1000) ? `${F.num(hs.n1000, 0)} 人` : 'N/A'],
     // 股東人數減少、大戶比例增加 = 籌碼集中（常見解讀；仍要搭配股價與法人動向）
     ['股東人數', F.isNum(hs.holders) ? [F.num(hs.holders, 0), ' ', wk(hs.holdersChgPct, '%')] : 'N/A'],
@@ -236,7 +254,22 @@ function holderChart(hs, info, charts) {
     ariaLabel: `${info.name}千張大戶持股比例，近 ${hs.weeks} 週`,
   });
   charts.push(ch);
-  return h('div', {}, h('p', { class: 'note' }, `千張大戶持股比例（近 ${hs.weeks} 週，集保結算所）`), box);
+  // 10 張以下散戶比例（v7.2 起累積；刻度與大戶差很多，分開畫）
+  const n10 = hs.series.p10.filter(F.isNum).length;
+  let box2 = null;
+  if (n10 >= 3) {
+    box2 = h('div', { class: 'chart-sm' });
+    const c2 = lineChart(box2);
+    c2.update({
+      dates: hs.series.dates, height: 130,
+      series: [{ name: '10 張以下散戶持股 %', values: hs.series.p10, color: 'var(--s2)', endLabel: true }],
+      fmt: (v) => F.pct(v, 2), axisFmt: (v) => `${F.num(v, 1)}%`,
+      ariaLabel: `${info.name}10 張以下散戶持股比例，近 ${n10} 週`,
+    });
+    charts.push(c2);
+  }
+  return h('div', {}, h('p', { class: 'note' }, `千張大戶持股比例（近 ${hs.weeks} 週，集保結算所）`), box,
+    box2 ? h('p', { class: 'note' }, `10 張以下散戶持股比例（近 ${n10} 週）：大戶增、散戶減 = 籌碼集中`) : null, box2);
 }
 
 function legend(items) {

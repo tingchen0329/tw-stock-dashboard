@@ -322,6 +322,8 @@ dialog footer { display: flex; gap: 8px; justify-content: flex-end; padding: 0 1
 .mh-price .v { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .mh-price .d { font-size: 15px; font-variant-numeric: tabular-nums; }
 .mh-stats { margin-top: 10px; }
+.mh-sub { margin: 14px 0 2px; font-size: 14px; font-weight: 600; }
+.chart text.ref-label { fill: var(--warn); font-size: 11px; font-weight: 600; }
 
 /* 同業比較 */
 .scroll-x { overflow-x: auto; }
@@ -391,33 +393,16 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; color:
 .kline-credit { font-size: 11px; margin: 4px 0 0; }
 @media (max-width: 640px) { .kline { height: 300px; } }
 
-/* ── 千張大戶、持股損益、到價通知、回測（v7.1）──────────────── */
+/* ── 千張大戶、回測（v7.1）────────────────────────── */
 .btn.ghost { background: transparent; }
 .btn.small { height: 28px; padding: 0 10px; font-size: 13px; }
 .link { background: none; border: 0; padding: 0; color: inherit; cursor: pointer; text-align: left; font: inherit; }
 .link:hover b { text-decoration: underline; }
 .tag { display: inline-block; margin-left: 4px; padding: 0 5px; font-size: 11px; line-height: 16px; border-radius: 4px; color: var(--accent); border: 1px solid var(--accent); vertical-align: 1px; }
-.portfolio h2 { margin: 18px 0 4px; font-size: 22px; }
-.pf-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 4px; }
-.pf-form input, .pf-form select {
-  height: 36px; padding: 0 8px; font: inherit; font-size: 14px; color: var(--ink);
-  background: var(--surface-2); border: 1px solid var(--axis); border-radius: 8px;
-}
-.pf-form input[type="number"] { width: 130px; font-variant-numeric: tabular-nums; }
-.pf-form input:focus, .pf-form select:focus, .rule-box:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-.pf-tools { display: flex; flex-wrap: wrap; gap: 8px; margin: 6px 0 12px; }
-.pf-tiles { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 12px; }
-.pf-table th { cursor: default; }
-.pf-table td:first-child, .pf-table th:first-child { text-align: left; }
-.pf-table .name { margin-left: 4px; color: var(--ink-2); }
-.pf-table .sub { display: block; font-size: 12px; }
-.pf-alerts { margin-top: 18px; }
-.rule-box {
-  width: 100%; box-sizing: border-box; min-height: 120px; padding: 8px 10px; margin-top: 6px;
-  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ink);
-  background: var(--surface-2); border: 1px solid var(--axis); border-radius: 8px; resize: vertical;
-}
 .backtest { margin-top: 20px; }
+.bt-max { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 8px; font-size: 13px; }
+.bt-verdict { margin: 8px 0; font-size: 14px; }
+.bt-rand th, .bt-rand td { color: var(--muted); }
 .bt-stats th[scope="row"] { text-align: left; font-weight: 600; background: none; cursor: default; }
 .bt-stats th { cursor: default; }
 .bt-stats tr.bt-strat th, .bt-stats tr.bt-strat td { background: var(--accent-wash); }
@@ -425,4 +410,3 @@ a.btn { display: inline-flex; align-items: center; text-decoration: none; color:
 .bt-caveats { margin-top: 10px; font-size: 13px; color: var(--ink-2); }
 .bt-caveats summary { cursor: pointer; font-weight: 600; color: var(--ink); }
 .bt-caveats li { margin: 4px 0; }
-@media (max-width: 560px) { .pf-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } .pf-form input[type="number"] { width: 110px; } }

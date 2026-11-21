@@ -740,6 +740,17 @@ export function fundamentals(incomeTable, balanceTable) {
  * 集保每週更新一次、只提供最新一週，所以歷史是本站從開始抓的那週起自己累積的（weeks 週）。
  * @param {{cols:string[], rows:Object<string, Array[]>, source?:string}} holders
  */
+/**
+ * 籌碼集中度（週）：千張大戶比例與 10 張以下散戶比例「反向」變動才判定，
+ * 變動太小（< 0.05 個百分點）視為持平，避免把雜訊當訊號
+ */
+export function concentration(bigChg, retailChg, eps = 0.05) {
+  if (!isNum(bigChg) || !isNum(retailChg)) return null;
+  if (bigChg >= eps && retailChg <= -eps) return { key: 'concentrate', text: '籌碼集中（大戶增、散戶減）' };
+  if (bigChg <= -eps && retailChg >= eps) return { key: 'disperse', text: '籌碼渙散（大戶減、散戶增）' };
+  return { key: 'flat', text: '大戶與散戶持股變化不大' };
+}
+
 export function holderStats(holders, code) {
   const list = holders?.rows?.[code];
   if (!list?.length) return null;
@@ -749,12 +760,16 @@ export function holderStats(holders, code) {
   const ago = (n) => (xs.length > n ? xs[xs.length - 1 - n] : null);
   const diff = (b, k) => (b && isNum(cur[k]) && isNum(b[k]) ? cur[k] - b[k] : null);
   const rel = (b) => (b && isNum(b.holders) && b.holders > 0 && isNum(cur.holders) ? (cur.holders / b.holders - 1) * 100 : null);
+  const p1000Chg = diff(ago(1), 'p1000');
+  const p10Chg = diff(ago(1), 'p10');
   return {
     date: cur.date, prevDate: ago(1)?.date ?? null, weeks: xs.length,
     p1000: cur.p1000 ?? null, p400: cur.p400 ?? null, n1000: cur.n1000 ?? null, holders: cur.holders ?? null,
-    p1000Chg: diff(ago(1), 'p1000'), p1000Chg4: diff(ago(4), 'p1000'),
+    p10: cur.p10 ?? null, p10Chg, p10Chg4: diff(ago(4), 'p10'),
+    p1000Chg, p1000Chg4: diff(ago(4), 'p1000'),
     holdersChgPct: rel(ago(1)), holdersChgPct4: rel(ago(4)),
-    series: { dates: xs.map((x) => x.date), p1000: xs.map((x) => x.p1000), holders: xs.map((x) => x.holders) },
+    signal: concentration(p1000Chg, p10Chg),
+    series: { dates: xs.map((x) => x.date), p1000: xs.map((x) => x.p1000), holders: xs.map((x) => x.holders), p10: xs.map((x) => x.p10 ?? null) },
     source: holders.source || '集保結算所',
   };
 }
@@ -920,6 +935,7 @@ export function overviewRow(s) {
     rsi: r2(t?.rsi),
     big1000: r2(s.holders?.p1000),
     big1000Chg: r2(s.holders?.p1000Chg),
+    retail10Chg: r2(s.holders?.p10Chg),
     ma20: r2(t?.ma?.[20]),
   };
 }

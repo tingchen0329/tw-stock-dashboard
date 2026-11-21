@@ -442,7 +442,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(row[0], "2026-10-16")
         self.assertTrue(0 < row[1] <= row[2] <= 100)                 # 千張以上 ≤ 400 張以上
         sc = json.loads((self.out / "screen.json").read_text())
-        self.assertEqual(sc["cols"][-3:], ["big1000", "big1000Chg", "holdersChgPct"])
+        self.assertEqual(sc["cols"][-4:], ["big1000", "big1000Chg", "holdersChgPct", "retail10Chg"])
         x = dict(zip(sc["cols"], next(r for r in sc["rows"] if r[0] == "2330")))
         self.assertEqual(x["big1000"], row[1])
         self.assertIsNone(x["big1000Chg"])                            # 第一週沒有變化
@@ -922,7 +922,7 @@ class Holders(unittest.TestCase):
     def test_parse_and_percentages_from_shares(self):
         date, data = fd.parse_tdcc(self.rows("2026-11-20", "2330", 84.14, 3329043))
         self.assertEqual(date, "2026-11-20")
-        self.assertEqual(data["2330"], {"p1000": 84.14, "p400": 89.14, "n1000": 10, "holders": 3329043})
+        self.assertEqual(data["2330"], {"p1000": 84.14, "p400": 89.14, "n1000": 10, "holders": 3329043, "p10": 10.86})
 
     def test_weekly_accumulation_and_csv_fallback(self):
         with tempfile.TemporaryDirectory() as d:
@@ -948,6 +948,8 @@ class Holders(unittest.TestCase):
             self.assertEqual(a["prevDate"], "2026-11-13")
             self.assertEqual(a["rows"]["2330"][1], 1.5)                # 千張大戶週 +1.5 百分點
             self.assertEqual(a["rows"]["2330"][3], -1.0)               # 股東人數週 -1%
+            self.assertEqual(a["rows"]["2330"][5], -1.5)               # 散戶（10 張以下）週 -1.5 百分點
+            self.assertEqual(h["rows"]["2330"][-1][5], round(95 - 81.5, 2))
             # 集保還沒公布新的一週：資料日期沒變 → 不寫檔、註記
             tx4 = self.Tx(self.rows("2026-11-20", "2330", 99.0, 1))
             r4 = fd.SourceReport()
@@ -962,8 +964,9 @@ class Holders(unittest.TestCase):
                                                               "rows": {"2330": [84.1, 0.2, 100, -1.0]}}))
             sc = {"cols": ["code", "name"], "rows": [["2330", "台積電"], ["2317", "鴻海"]]}
             sc = fd.add_holder_cols(fd.add_holder_cols(sc, out), out)
-            self.assertEqual(sc["cols"], ["code", "name", "big1000", "big1000Chg", "holdersChgPct"])
-            self.assertEqual(sc["rows"], [["2330", "台積電", 84.1, 0.2, -1.0], ["2317", "鴻海", None, None, None]])
+            self.assertEqual(sc["cols"], ["code", "name", "big1000", "big1000Chg", "holdersChgPct", "retail10Chg"])
+            # 舊版 holders_all（4 欄，沒有散戶）→ retail10Chg 為 None
+            self.assertEqual(sc["rows"], [["2330", "台積電", 84.1, 0.2, -1.0, None], ["2317", "鴻海", None, None, None, None]])
             self.assertEqual(sc["asOf"]["holders"], "2026-11-20")
 
 
@@ -997,6 +1000,10 @@ class Credit(unittest.TestCase):
             self.assertEqual(keep["calls"], 6186)
             self.assertEqual(items["margin"]["value"], 4352.27)        # 千元 → 億元
             self.assertEqual(items["margin"]["ratio"], 0.369)          # 融資占上市市值 %
+            # 附帶序列與 dates 對齊：低於 130% 戶數、融資占市值
+            self.assertEqual(len(keep["hist"]["calls"]), len(keep["hist"]["dates"]))
+            self.assertEqual(keep["hist"]["calls"][-1], 6186)
+            self.assertEqual(items["margin"]["hist"]["ratio"][-1], 0.369)
             self.assertEqual(sum(1 for c in tx.calls if c[0] == "BFIJ3U_TREND"), 2)
             # 寫成 macro_hist.json 後：下次只抓最新一段（已經有起點的資料）
             fd.write_macro(out, fd.sort_macro(list(items.values())), {})
@@ -1009,6 +1016,19 @@ class Credit(unittest.TestCase):
             kept = {i["key"]: i for i in fd.fetch_credit(self.Tx(fail=True), r, out)}
             self.assertEqual(kept["keep"]["value"], keep["value"])
             self.assertFalse(r.items["twse_keep_rate"]["ok"])
+
+
+class MergeHist(unittest.TestCase):
+    """macro_hist：舊檔沒有附帶序列也能合併；新的日子補 None 以外的值"""
+
+    def test_extra_series_backward_compatible(self):
+        old = {"dates": ["2026-11-18", "2026-11-19"], "close": [150.0, 151.0]}
+        m = fd._merge_hist(old, {"2026-11-20": 152.0}, {"calls": {"2026-11-20": 6000}})
+        self.assertEqual(m["dates"], ["2026-11-18", "2026-11-19", "2026-11-20"])
+        self.assertEqual(m["calls"], [None, None, 6000])
+        m2 = fd._merge_hist({**m, "label": "x"}, {"2026-11-21": 153.0})          # 沒給 extra：保留舊的附帶序列
+        self.assertEqual(m2["calls"], [None, None, 6000, None])
+        self.assertNotIn("label", m2)
 
 
 class CorpActionsDedupe(unittest.TestCase):

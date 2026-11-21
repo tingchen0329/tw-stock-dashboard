@@ -23,7 +23,8 @@ function holderLine(hs) {
   if (!hs) return '千張大戶 N/A';
   const wk = F.isNum(hs.p1000Chg) ? `，週 ${F.signed(hs.p1000Chg)} 百分點` : '';
   const ppl = F.isNum(hs.holdersChgPct) ? `，股東人數週 ${pct(hs.holdersChgPct, 2)}` : '';
-  return `千張大戶持股 ${F.pct(hs.p1000)}（集保 ${F.when(hs.date)}${wk}${ppl}）`;
+  const retail = F.isNum(hs.p10) ? `；10 張以下散戶 ${F.pct(hs.p10)}${F.isNum(hs.p10Chg) ? `（週 ${F.signed(hs.p10Chg)} 百分點）` : ''}` : '';
+  return `千張大戶持股 ${F.pct(hs.p1000)}（集保 ${F.when(hs.date)}${wk}${ppl}）${retail}${hs.signal ? `；${hs.signal.text}` : ''}`;
 }
 
 function macroLine(macro) {
