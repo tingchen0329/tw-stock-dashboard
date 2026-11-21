@@ -44,6 +44,7 @@ import argparse
 import csv
 import datetime as dt
 import http.client
+import http.cookiejar
 import io
 import json
 import os
@@ -172,6 +173,8 @@ class HttpTransport:
         self._twse_lock = threading.Lock()
         self._twse_last = 0.0
         self._sec_lock = threading.Lock()
+        # 保留 cookie：證交所的轉址要帶 cookie 才會停止（FinMind token 只放 header，不受影響）
+        urllib.request.install_opener(urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar())))
         self._sec_last = 0.0
         self.finmind_requests = 0
 
@@ -189,7 +192,8 @@ class HttpTransport:
                 if e.code == 402:
                     raise QuotaExceeded("FinMind quota exceeded (HTTP 402)") from None
                 last_err = e
-                if e.code not in (429, 500, 502, 503, 504):
+                # 307：證交所網站流量大時先設 cookie 再轉址，沒有 cookie 會一直轉址（2026-11-22 擔保維持率實際發生）
+                if e.code not in (307, 429, 500, 502, 503, 504):
                     break
             # http.client.HTTPException 涵蓋 IncompleteRead：伺服器回應到一半斷線
             # （實例 2026-10-20：櫃買法人資料 840 KB 只收到 589 KB）→ 一樣重試
@@ -1159,6 +1163,10 @@ def fetch_corp_actions(tx, report: SourceReport, today: dt.date, prev: dict | No
             code, date, after = str(r.get("stock_id") or "").strip(), r.get("date"), to_num(r.get(after_col))
             if code and date and after and after > 0:
                 rows.setdefault(code, []).append([date, after, to_num(r.get(before_col)), kind])
+    # 這次檢查過的疑似個股（7 天內不再因為同一個跳動重查，見 refresh_actions）
+    checked = {c: d for c, d in ((prev or {}).get("checked") or {}).items()
+               if d >= (today - dt.timedelta(days=30)).isoformat()}
+    checked.update({c: today.isoformat() for c in (suspects or [])[:15]})
     for code, evs in rows.items():
         # FinMind 的面額變更也會列在「分割」資料集 → 同日同參考價只留一筆（否則還原因子會乘兩次）
         seen, uniq = set(), []
@@ -1168,7 +1176,27 @@ def fetch_corp_actions(tx, report: SourceReport, today: dt.date, prev: dict | No
                 seen.add(key)
                 uniq.append(e)
         rows[code] = uniq
-    return {"asOf": today.isoformat(), "rows": rows}
+    return {"asOf": today.isoformat(), "rows": rows, "checked": checked}
+
+
+ACTIONS_RECHECK_DAYS = 7
+
+
+def refresh_actions(tx, report: SourceReport, out: Path, watchlist: list[str], today: dt.date,
+                    force: bool) -> dict[str, int]:
+    """
+    完整更新（force）或檔案不存在 → 重抓；否則只在追蹤清單有「異常跳動、7 天內沒查過」的個股時補查
+    （例如新加入清單的減資股、上一次查詢失敗）。不需要時不花任何 FinMind 請求。
+    """
+    path = out / "actions.json"
+    prev = _read_json(path) if path.exists() else None
+    suspects = unexplained_jumps(out, watchlist, (prev or {}).get("rows") or {})
+    checked = (prev or {}).get("checked") or {}
+    cutoff = (today - dt.timedelta(days=ACTIONS_RECHECK_DAYS)).isoformat()
+    due = [c for c in suspects if checked.get(c, "") < cutoff]
+    if not (force or prev is None or due):
+        return {}
+    return {"actions.json": write_json(path, fetch_corp_actions(tx, report, today, prev, suspects if force else due))}
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1789,20 +1817,14 @@ def main(argv: list[str] | None = None) -> int:
             f"缺 {len(watchlist) - detail_ok} 檔" if detail_ok < len(watchlist) else "",
             "FinMind 額度用完 (HTTP 402)，下次執行會補抓" if quota_hit else "") if x)}
 
-    # 減資 / 變更面額 / 分割：完整更新時重抓（3 次 FinMind 請求），其他時候沿用上一份
-    act_path = out / "actions.json"
-    if not quota_hit and (mode == "full" or not act_path.exists()):
+    # 減資 / 變更面額 / 分割：完整更新時重抓；其他時候只在有「7 天內沒查過的異常跳動」時補查
+    if not quota_hit:
         try:
-            prev_act = json.loads(act_path.read_text("utf-8")) if act_path.exists() else None
-        except (OSError, ValueError):
-            prev_act = None
-        try:
-            suspects = unexplained_jumps(out, watchlist, (prev_act or {}).get("rows") or {})
-            sizes["actions.json"] = write_json(act_path, fetch_corp_actions(tx, report, today, prev_act, suspects))
+            sizes.update(refresh_actions(tx, report, out, watchlist, today, force=mode == "full"))
         except QuotaExceeded:
             quota_hit = True
-    if act_path.exists():
-        sizes.setdefault("actions.json", act_path.stat().st_size)
+    if (out / "actions.json").exists():
+        sizes.setdefault("actions.json", (out / "actions.json").stat().st_size)
 
     # 全市場選股資料（證交所 / 櫃買開放資料，免 FinMind）
     screen = build_screen(tx, report, market_rows, stock_list,
@@ -1872,7 +1894,14 @@ def run_macro_only(tx, out: Path, prev: dict, today: dt.date, token: str | None,
     slow = 0
     if not quota:
         slow, quota = refresh_slow(tx, watchlist, spec, today, out, SLOW_BUDGET["macro"], report)
+    act_sizes: dict[str, int] = {}
+    if not quota:
+        try:
+            act_sizes = refresh_actions(tx, report, out, watchlist, today, force=False)
+        except QuotaExceeded:
+            quota = True
     sizes = {k: v for k, v in prev["bytes"].items() if not k.startswith(("stock/", "us/stock/"))}
+    sizes.update(act_sizes)
     held = (_read_json(out / "holders.json") or {}).get("asOf")
     sizes.update(update_holders(tx, report, out, today, watchlist))   # 週五晚上的夜間更新可能剛好抓到新一週
     new_holders = (_read_json(out / "holders.json") or {}).get("asOf") != held

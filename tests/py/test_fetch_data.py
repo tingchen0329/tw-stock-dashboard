@@ -1030,3 +1030,35 @@ class CorpActionsDedupe(unittest.TestCase):
         act = fd.fetch_corp_actions(Tx(), fd.SourceReport(), dt.date(2026, 11, 22), None)
         self.assertEqual(act["rows"]["2327"], [["2025-08-25", 136.5, 546.0, "變更面額"]])
         self.assertEqual(act["rows"]["9999"], [["2026-01-05", 50.0, 100.0, "分割"]])
+
+
+class RefreshActions(unittest.TestCase):
+    """非完整更新：只有「異常跳動、7 天內沒查過」時才補查股本變動；查過的記在 checked"""
+
+    def test_due_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d)
+            (out / "stock").mkdir()
+            days = [f"2025-01-{i:02d}" for i in range(1, 11)]
+            close = [10, 10, 10, 10, 15, 15, 15, 15, 15, 15]
+            (out / "stock" / "3041.json").write_text(json.dumps({"tables": {
+                "price": {"cols": ["date", "close"], "rows": [[a, b] for a, b in zip(days, close)]}}}))
+            (out / "actions.json").write_text(json.dumps({"rows": {}, "checked": {}}))
+            calls = []
+
+            class Tx:
+                finmind_requests = 0
+
+                def get_json(self, url, params=None, kind="public"):
+                    calls.append(params)
+                    return {"status": 200, "data": []}
+
+            today = dt.date(2026, 11, 22)
+            sizes = fd.refresh_actions(Tx(), fd.SourceReport(), out, ["3041"], today, force=False)
+            self.assertIn("actions.json", sizes)
+            self.assertEqual(json.loads((out / "actions.json").read_text())["checked"], {"3041": "2026-11-22"})
+            n = len(calls)
+            # 3 天後：查過了 → 不再花請求；8 天後：再查一次
+            self.assertEqual(fd.refresh_actions(Tx(), fd.SourceReport(), out, ["3041"], today + dt.timedelta(days=3), force=False), {})
+            self.assertEqual(len(calls), n)
+            self.assertIn("actions.json", fd.refresh_actions(Tx(), fd.SourceReport(), out, ["3041"], today + dt.timedelta(days=8), force=False))

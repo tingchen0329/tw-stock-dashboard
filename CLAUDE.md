@@ -29,7 +29,7 @@ python tests/bench/run_bench.py                # 新舊版效能比較
 - 慢速資料集（`datasets.json` 的 `wave: 3`：股利、除權息、現金流量表）：網頁不即時查；`refresh_slow()` 每次執行只更新 `SLOW_BUDGET` 檔（最久沒更新優先、7 天內不重抓），避免超過 FinMind 每小時 600 次。
 - 美股內部人：`us_data.fetch_insider()`（SEC submissions + Form 4 XML，依 accession 快取，只在 full 抓）→ us/stock 檔的 `insider`。
 - 同業比較：`analytics.peerStats()` 用 screen.json（產業別）/ us/screen.json（GICS sector），個股頁背景載入。
-- 還原股價：`analytics.adjustEvents()` + `adjustedSeries()`（台股 divResult + `actions.json`（減資 / 變更面額 / 分割，`fetch_corp_actions()` 只在 full 抓）、美股 Yahoo 配息）。報酬率 / 相對大盤 / 風險用還原；技術指標、K 線預設用原始價。大盤 bench 優先報酬指數（`fetch_data.tw_total_return()`：FinMind → 證交所 MFI94U；美股 ^SP500TR），`kind: "tr" | "price"`。
+- 還原股價：`analytics.adjustEvents()` + `adjustedSeries()`（台股 divResult + `actions.json`（減資 / 變更面額 / 分割，`refresh_actions()`：full 重抓，其他模式只補查 7 天內沒查過的異常跳動，`checked` 記錄）、美股 Yahoo 配息）。報酬率 / 相對大盤 / 風險用還原；技術指標、K 線預設用原始價。大盤 bench 優先報酬指數（`fetch_data.tw_total_return()`：FinMind → 證交所 MFI94U；美股 ^SP500TR），`kind: "tr" | "price"`。
 - 資料驗證：`assets/js/checks.js`（跨來源比對 + 異常值規則），個股頁即時算；`build_overview.mjs` 對清單逐檔算 → `checks.json`、`meta.checks`、`::warning::`。
 - K 線：`assets/js/kline.js` 包 `assets/vendor/lightweight-charts/`（本地檔，CSP 不允許 CDN）。`attributionLogo` 必須關閉（會插行內 style 被 CSP 擋），改在圖下方顯示 NOTICE 文字與連結（授權要求，不可移除）。
 - `scripts/build_overview.mjs`：fetch 之後執行，用 analytics.js 產生 `overview.json`（網頁首頁總覽表）與 `backtest.json`。
