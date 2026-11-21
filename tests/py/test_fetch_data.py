@@ -880,6 +880,9 @@ class CorpActionsFallback(unittest.TestCase):
             self.assertEqual(act["rows"], {"3041": [["2025-01-05", 15.0, 10.0, "減資"]]})
             self.assertTrue(report.items["finmind_減資"]["ok"])
             self.assertEqual(sum(1 for c in calls if c.get("data_id")), 1)
+            # 下一次完整更新：3041 已有事件、不再是 suspects；新的 suspects（7610）查無減資 → 3041 的減資仍要保留
+            act2 = fd.fetch_corp_actions(Tx(), fd.SourceReport(), dt.date(2026, 11, 23), act, ["7610"])
+            self.assertEqual(act2["rows"].get("3041"), [["2025-01-05", 15.0, 10.0, "減資"]])
 
 
 class Holders(unittest.TestCase):

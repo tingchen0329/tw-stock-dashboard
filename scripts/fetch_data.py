@@ -1133,16 +1133,22 @@ def fetch_corp_actions(tx, report: SourceReport, today: dt.date, prev: dict | No
         got = report.run(f"finmind_{kind}", lambda d=dataset: finmind(tx, d, None, start), count=lambda r: len(r or []))
         if got is None and suspects:
             per: list[dict] = []
+            asked: set[str] = set()
             for code in suspects[:15]:
                 try:
                     per.extend(finmind(tx, dataset, code, start))
+                    asked.add(code)
                 except QuotaExceeded:
                     raise
                 except Exception:  # noqa: BLE001
                     continue
+            # 沒有重查的個股沿用上一份同類別事件（上一次已經查到的減資不能因為這次沒列入 suspects 而消失）
+            for code, evs in old.items():
+                if code not in asked:
+                    per.extend({"stock_id": code, "date": e[0], after_col: e[1], before_col: e[2]} for e in evs if e[3] == kind)
             got = per
             report.items[f"finmind_{kind}"] = {"ok": True, "rows": len(per), "ms": 0,
-                                               "note": f"全市場查詢被拒，改查 {min(len(suspects), 15)} 檔有異常跳動的個股"}
+                                               "note": f"全市場查詢被拒，改查 {min(len(suspects), 15)} 檔有異常跳動的個股，其餘沿用上一份"}
         if got == []:                       # 三年內沒有這類事件是正常的，不算來源失敗
             report.items[f"finmind_{kind}"].update(ok=True, note=report.items[f"finmind_{kind}"].get("note") or "期間內沒有事件")
         if got is None:
